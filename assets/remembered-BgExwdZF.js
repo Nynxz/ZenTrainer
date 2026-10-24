@@ -1,0 +1,1 @@
+import{r as c,q as o}from"./_plugin-vue_export-helper-B5lVsauv.js";function l(t,e){const a=c((()=>{try{const r=localStorage.getItem(t);return r==null?e:r!=="0"}catch{return e}})());return o(a,r=>{try{localStorage.setItem(t,r?"1":"0")}catch{}}),a}export{l as r};
