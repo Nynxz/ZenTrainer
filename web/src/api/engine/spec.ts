@@ -61,7 +61,7 @@ export interface TrainSpec {
     rank: number
     alpha: number | null
     lora_dtype: string
-    targets: 'attn' | 'attn_mlp' | 'all' | string[]
+    targets: 'attn' | 'mlp' | 'attn_mlp' | 'all' | string[]
     train_bias_norm: boolean
     init_from: string | null
     /** a LoRA applied while training only (not in samples or the saved file): a de-distillation adapter */

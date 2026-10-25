@@ -87,6 +87,8 @@ def matches(name: str, targets: str | list[str]) -> bool:
     if targets == "attn":
         return in_attn
     in_mlp = any(_MLP.search(p) for p in parents) or (in_block and bool(_MLP_LEAF.match(leaf)))
+    if targets == "mlp":  # a fused attention+MLP projection (Flux's linear1/2) only goes with attn_mlp
+        return in_mlp
     return in_attn or in_mlp or bool(_FUSED.match(leaf))  # attn_mlp
 
 

@@ -119,9 +119,9 @@ class NetworkSpec:
     # so in bf16 most of them round away (a toy LoRA learned 6% vs 51% in fp32, same steps).
     # bf16 only with an optimizer that rounds stochastically (Automagic).
     lora_dtype: str = "fp32"
-    # Which layers get adapters: "attn" (attention projections), "attn_mlp"
-    # (attention + feed-forward linears), "all" (every adaptable layer, like
-    # ComfyUI's native trainer), or a list of regexes over module names.
+    # Which layers get adapters: "attn" (attention projections), "mlp" (feed-forward linears),
+    # "attn_mlp" (both), "all" (every adaptable layer, like ComfyUI's native trainer), or a list of
+    # regexes over module names.
     targets: str | list[str] = "attn_mlp"
     train_bias_norm: bool = False
     init_from: str | None = None  # a LoRA in the loras folder to continue
@@ -478,7 +478,7 @@ class TrainSpec:
         if not 0.0 <= self.samples.slg_start <= self.samples.slg_end <= 1.0:
             raise SpecError("samples.slg_start/slg_end must satisfy 0 <= start <= end <= 1")
         if isinstance(self.network.targets, str):
-            _choice("network.targets", self.network.targets, ("attn", "attn_mlp", "all"))
+            _choice("network.targets", self.network.targets, ("attn", "mlp", "attn_mlp", "all"))
         if self.optim.steps < 1:
             raise SpecError("optim.steps must be >= 1")
         for p in self.samples.prompts:

@@ -25,6 +25,7 @@ const warnings = computed(() => {
   else if (spec.save_every && spec.save_every % spec.samples.every && !spec.output.keep.startsWith('likeness')) w.push(`Samples every ${spec.samples.every} don't land on the saves every ${spec.save_every}: checkpoints get no samples or likeness to compare.`)
   else if (!slider && spec.dataset.trigger && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
     w.push("Sample prompts don't use [trigger].")
+  if (Array.isArray(spec.network.targets) && !spec.network.targets.length) w.push('Layers is Custom with no patterns: no layer would get an adapter.')
   const keep = spec.save_every ? spec.output.keep.replace('_new_best', '') : 'all'
   if (keep === 'likeness' && !spec.samples.prompts.length)
     w.push('Keeping the best likeness needs sample prompts to score (Samples).')

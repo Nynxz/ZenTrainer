@@ -127,6 +127,11 @@ and Manager show.
   so an edit LoRA can learn to cut a subject out onto transparency, and its samples save as PNGs
   with it. Such a dataset encodes again once. Grounded edits show the vision encoder transparent
   pictures over white, as ComfyUI's Qwen edit node does, on every model.
+- **Layers: MLP and Custom:** adapters on the feed-forward layers only ("MLP", beside Attention,
+  Attention + MLP and Every layer), or on your own patterns over layer names ("Custom", one regular
+  expression a line; Blocks and Skip blocks still apply). A layer that fuses attention and MLP in
+  one (Flux's single blocks) only goes with Attention + MLP. A spec with patterns used to show as
+  Attention + MLP on the form; it now shows them.
 
 ## 0.3.0 (2026-10-25)
 

@@ -181,6 +181,8 @@ def test_targets_match_by_structure_across_families():
     other = ["diffusion_model.first", "diffusion_model.last.linear", "diffusion_model.time_in.in_layer",
              "diffusion_model.video_embedder", "diffusion_model.shared_block_modulation", "diffusion_model.q"]  # leaf names count only in blocks
     assert all(matches(n, "attn") for n in attn) and not any(matches(n, "attn") for n in mlp)
+    fused = "diffusion_model.single_blocks.0.linear1"  # attention and MLP in one: only attn_mlp has it
+    assert all(matches(n, "mlp") for n in mlp if n != fused) and not any(matches(n, "mlp") for n in attn + other + [fused])
     assert all(matches(n, "attn_mlp") for n in attn + mlp)
     assert not any(matches(n, "attn_mlp") for n in other)
     assert all(matches(n, "all") for n in other)

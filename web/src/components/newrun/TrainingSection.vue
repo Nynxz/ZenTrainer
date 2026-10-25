@@ -97,9 +97,17 @@ const AITK_ITEMS = [
   { value: 'weighted', label: 'Weighted' },
   { value: '', label: 'Custom' },
 ]
+// a preset, or "custom": a list of patterns over layer names (an imported or hand-written spec)
 const targets = computed({
-  get: () => (typeof spec.network.targets === 'string' ? spec.network.targets : 'attn_mlp'),
-  set: (v: string) => (spec.network.targets = v as typeof spec.network.targets),
+  get: () => (typeof spec.network.targets === 'string' ? spec.network.targets : 'custom'),
+  set: (v: string) => {
+    if (v !== 'custom') spec.network.targets = v as typeof spec.network.targets
+    else if (typeof spec.network.targets === 'string') spec.network.targets = []
+  },
+})
+const patterns = computed({
+  get: () => (Array.isArray(spec.network.targets) ? spec.network.targets.join('\n') : ''),
+  set: (v: string) => (spec.network.targets = v.split('\n').map((p) => p.trim()).filter(Boolean)),
 })
 </script>
 
@@ -214,7 +222,7 @@ const targets = computed({
       <div class="grid-2">
         <ZenField label="Algorithm" stack><ZenCombo v-model="spec.network.algorithm" :items="items(['LoRA', 'LoHa', 'LoKr', 'OFT'])" :searchable="false" :sorted="false" /></ZenField>
         <ZenField label="Layers" stack>
-          <ZenCombo v-model="targets" :items="items(['attn', 'attn_mlp', 'all'], { attn: 'Attention', attn_mlp: 'Attention + MLP', all: 'Every layer' })" :searchable="false" :sorted="false" />
+          <ZenCombo v-model="targets" :items="items(['attn', 'mlp', 'attn_mlp', 'all', 'custom'], { attn: 'Attention', mlp: 'MLP', attn_mlp: 'Attention + MLP', all: 'Every layer', custom: 'Custom' })" :searchable="false" :sorted="false" />
         </ZenField>
         <ZenField label="Alpha" stack :tip="alphaAuto ? 'Auto = rank (scale 1.0)' : 'Scale is alpha / rank'">
           <div class="sw-row">
@@ -237,6 +245,9 @@ const targets = computed({
         </ZenField>
         <ZenField v-if="spec.network.base_lora" label="Base strength" stack tip="The strength the base LoRA runs at, in training and samples. Use it at the same strength">
           <ZenNumber :model-value="spec.network.base_strength ?? 1" :min="-4" :max="4" :step="0.05" :precision="2" @update:model-value="spec.network.base_strength = $event" />
+        </ZenField>
+        <ZenField v-if="targets === 'custom'" label="Layer patterns" stack class="full-row" tip="One per line: a layer gets an adapter when its name matches any of them (regular expressions over names like diffusion_model.layers.30.proj.ffn_down). The Blocks and Skip blocks below still apply">
+          <textarea v-model.lazy="patterns" class="patterns mono" rows="2" spellcheck="false" placeholder="proj\.ffn_(up_gate|down)$" />
         </ZenField>
         <ZenField label="Blocks" stack tip="Only these transformer blocks get adapters, e.g. 20-49: the backward stops at the first one, so steps are quicker, and the early blocks (layout, motion) stay untouched. Empty = every block">
           <ZenInput :model-value="spec.network.blocks ?? ''" placeholder="all" @update:model-value="spec.network.blocks = String($event).trim()" />
@@ -304,6 +315,16 @@ const targets = computed({
 
 <style scoped src="./form.css"></style>
 <style scoped>
+.patterns {
+  width: 100%;
+  resize: vertical;
+  font-size: 12px;
+  color: var(--zen-text);
+  background: var(--zen-field-bg);
+  border: 1px solid var(--zen-border);
+  border-radius: var(--zen-radius);
+  padding: 6px 10px;
+}
 .adv {
   display: flex;
   flex-direction: column;
