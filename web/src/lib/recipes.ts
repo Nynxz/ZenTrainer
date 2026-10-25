@@ -122,24 +122,31 @@ export const RECIPES: Recipe[] = [
     model: 'MOSS Image',
     kind: 'character',
     title: 'MOSS Image · Character',
-    blurb: 'A person or character on MOSS Image Base, previewed on MOSS SFT.',
+    blurb: 'A person or character on MOSS Image Base. Trains only where a likeness lives: over twice as fast.',
     photos: character(),
     cover: { from: '#22c55e', to: '#064e3b', icon: 'mdi mdi-account-heart-outline' },
     files: {
-      diffusion_models: ['moss_image_base_bf16.safetensors'],
+      diffusion_models: ['moss_image_base_int8_convrot.safetensors', 'moss_image_base_bf16.safetensors'],
       text_encoders: ['qwen3.5_9b_int8_convrot.safetensors'],
       vae: ['flux2-vae.safetensors'],
     },
-    steps: { perPhoto: 40, min: 1000, max: 1500 },
+    // validated: LoKr factor 4 on the MLPs of blocks 24-41 (36 of 176 layers, where a full run's
+    // change concentrated) reached likeness 0.63 at 1750 steps on 37 photos, 87% of the set's own
+    // 0.72, against ~0.67 for every layer. 0.2 s a step against 0.53, a 170 MB file against 620 MB
+    steps: { perPhoto: 50, min: 1250, max: 2000 },
     caption: { prompt: NL, subject: true },
     spec: {
-      dataset: { resolution: 1024 },
-      network: { rank: 16 },
-      optim: { optimizer: 'AdamW', learning_rate: 1e-4, scheduler: 'constant' },
-      objective: { timesteps: 'uniform', shift: 2 },
-      samples: { steps: 25, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple', model_name: 'moss_image_sft_int8_convrot.safetensors' },
+      dataset: { resolution: 1024, stages: [{ resolution: 768, until: 0.6 }], stage_blend: 0.2 },
+      network: { algorithm: 'LoKr', rank: 4, targets: 'mlp', blocks: '24-41' },
+      // Automagic v3 stalls on MOSS without a floor under its rate
+      optim: { optimizer: 'Automagic3', learning_rate: 5e-4, scheduler: 'constant', ema: 0.98, lr_floor: 0.5 },
+      objective: { timesteps: 'logit_normal', shift: 0, bias: 'high_noise', spread: true },
+      memory: { checkpoint_skip: 4 },
+      // previews on the trained Base model, as the likeness above was measured
+      samples: { steps: 25, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple', slg_mode: 'uncond', slg_layers: [22], slg_start: 0 },
     },
     samples: ['[trigger], a close up portrait photo, soft window light', '[trigger] sitting in a cafe, candid photo'],
+    validated: true,
   },
   {
     id: 'fibo2-character',

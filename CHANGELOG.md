@@ -135,6 +135,11 @@ and Manager show.
 - **Keeping checkpoints by likeness needs Check faces:** likeness is only scored for a dataset
   with faces on, and without scores "Best likeness" kept every checkpoint. Such a run is now
   refused with what to turn on, and the form says so on those choices before you start.
+- **MOSS Image · Character recipe, validated and over twice as fast:** it now trains a LoKr on
+  only the MLPs of blocks 24-41, where a full run's change concentrated (36 of 176 layers), with
+  Automagic v3, a 768 px start and int8 weights where available. On 37 photos it reached 87% of
+  the dataset's own likeness at 1750 steps, against about 93% for every layer, at 0.2 s a step
+  instead of 0.53 and a 170 MB file instead of 620 MB. Samples preview on the trained Base model.
 
 ## 0.3.0 (2026-10-25)
 
