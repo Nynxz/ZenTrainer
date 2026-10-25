@@ -171,6 +171,8 @@ def _disk_samples(spec, items, variants, cap_index, sizes, vae, folder: Path, pr
         logging.info("[ZenTrainer] disk cache: %d of %d pictures already encoded, carrying on",
                      sum(s is not None for s in samples), len(items))
 
+    mode = pixel_mode(vae)
+
     def load(n: int, size):
         it = items[n]
         inputs = _inputs_of(spec, it)
@@ -183,7 +185,8 @@ def _disk_samples(spec, items, variants, cap_index, sizes, vae, folder: Path, pr
                 logging.warning("[ZenTrainer] %s is a different shape from %s: it's cropped to match, which cuts "
                                 "part of it off", f"{c.parent.name}/{c.name}", it.path.name)
         mask = load_image(it.mask, size, mode="L")[None, None] if it.mask else None
-        return load_image(it.path, size), [load_image(c, size) if c is not None else None for c in inputs], mask
+        return (load_image(it.path, size, mode), [load_image(c, size, mode) if c is not None else None for c in inputs],
+                mask)
 
     batches = [(size, ns[i:i + DISK_BATCH]) for size, ns in todo.items() for i in range(0, len(ns), DISK_BATCH)]
     done = len(items) - sum(len(ns) for ns in todo.values())
@@ -398,9 +401,16 @@ def pick_bucket(w: int, h: int, sizes: list[tuple[int, int]]) -> tuple[int, int]
     return min(sizes, key=lambda s: (abs(math.log(s[0] / s[1]) - ar), -s[0] * s[1]))
 
 
+def pixel_mode(vae) -> str:
+    """How pictures reach this VAE: "RGBA" for a four-channel one (Qwen Image 2.1's), so a
+    transparent PNG trains as transparent; "RGB" for the rest, which never see alpha. An RGB file
+    loaded as RGBA gets alpha 1, as ComfyUI pads it."""
+    return "RGBA" if getattr(vae, "output_channels", 3) == 4 else "RGB"
+
+
 def load_image(path: Path, size: tuple[int, int], mode: str = "RGB") -> torch.Tensor:
-    """Resize to cover `size`, center-crop. Returns (H, W, 3) float in [0, 1], or (H, W)
-    for mode "L" (masks get exactly the same geometry as their image)."""
+    """Resize to cover `size`, center-crop. Returns (H, W, 3) float in [0, 1], (H, W, 4) for
+    mode "RGBA", or (H, W) for mode "L" (masks get exactly the same geometry as their image)."""
     from PIL import Image, ImageOps
 
     import numpy as np
@@ -521,8 +531,10 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
         variants.append(texts)
         it.caption = " ||| ".join(texts)  # only feeds the cache key
 
-    # H3 builds references/keyframes its own way; other runs keep their caches
-    key = cache_key(items, spec, encoder_id + ("|h3" if h3 and (spec.edit or spec.keyframes) else ""))
+    # H3 builds references/keyframes its own way, a four-channel VAE encodes alpha (caches from
+    # before it was kept were opaque); other runs keep their caches
+    key = cache_key(items, spec, encoder_id + ("|h3" if h3 and (spec.edit or spec.keyframes) else "")
+                    + ("|rgba" if pixel_mode(vae) == "RGBA" else ""))
     path = cache_dir / key
     texts = TextCache(cache_dir, encoder_id)
     if (path / "dataset.pt").is_file():
@@ -601,7 +613,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
         with Image.open(it.path) as im:
             w, h = im.size
         size = pick_bucket(w, h, sizes)
-        latent = _encode(vae, load_image(it.path, size).unsqueeze(0), it.path)
+        latent = _encode(vae, load_image(it.path, size, pixel_mode(vae)).unsqueeze(0), it.path)
         mask = None
         if it.mask:
             m = load_image(it.mask, size, mode="L")[None, None]  # (1, 1, H, W)
@@ -622,7 +634,8 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
                     logging.warning("[ZenTrainer] %s is a different shape from %s: it's cropped to match, which "
                                     "cuts part of it off%s", f"{c.parent.name}/{c.name}", it.path.name,
                                     " (channel inputs line up pixel for pixel: make it the same shape)" if concat else "")
-            refs = [_encode(vae, load_image(c, size).unsqueeze(0), c) if c is not None else None for c in inputs]
+            refs = [_encode(vae, load_image(c, size, pixel_mode(vae)).unsqueeze(0), c) if c is not None else None
+                    for c in inputs]
             if spec.edit_grounded and not concat:  # channel inputs reach the model, not its encoder
                 grounded.append((len(samples), it.controls, variants[n][0]))
         samples.append(Sample(latent, idx[0], mask, idx, refs=refs))

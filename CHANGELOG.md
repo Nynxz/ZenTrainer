@@ -121,6 +121,12 @@ and Manager show.
   card it checks the steps didn't get slower, but it compared raw step times, and video clips of
   different lengths take very different times (1.4 to 3 s a step on H3). It often "measured" a
   slowdown and moved the weights back off. It now compares steps of the same shape.
+- **Transparency on Qwen Image 2.1:** its VAE has an alpha channel, but training gave it every
+  picture as RGB, so it saw transparent PNGs as fully opaque (whatever colour sat under the
+  transparent parts showing). Targets and edit inputs now keep their alpha for a four-channel VAE,
+  so an edit LoRA can learn to cut a subject out onto transparency, and its samples save as PNGs
+  with it. Such a dataset encodes again once. Grounded edits show the vision encoder transparent
+  pictures over white, as ComfyUI's Qwen edit node does, on every model.
 
 ## 0.3.0 (2026-10-25)
 

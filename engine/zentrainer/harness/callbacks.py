@@ -757,7 +757,7 @@ def _control(t, it, comp: int):
 
     from PIL import Image
 
-    from .data import load_image
+    from .data import load_image, pixel_mode
 
     path = _control_path(t, it.control)
     with Image.open(path) as im:
@@ -767,7 +767,7 @@ def _control(t, it, comp: int):
     w = max(step, round((area * w0 / h0) ** 0.5 / step) * step)
     h = max(step, round((area * h0 / w0) ** 0.5 / step) * step)
     with torch.no_grad():
-        ref = t.models.vae.encode(load_image(path, (w, h)).unsqueeze(0))[:1].detach()
+        ref = t.models.vae.encode(load_image(path, (w, h), pixel_mode(t.models.vae)).unsqueeze(0))[:1].detach()
     return ref, dataclasses.replace(it, width=w, height=h)
 
 
@@ -910,13 +910,14 @@ def mm_empty() -> None:
 
 
 def _strip(shots: list, strengths) -> "Image.Image":
-    """Pictures (H, W, 3 in 0-1) side by side, each under its strength: a slider's sample."""
+    """Pictures (H, W, 3 or 4 in 0-1) side by side, each under its strength: a slider's sample.
+    Four-channel pictures keep their transparency (the labels and gaps stay solid)."""
     from PIL import Image, ImageDraw, ImageFont
 
     pics = [Image.fromarray((x.clamp(0, 1).cpu().numpy() * 255).astype("uint8")) for x in shots]
     w, h = pics[0].size
     band, gap = max(24, h // 16), max(4, w // 128)
-    out = Image.new("RGB", (len(pics) * w + (len(pics) - 1) * gap, h + band), (18, 18, 20))
+    out = Image.new(pics[0].mode, (len(pics) * w + (len(pics) - 1) * gap, h + band), (18, 18, 20, 255))
     draw = ImageDraw.Draw(out)
     try:
         font = ImageFont.load_default(size=int(band * 0.6))

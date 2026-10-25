@@ -125,6 +125,17 @@ def grounded_template(clip, n: int) -> str | None:
     return base.replace("user\n", "user\n" + VISION * n, 1)
 
 
+def flatten(im):
+    """An RGB picture of `im`, its transparent parts over white: what a vision encoder is shown
+    (ComfyUI's Qwen edit node does the same; the VAE gets all four channels)."""
+    from PIL import Image
+
+    if im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info):
+        im = im.convert("RGBA")
+        return Image.alpha_composite(Image.new("RGBA", im.size, (255, 255, 255, 255)), im).convert("RGB")
+    return im.convert("RGB")
+
+
 def grounding_pixels(path, clip=None) -> torch.Tensor:
     """An input picture as the text encoder sees it: whole (never cropped to the target), longest
     side at most GROUNDING_PX (MOSS: moss_grounding). (1, H, W, 3) in [0, 1]."""
@@ -132,7 +143,7 @@ def grounding_pixels(path, clip=None) -> torch.Tensor:
     from PIL import Image, ImageOps
 
     with Image.open(path) as im:
-        im = ImageOps.exif_transpose(im).convert("RGB")
+        im = flatten(ImageOps.exif_transpose(im))
         if is_moss(clip):
             return moss_grounding(torch.from_numpy(np.asarray(im, dtype=np.float32) / 255.0)[None])
         if max(im.size) > GROUNDING_PX:
