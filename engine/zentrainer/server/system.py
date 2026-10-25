@@ -31,8 +31,10 @@ def sample() -> dict:
     try:
         import torch
 
+        from .. import vram
+
         if torch.cuda.is_available():
-            free, total = torch.cuda.mem_get_info()
+            free, total = vram.mem_get_info()
             s["vram_total"] = total
             s["vram_used"] = total - free
             s["torch_allocated"] = torch.cuda.memory_allocated()

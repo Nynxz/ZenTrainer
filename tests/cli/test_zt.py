@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("rich")
 
-from zt import api, ports, repo, update, web  # noqa: E402
+from zt import api, comfy, ports, repo, update, web  # noqa: E402
 
 LOCK = {"comfyui": {"repo": "x", "ref": "x", "describe": "x"}, "python": "3.12",
         "torch": {"version": "2.0", "variants": {"cpu": {}}}, "port": 8189}
@@ -159,3 +159,79 @@ def test_follow_reads_only_new_rows_from_either_server():
 def test_settings_on_the_command_line():
     spec = api.apply_sets({"optim": {"lr": 1}}, ["optim.lr=0.0002", "samples.prompts=[\"a cat\"]", "name=plain"])
     assert spec == {"optim": {"lr": 0.0002}, "samples": {"prompts": ["a cat"]}, "name": "plain"}
+
+
+CLINFO = """Number of platforms:\t\t\t\t 1
+  Platform Vendor:\t\t\t\t Advanced Micro Devices, Inc.
+  Device Type:\t\t\t\t\t CL_DEVICE_TYPE_GPU
+  Board name:\t\t\t\t\t AMD Radeon RX 7900 XTX
+  Global memory size:\t\t\t\t 25753026560
+  Name:\t\t\t\t\t\t gfx1100
+  Vendor:\t\t\t\t\t Advanced Micro Devices, Inc.
+  Device Type:\t\t\t\t\t CL_DEVICE_TYPE_CPU
+  Name:\t\t\t\t\t\t AMD Ryzen 9 7950X
+  Vendor:\t\t\t\t\t AuthenticAMD
+"""
+
+
+def test_amd_gpus_are_found_from_the_driver_alone(monkeypatch, tmp_path):
+    assert comfy.parse_clinfo(CLINFO) == [("AMD Radeon RX 7900 XTX", 25753026560, "gfx1100")]
+    for node, props in {"0": "cpu_cores_count 16\nsimd_count 0\ngfx_target_version 0\n",
+                        "1": "simd_count 192\ngfx_target_version 90010\n",
+                        "2": "simd_count 96\ngfx_target_version 120001\n"}.items():
+        (tmp_path / node / "mem_banks" / "0").mkdir(parents=True)
+        (tmp_path / node / "properties").write_text(props)
+        (tmp_path / node / "mem_banks" / "0" / "properties").write_text(f"heap_type 1\nsize_in_bytes {int(node) << 34}\n")
+    monkeypatch.setattr(comfy, "KFD_NODES", tmp_path)
+    monkeypatch.setattr(repo, "WINDOWS", False)
+    assert comfy.amd_gpus() == [("AMD Radeon (gfx90a)", 1 << 34, "gfx90a"), ("AMD Radeon (gfx1201)", 2 << 34, "gfx1201")]
+
+
+def test_amd_torch_comes_with_each_gpus_kernels(monkeypatch):
+    req = {"index": "https://amd/", "devices": ["gfx1100", "gfx1201"], "torchvision": "0.28.0", "torchaudio": "2.11.0.3"}
+    found = []
+    monkeypatch.setattr(comfy, "amd_gpus", lambda: found)
+    found[:] = [("a", 0, "gfx1201"), ("b", 0, "gfx1100"), ("c", 0, "gfx1201")]
+    assert comfy.torch_packages("rocm10.1.0", req, "2.13.0") == [
+        "torch[device-gfx1100,device-gfx1201]==2.13.0+rocm10.1.0",
+        "torchvision[device-gfx1100,device-gfx1201]==0.28.0+rocm10.1.0", "torchaudio==2.11.0.3+rocm10.1.0",
+        "--index-url", "https://pypi.org/simple", "--extra-index-url", "https://amd/"]
+    found[:] = []  # --torch rocm... with no AMD GPU seen: every GPU's kernels
+    assert comfy.torch_packages("rocm10.1.0", req, "2.13.0")[0] == "torch[device-all]==2.13.0+rocm10.1.0"
+    found[:] = [("old", 0, "gfx906")]
+    with pytest.raises(SystemExit):
+        comfy.torch_packages("rocm10.1.0", req, "2.13.0")
+    assert comfy.torch_packages("cu130", {}, "2.13.0") == [
+        "torch==2.13.0", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu130"]
+
+
+def test_a_stuck_clinfo_means_no_amd_gpu(monkeypatch):
+    def run(cmd, **kw):
+        assert kw["timeout"] == 10
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+    monkeypatch.setattr(repo, "WINDOWS", True)
+    monkeypatch.setattr(comfy.shutil, "which", lambda name, **kw: "clinfo")
+    monkeypatch.setattr(comfy.subprocess, "run", run)
+    assert comfy.amd_gpus() == []
+
+
+def test_comfyui_runs_on_the_amd_gpu_torch_has_kernels_for(monkeypatch):
+    req = {"index": "https://amd/", "devices": ["gfx1100", "gfx1200"]}
+    found, hip = [], []
+    monkeypatch.setattr(comfy, "amd_gpus", lambda: found)
+    monkeypatch.setattr(comfy, "hip_devices", lambda py: hip)
+    found[:] = [("r", 0, "gfx1200"), ("igpu", 0, "gfx1036")]
+    hip[:] = ["gfx1036", "gfx1200"]
+    assert comfy.amd_device(req, Path("py")) == 1
+    hip[:] = ["gfx1200", "gfx1036"]  # still kept off the unsupported one, though it isn't the default
+    assert comfy.amd_device(req, Path("py")) == 0
+    hip[:] = ["gfx1200"]  # HIP doesn't list it at all
+    assert comfy.amd_device(req, Path("py")) is None
+    hip[:] = []  # torch couldn't say: left to the user
+    assert comfy.amd_device(req, Path("py")) is None
+    found[:] = [("a", 0, "gfx1100"), ("b", 0, "gfx1200")]
+    monkeypatch.setattr(comfy, "hip_devices", lambda py: pytest.fail("no need to ask torch"))
+    assert comfy.amd_device(req, Path("py")) is None
+    assert comfy.amd_device({}, Path("py")) is None
+    monkeypatch.setattr(repo, "local", lambda: {"cuda_device": 1})
+    assert comfy.args(8189) == ["--port", "8189", "--cuda-device", "1"]

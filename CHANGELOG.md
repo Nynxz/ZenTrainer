@@ -5,6 +5,16 @@ and Manager show.
 
 ## Unreleased
 
+### AMD
+- **AMD GPUs on Windows and Linux:** `zt setup` finds a Radeon or Instinct card from its display
+  driver alone and installs PyTorch's ROCm build from AMD's wheel index, with only that GPU's
+  kernels; no ROCm or HIP SDK install is needed. The ROCm build the setup used to pick no longer
+  existed for the pinned PyTorch, so an AMD machine set up before this one gets the new build on
+  `zt update`. `zt doctor` and first-run setup list AMD GPUs.
+- **Fitting weights in VRAM on Windows with an AMD GPU** now counts what the desktop and other
+  programs use: ROCm only reported ZenTrainer's own memory there, so the fit could plan with VRAM
+  that was already taken. The memory chart shows the whole card too.
+
 ### Cloud
 - **Train on a rented GPU:** a container image (`docker/`) for RunPod and other cloud GPUs, or any
   machine with Docker. The app sits behind a password, ComfyUI is never reachable from outside,

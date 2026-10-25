@@ -50,7 +50,7 @@ def parser() -> argparse.ArgumentParser:
                    help="an existing ComfyUI install or models folder to use in place (repeatable)")
     s.add_argument("--extra-model-paths", action="append", metavar="YAML",
                    help="a ComfyUI extra_model_paths.yaml to use as-is (repeatable)")
-    s.add_argument("--torch", help="torch build: cu130, cu128, cu126, rocm6.4, cpu (default: detect)")
+    s.add_argument("--torch", help="torch build: cu130, cu128, cu126, rocm10.1.0, cpu (default: detect)")
     s.add_argument("--zenkit", metavar="DIR", help="link a ComfyUI-ZenKit checkout for its themes")
     s.add_argument("--build-web", action="store_true", help="rebuild web/dist even if it's current")
 

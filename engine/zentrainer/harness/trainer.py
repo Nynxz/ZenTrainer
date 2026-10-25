@@ -18,7 +18,7 @@ from typing import Any
 
 import torch
 
-from .. import events, paths
+from .. import events, paths, vram
 from ..spec import TrainSpec, slugify
 from . import control as control_mod
 from . import data, models, optim
@@ -894,7 +894,7 @@ class Trainer:
         if not self._auto_vram():
             return
         torch.cuda.empty_cache()  # the weights go into clean space, not between cached fragments
-        free, total = torch.cuda.mem_get_info()
+        free, total = vram.mem_get_info()
         others = total - free - torch.cuda.memory_reserved()
         spare = total - others - self._peak - TIGHTEN_MARGIN
         patcher = self.models.patcher

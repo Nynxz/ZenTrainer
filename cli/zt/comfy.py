@@ -79,19 +79,61 @@ def driver_cuda() -> tuple[int, int] | None:
 
 
 def gpus() -> list[tuple[str, int]]:
-    """Each NVIDIA GPU's name and memory in bytes."""
+    """Each NVIDIA and AMD GPU's name and memory in bytes."""
     nvml = _nvml()
     if not nvml:
-        return []
+        return [(name, mem) for name, mem, _ in amd_gpus()]
     try:
         out = []
         for i in range(nvml.nvmlDeviceGetCount()):
             h = nvml.nvmlDeviceGetHandleByIndex(i)
             name = nvml.nvmlDeviceGetName(h)
             out.append((name.decode() if isinstance(name, bytes) else name, nvml.nvmlDeviceGetMemoryInfo(h).total))
-        return out
+        return out + [(name, mem) for name, mem, _ in amd_gpus()]
     finally:
         nvml.nvmlShutdown()
+
+
+KFD_NODES = Path("/sys/class/kfd/kfd/topology/nodes")
+
+
+def amd_gpus() -> list[tuple[str, int, str]]:
+    """Each AMD GPU's name, memory in bytes and target (gfx1100, ...), from its display driver alone:
+    ROCm's PyTorch wheels bring their own runtime, so no ROCm install is needed or looked for."""
+    if repo.WINDOWS:
+        clinfo = shutil.which("clinfo")  # the Adrenalin driver installs it
+        try:  # it also runs on NVIDIA machines, where a stuck OpenCL driver mustn't hang setup
+            out = subprocess.run([clinfo], capture_output=True, text=True, timeout=10).stdout if clinfo else ""
+        except subprocess.TimeoutExpired:
+            out = ""
+        return parse_clinfo(out)
+    out = []
+    for node in sorted(KFD_NODES.glob("*"), key=lambda p: int(p.name) if p.name.isdigit() else 0):
+        props = parse_kfd_properties((node / "properties").read_text() if (node / "properties").is_file() else "")
+        if not props.get("simd_count") or not props.get("gfx_target_version"):
+            continue  # a CPU node
+        v = props["gfx_target_version"]  # major*10000 + minor*100 + stepping, the stepping printed in hex
+        gfx = "gfx%d%d%x" % (v // 10000, (v // 100) % 100, v % 100)
+        mem = sum(parse_kfd_properties(p.read_text()).get("size_in_bytes", 0)
+                  for p in (node / "mem_banks").glob("*/properties"))
+        out.append((f"AMD Radeon ({gfx})", mem, gfx))
+    return out
+
+
+def parse_kfd_properties(text: str) -> dict[str, int]:
+    return {k: int(v) for k, v in (line.split() for line in text.splitlines() if len(line.split()) == 2) if v.isdigit()}
+
+
+def parse_clinfo(text: str) -> list[tuple[str, int, str]]:
+    out = []
+    for block in re.split(r"\n\s*Device Type:", text)[1:]:
+        gfx = re.search(r"^\s*Name:\s*(gfx[0-9a-f]+)", block, re.M)
+        if not block.lstrip().startswith("CL_DEVICE_TYPE_GPU") or "Advanced Micro Devices" not in block or not gfx:
+            continue
+        board = re.search(r"^\s*Board name:\s*(.+)$", block, re.M)
+        mem = re.search(r"^\s*Global memory size:\s*(\d+)", block, re.M)
+        out.append((board[1].strip() if board else "AMD Radeon", int(mem[1]) if mem else 0, gfx[1]))
+    return out
 
 
 def pick_torch(variants: dict) -> str:
@@ -103,9 +145,52 @@ def pick_torch(variants: dict) -> str:
                 if cuda >= (major, minor):
                     return name
         ui.die(f"NVIDIA driver reports CUDA {cuda[0]}.{cuda[1]}, older than any pinned torch build; update the driver")
-    if shutil.which("rocminfo") and any(v.startswith("rocm") for v in variants):
-        return next(v for v in variants if v.startswith("rocm"))
+    rocm = next((v for v in variants if v.startswith("rocm")), None)
+    if rocm and amd_gpus():
+        return rocm
     return "cpu"
+
+
+def torch_packages(variant: str, req: dict, version: str) -> list[str]:
+    """What uv installs for a torch build. AMD's index serves one torch for every GPU, and each GPU's
+    kernels as an extra (device-gfx1100, ...). Its torchvision and torchaudio don't name the torch they
+    were built for, so comfy.lock pins them. uv prefers the extra index, so everything AMD serves comes
+    from AMD and only the rest from PyPI."""
+    if "index" not in req:
+        return [f"torch=={version}", "torchvision", "torchaudio", "--index-url", f"https://download.pytorch.org/whl/{variant}"]
+    targets = [gfx for _, _, gfx in amd_gpus()]
+    devices = sorted({f"device-{gfx}" for gfx in targets if gfx in req["devices"]})
+    if targets and not devices:
+        ui.die(f"this AMD GPU ({', '.join(targets)}) has no ROCm PyTorch build; use --torch cpu to set up without it")
+    extra = f"[{','.join(devices or ['device-all'])}]"
+    return [f"torch{extra}=={version}+{variant}", f"torchvision{extra}=={req['torchvision']}+{variant}",
+            f"torchaudio=={req['torchaudio']}+{variant}", "--index-url", "https://pypi.org/simple",
+            "--extra-index-url", req["index"]]
+
+
+def amd_device(req: dict, py: Path) -> int | None:
+    """With an AMD GPU that AMD's torch has no kernels for beside one it has (an older APU's graphics
+    next to a Radeon, say), the supported one's index for ComfyUI's --cuda-device, which otherwise
+    takes device 0 whichever that is. The index comes from torch, as HIP's order needn't be clinfo's."""
+    if "devices" not in req or all(gfx in req["devices"] for *_, gfx in amd_gpus()):
+        return None
+    found = hip_devices(py)
+    ok = [i for i, gfx in enumerate(found) if gfx in req["devices"]]
+    if not ok:
+        ui.warn("an AMD GPU here has no ROCm PyTorch kernels, and torch didn't name the one that has: "
+                "if ComfyUI picks the wrong one, start it with `zt start -- --cuda-device N`")
+        return None
+    return ok[0] if len(ok) < len(found) else None
+
+
+def hip_devices(py: Path) -> list[str]:
+    """Each GPU's target (gfx1100, ...) in the order the installed torch numbers them."""
+    code = ("import torch; print(*(torch.cuda.get_device_properties(i).gcnArchName.split(':')[0]"
+            " for i in range(torch.cuda.device_count())))")
+    try:
+        return subprocess.run([py, "-I", "-c", code], capture_output=True, text=True, timeout=120).stdout.split()
+    except subprocess.TimeoutExpired:
+        return []
 
 
 # ---- where models come from ----------------------------------------------------------------------
@@ -157,13 +242,16 @@ def setup(models_from: list[str] | None = None, extra_model_paths: list[str] | N
     ui.run(["git", "-C", repo.COMFY, "checkout", "--quiet", ref])
 
     # 2. its own environment
-    variant = torch or pick_torch(L["torch"]["variants"])
+    variants = L["torch"]["variants"]
+    if torch and torch not in variants:  # a build an older comfy.lock pinned
+        ui.warn(f"comfy.lock no longer has the {torch} torch build: picking one again")
+        torch = None
+    variant = torch or pick_torch(variants)
     py = repo.venv_python()
     if not py.is_file():
         ui.run([uv_bin, "venv", "--python", L["python"], repo.COMFY / ".venv"])
     tv = L["torch"]["version"]
-    ui.run([uv_bin, "pip", "install", "--python", py, f"torch=={tv}", "torchvision", "torchaudio",
-            "--index-url", f"https://download.pytorch.org/whl/{variant}"])
+    ui.run([uv_bin, "pip", "install", "--python", py, *torch_packages(variant, variants[variant], tv)])
     ui.run([uv_bin, "pip", "install", "--python", py, "-r", repo.COMFY / "requirements.txt"])
 
     # 3. the engine, and optionally ZenKit
@@ -185,6 +273,11 @@ def setup(models_from: list[str] | None = None, extra_model_paths: list[str] | N
         gen = models_yaml(sources)
         cfg["extra_model_paths"] = [str(y) for y in yamls] + install_configs(sources) + ([str(gen)] if gen else [])
     cfg.update(torch=variant, ref=ref)
+    cfg.pop("cuda_device", None)
+    device = amd_device(variants[variant], py)
+    if device is not None:
+        cfg["cuda_device"] = device
+        ui.warn(f"an AMD GPU here has no ROCm PyTorch kernels: ComfyUI will use GPU {device}")
     repo.save_local(cfg)
 
     # 5. the web app: kept, fetched prebuilt, or built
@@ -240,8 +333,11 @@ EXTRAS = {
 
 def args(port: int) -> list[str]:
     cmd = ["--port", str(port)]  # ComfyUI's own input/, output/, user/ folders
-    for y in repo.local().get("extra_model_paths", []):
+    cfg = repo.local()
+    for y in cfg.get("extra_model_paths", []):
         cmd += ["--extra-model-paths-config", y]
+    if "cuda_device" in cfg:
+        cmd += ["--cuda-device", str(cfg["cuda_device"])]
     return cmd
 
 
@@ -383,7 +479,8 @@ def doctor() -> None:
     uv_ver = subprocess.run([uv_bin, "--version"], capture_output=True, text=True).stdout.strip() if uv_bin else ""
     row("uv", bool(uv_bin), f"{uv_ver}  [dim]{uv_bin}[/]" if uv_bin else "not found")
     cuda = driver_cuda()
-    row("driver", bool(cuda) or None, "CUDA %d.%d" % cuda if cuda else "no NVIDIA driver found")
+    if cuda or not amd_gpus():
+        row("driver", bool(cuda) or None, "CUDA %d.%d" % cuda if cuda else "no NVIDIA or AMD GPU found")
     for i, (name, mem) in enumerate(gpus()):
         row(f"gpu {i}", True, f"{name}, {mem / 2**30:.0f} GB")
     if repo.venv_python().is_file():

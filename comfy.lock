@@ -17,7 +17,38 @@
       "cu126": {
         "min_driver_cuda": "12.6"
       },
-      "rocm6.4": {},
+      "rocm10.1.0": {
+        "index": "https://stable.repo.amd.com/rocm/whl-next/",
+        "torchvision": "0.28.0",
+        "torchaudio": "2.11.0.3",
+        "devices": [
+          "gfx908",
+          "gfx90a",
+          "gfx942",
+          "gfx950",
+          "gfx1010",
+          "gfx1011",
+          "gfx1012",
+          "gfx1030",
+          "gfx1031",
+          "gfx1032",
+          "gfx1033",
+          "gfx1034",
+          "gfx1035",
+          "gfx1036",
+          "gfx1100",
+          "gfx1101",
+          "gfx1102",
+          "gfx1103",
+          "gfx1150",
+          "gfx1151",
+          "gfx1152",
+          "gfx1153",
+          "gfx1200",
+          "gfx1201",
+          "gfx1250"
+        ]
+      },
       "cpu": {}
     }
   },
