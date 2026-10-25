@@ -7,6 +7,7 @@ not a change to the loop.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import json
 import logging
@@ -35,14 +36,30 @@ class Callback:
     def on_end(self, t: Trainer, status: str) -> None: ...
 
 
+# it/s (and so the ETA) over this many steps: while a run blends into a new resolution its steps
+# come at both sizes, and a rate of the last few steps jumped between the two
+RATE_STEPS = 50
+
+
+def rate(times) -> float:
+    """Steps a second over these step times: their count over their sum, leaving out any over 5x
+    their median (a compile, or a recompile at a new shape), which isn't the run's pace."""
+    ts = [t for t in times if t > 0]
+    if not ts:
+        return 0.0
+    cap = 5 * sorted(ts)[len(ts) // 2]
+    kept = [t for t in ts if t <= cap]
+    return len(kept) / sum(kept)
+
+
 class Metrics(Callback):
     """One row per optimizer step. `train_time` counts only optimizer steps; `elapsed` is
-    wall-clock for this session; `it_s` is from the step itself, so a sample render or a
-    validation pass doesn't show up as a slowdown."""
+    wall-clock for this session; `it_s` is from the steps themselves (the last RATE_STEPS), so a
+    sample render or a validation pass doesn't show up as a slowdown."""
 
     def __init__(self):
         self._t0 = 0.0
-        self._rate: float | None = None
+        self._times: collections.deque[float] = collections.deque(maxlen=RATE_STEPS)
 
     def on_start(self, t):
         self._t0 = time.monotonic()
@@ -50,8 +67,7 @@ class Metrics(Callback):
     def on_step(self, t):
         now = time.monotonic()
         dt = t.last_step_seconds or 0.0
-        inst = 1.0 / dt if dt > 0 else 0.0
-        self._rate = inst if self._rate is None else 0.8 * self._rate + 0.2 * inst  # smoothed
+        self._times.append(dt)
         row = {
             "run_id": t.run_id,
             "step": t.step,
@@ -63,7 +79,7 @@ class Metrics(Callback):
             "elapsed": round(now - self._t0, 3),
             "train_time": round(t.train_seconds, 3),
             "step_time": round(dt, 4),
-            "it_s": round(self._rate, 3),
+            "it_s": round(rate(self._times), 3),
         }
         if getattr(t.objective, "drawn", None):  # each sample's [percent, σ, plain loss]: the noise chart
             row["drawn"] = [[round(p, 4), round(s, 5), round(v, 5)] for p, s, v in t.objective.drawn]

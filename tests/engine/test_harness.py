@@ -762,3 +762,12 @@ def test_compile_is_auto_unless_set(monkeypatch):
 def test_the_fused_qk_rope_is_auto_by_default():
     assert TrainSpec.from_dict(_spec()).memory.fused_qk_rope is None  # on while the blocks run uncompiled
     assert TrainSpec.from_dict({**_spec(), "memory": {"fused_qk_rope": False}}).memory.fused_qk_rope is False
+
+
+def test_it_s_averages_a_mix_of_step_sizes_and_leaves_out_compiles():
+    from zentrainer.harness.callbacks import rate
+
+    # a resolution blend: steps of 1 s and 2 s in turn read as their average pace, not either one
+    assert rate([1.0, 2.0] * 10) == pytest.approx(20 / 30)
+    assert rate([1.0] * 9 + [40.0]) == pytest.approx(1.0)  # a recompile isn't the pace
+    assert rate([]) == 0.0 and rate([0.0]) == 0.0

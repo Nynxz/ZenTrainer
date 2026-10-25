@@ -33,6 +33,10 @@ and Manager show.
   faces switch and in Health.
 
 ### Runs
+- **Steadier speed and ETA:** the loss chart's speed line, and the it/s and time left on a run,
+  jumped about while a run blended into a new resolution (its steps come at both sizes then).
+  They're now an average over the last 50 or so steps, leaving out compiles, so they read as the
+  run's actual pace. The chart's line is smoother on runs trained before this too.
 - **Likeness as a share of your photos:** a run's likeness also shows as a percentage of how alike
   the dataset's own photos are to each other (its median in the face report), on the chart, the
   stats, the checkpoints and the recommended checkpoint. A LoRA that caught the face perfectly

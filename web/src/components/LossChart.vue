@@ -5,8 +5,8 @@
 // Crosshair + tooltip on hover. The learning rate, when it changes (warmup, decay, Automagic
 // finding its own), rides on a right-hand axis as ai-toolkit draws it: a thin solid line in
 // the muted ink, with its own legend key and axis labels, so it never reads as a loss.
-// Training speed (a rolling median of the step times, so sample and checkpoint steps don't spike
-// it) is in the tooltip, and a line of its own when switched on; resolution stages are marked on
+// Training speed (steps over their time across a 51-step window: optimizer steps only, so samples
+// and checkpoints don't dip it, and smooth while a resolution change mixes two step sizes) is in the tooltip, and a line of its own when switched on; resolution stages are marked on
 // the x axis, where the speed changes. Each legend key shows or hides its line; the x axis is
 // steps or the run's time.
 import { maxOf, minOf } from '@/lib/extent'
@@ -168,13 +168,19 @@ const likeY = (v: number) => pad.value.t + (1 - Math.max(0, Math.min(1, v))) * (
 const likePath = computed(() => props.like.map((r, i) => `${i ? 'L' : 'M'}${x(r.step).toFixed(1)},${likeY(r.score).toFixed(1)}`).join(''))
 const likeAt = (step: number) => [...props.like].reverse().find((r) => r.step <= step) ?? null
 
-// speed: each step's seconds, a rolling median over 21 steps (the first, compiling, step left out);
-// as a line it has its own scale from 0 (no axis; the value is on hover), like likeness
+// speed: steps over their seconds across 51 steps (the first, compiling, step left out, and any
+// step over 5x the window's median: a recompile isn't the pace). An average, not a median: while
+// a run blends into a new resolution its steps come at both sizes, and a median jumped between
+// the two. As a line it has its own scale from 0 (no axis; the value is on hover), like likeness
+const SPEED_HALF = 25
 const speed = computed(() => {
   const st = points.value.map((p) => (p.step > 1 && p.step_time ? p.step_time : null))
   return st.map((_, i) => {
-    const w = st.slice(Math.max(0, i - 10), i + 11).filter((v): v is number => v != null).sort((a, b) => a - b)
-    return w.length ? 1 / w[Math.floor(w.length / 2)]! : null
+    const w = st.slice(Math.max(0, i - SPEED_HALF), i + SPEED_HALF + 1).filter((v): v is number => v != null)
+    if (!w.length) return null
+    const cap = 5 * [...w].sort((a, b) => a - b)[Math.floor(w.length / 2)]!
+    const kept = w.filter((v) => v <= cap)
+    return kept.length / kept.reduce((a, b) => a + b, 0)
   })
 })
 const hasSpeed = computed(() => speed.value.some((v) => v != null))
