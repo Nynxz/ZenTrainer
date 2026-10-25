@@ -72,7 +72,8 @@ def summary() -> list[dict]:
             kept = (stamp, _summary(d, r))
             _summaries[str(d)] = kept
         if kept[1] is not None:
-            out.append({**kept[1], "health": _health(d.name)})  # stats snapshots change on their own
+            # stats snapshots and settings change on their own
+            out.append({**kept[1], "health": _health(d.name), "faces": bool(get_settings(d.name).get("faces"))})
     return out
 
 

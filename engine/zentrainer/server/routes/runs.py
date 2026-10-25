@@ -11,6 +11,7 @@ from ... import presets, sharing, state
 from ...runs.thin import thin
 from .. import jobqueue, system
 from ...harness import control
+from ...harness.keep import faces_missing
 from ...spec import SpecError, TrainSpec, locked_changes, slugify
 from . import common
 from .common import RETRYABLE, _bad, _dequeue, _keep_later, _migrate_states, _queue_session, _remember_client
@@ -69,6 +70,8 @@ def register(server) -> None:
             spec = TrainSpec.from_dict(body.get("spec", {}))
         except (SpecError, TypeError) as e:
             return _bad(str(e))
+        if (why := faces_missing(spec)) is not None:
+            return _bad(why)
 
         store = state.store()
         run_id = store.new_id()
@@ -104,6 +107,8 @@ def register(server) -> None:
             spec.validate()
         except (SpecError, TypeError) as e:
             return _bad(str(e))
+        if (why := faces_missing(spec)) is not None:
+            return _bad(why)
         if resume_edit:
             # through the dataclass so fields added since it was saved compare at their defaults
             changed = locked_changes(TrainSpec.from_dict(store.spec(run_id)).to_dict(), spec.to_dict())

@@ -33,14 +33,20 @@ const loraPlaceHint = computed(() => {
 // ---- bound helpers ---------------------------------------------------------------------------
 // which saves along the way stay on disk (engine harness/keep.py); the best-by rules put samples
 // or validation on every save, so each has a score
-const keepItems = [
-  { value: 'all', label: 'All' },
-  { value: 'latest', label: 'Latest' },
-  { value: 'likeness', label: 'Best likeness' },
-  { value: 'val_loss', label: 'Lowest validation loss' },
-  { value: 'likeness_new_best', label: 'Each new best likeness' },
-  { value: 'val_loss_new_best', label: 'Each new lowest validation loss' },
-]
+// likeness is only scored for a dataset with Check faces on: say so on those choices
+const noFaces = computed(() => !!dataset.value && !dataset.value.faces)
+const keepItems = computed(() => {
+  const later = noFaces.value ? ' (needs Check faces)' : ''
+  return [
+    { value: 'all', label: 'All' },
+    { value: 'latest', label: 'Latest' },
+    { value: 'likeness', label: `Best likeness${later}` },
+    { value: 'val_loss', label: 'Lowest validation loss' },
+    { value: 'likeness_new_best', label: `Each new best likeness${later}` },
+    { value: 'val_loss_new_best', label: 'Each new lowest validation loss' },
+  ]
+})
+const keepNeedsFaces = computed(() => noFaces.value && spec.output.keep.startsWith('likeness'))
 const keepTip =
   'Which saves stay on disk; the rest are deleted as the run goes. The final LoRA, the newest save and saves made by hand or at a stop always stay. ' +
   "Best likeness: its samples' faces against the dataset's (a character, with faces on for its dataset). " +
@@ -157,6 +163,9 @@ const patterns = computed({
         <ZenCombo v-model="spec.output.keep" :items="keepItems" :sorted="false" :searchable="false" />
         <ZenNumber v-if="spec.output.keep !== 'all' && !spec.output.keep.endsWith('_new_best')" v-model="spec.output.keep_count" :min="1" :max="99" :step="1" :precision="0" />
       </div>
+      <p v-if="keepNeedsFaces" class="warn-note">
+        {{ dataset!.folder }} has Check faces off, so its samples get no likeness to rank by: turn it on on the dataset's page (Settings), or keep another way.
+      </p>
     </ZenField>
     <ZenField label="Save LoRAs to" stack class="span-2" :tip="loraPlaceHint">
       <ZenCombo v-model="loraDir" :items="loraPlaceItems" :sorted="false" :searchable="false" :item-height="40" :menu-width="520">
@@ -315,6 +324,11 @@ const patterns = computed({
 
 <style scoped src="./form.css"></style>
 <style scoped>
+.warn-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--zen-warn);
+}
 .patterns {
   width: 100%;
   resize: vertical;

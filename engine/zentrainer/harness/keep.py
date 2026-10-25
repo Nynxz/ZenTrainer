@@ -76,6 +76,18 @@ def _not_new_bests(scheduled: list[dict], score: dict, low: bool, newest: int) -
     return gone
 
 
+def faces_missing(spec) -> str | None:
+    """Why keeping by likeness can't work for this run (a TrainSpec), or None: likeness is only
+    scored for a dataset with faces on, and without scores the rule would keep every checkpoint."""
+    from ..datasets import folders as datasets
+
+    if spec.output.keep.removesuffix("_new_best") == "likeness" and spec.save_every \
+            and not datasets.get_settings(spec.dataset.folder).get("faces"):
+        return (f"keeping checkpoints by likeness needs faces on for the dataset {spec.dataset.folder!r} "
+                "(its page: Settings, Check faces), or keep them another way")
+    return None
+
+
 def remove(row: dict, run_id: str, states_dir: Path) -> int | None:
     """Delete one pruned checkpoint's LoRA and resume state, or None when its LoRA isn't one of
     this run's scheduled saves (<loras>/.../checkpoints/<run_id>/..._stepNNNNNN.safetensors, wherever

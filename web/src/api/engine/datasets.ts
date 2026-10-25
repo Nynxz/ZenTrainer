@@ -80,6 +80,8 @@ export interface DatasetInfo {
   /** how many of `images` are videos */
   videos?: number
   masked?: number
+  /** its Check faces setting: face reports, and likeness for its runs' samples */
+  faces?: boolean
   /** the last stats snapshot's 0-1 scores (captions, consistency, resolution, uniqueness, faces|balance) */
   health?: { scores: Record<string, number>; set: string } | null
   /** pictures with an input in any control set (edit pairs) */

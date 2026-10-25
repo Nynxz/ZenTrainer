@@ -125,3 +125,17 @@ def test_spec_rules_need_their_scores():
         TrainSpec.from_dict(_spec(output={"keep": "likeness_new_best"}))
     with pytest.raises(SpecError, match="validation"):
         TrainSpec.from_dict(_spec(output={"keep": "val_loss_new_best"}, validation={"every": 0}))
+
+
+def test_keeping_by_likeness_needs_faces_on_for_the_dataset(monkeypatch):
+    from zentrainer.datasets import folders
+
+    faces = {"d": False}
+    monkeypatch.setattr(folders, "get_settings", lambda name: {"faces": faces[name]})
+    for rule in ("likeness", "likeness_new_best"):
+        spec = TrainSpec.from_dict(_spec(output={"keep": rule}, samples={"prompts": ["a photo of sks"]}, save_every=100))
+        assert "Check faces" in keep.faces_missing(spec)  # without faces, no scores: it would keep everything
+    faces["d"] = True
+    assert keep.faces_missing(spec) is None
+    faces["d"] = False
+    assert keep.faces_missing(TrainSpec.from_dict(_spec(output={"keep": "latest"}, save_every=100))) is None

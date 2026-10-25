@@ -132,6 +132,9 @@ and Manager show.
   expression a line; Blocks and Skip blocks still apply). A layer that fuses attention and MLP in
   one (Flux's single blocks) only goes with Attention + MLP. A spec with patterns used to show as
   Attention + MLP on the form; it now shows them.
+- **Keeping checkpoints by likeness needs Check faces:** likeness is only scored for a dataset
+  with faces on, and without scores "Best likeness" kept every checkpoint. Such a run is now
+  refused with what to turn on, and the form says so on those choices before you start.
 
 ## 0.3.0 (2026-10-25)
 

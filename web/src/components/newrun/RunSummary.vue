@@ -27,6 +27,8 @@ const warnings = computed(() => {
     w.push("Sample prompts don't use [trigger].")
   if (Array.isArray(spec.network.targets) && !spec.network.targets.length) w.push('Layers is Custom with no patterns: no layer would get an adapter.')
   const keep = spec.save_every ? spec.output.keep.replace('_new_best', '') : 'all'
+  if (keep === 'likeness' && dataset.value && !dataset.value.faces)
+    w.push(`Keeping by likeness needs Check faces on for ${dataset.value.folder} (its page: Settings): without it, nothing is scored.`)
   if (keep === 'likeness' && !spec.samples.prompts.length)
     w.push('Keeping the best likeness needs sample prompts to score (Samples).')
   if (keep === 'val_loss' && !spec.validation.every) w.push('Keeping the lowest validation loss needs validation on (Advanced training → Validation every).')
