@@ -9,7 +9,7 @@ import types
 import numpy as np
 import pytest
 from zentrainer import paths
-from zentrainer.analysis import faces as analysis
+from zentrainer.analysis import faces as analysis, files
 from zentrainer.datasets import faces
 
 # sha256 of each published file's sorted "key shape" lines (huggingface.co/nynxz/Zentrainer at faces.REVISION)
@@ -48,7 +48,7 @@ def test_the_setting_takes_only_the_models_on_offer(comfy):
 
 
 def test_a_model_is_downloaded_once_its_detector_and_recognition_files_are_there(comfy):
-    d = comfy / "models" / "detection" / analysis.SUBDIR
+    d = comfy / "models" / "detection" / files.SUBDIR
     d.mkdir(parents=True)
     (d / analysis.DETECTOR).write_bytes(b"x")
     assert not analysis.downloaded("buffalo_l")

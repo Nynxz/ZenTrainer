@@ -13,14 +13,11 @@ Hugging Face, downloaded into models/detection/zentrainer/ the first time faces 
 from __future__ import annotations
 
 import threading
-import time
-from pathlib import Path
 
 import numpy as np
 
 REPO = "nynxz/Zentrainer"
 REVISION = "b23239f14dfe1374452340866d66e3faa9b24066"  # the files below as converted: a later commit can't change them
-SUBDIR = "zentrainer"  # under models/detection
 DETECTOR = "det_10g.safetensors"
 SIZES = {DETECTOR: 16914108, "w600k_r50.safetensors": 87203152, "glintr100.safetensors": 130354288}
 # id -> (label, what it is, recognition file, IResNet depth); the first is the default
@@ -50,28 +47,10 @@ def _files(name: str) -> list[str]:
     return [DETECTOR, MODELS[name][2]]
 
 
-def _path(file: str) -> Path | None:
-    import folder_paths
-
-    p = folder_paths.get_full_path("detection", f"{SUBDIR}/{file}")
-    return Path(p) if p else None
-
-
 def downloaded(name: str) -> bool:
-    return all(_path(f) for f in _files(name))
+    from .files import find
 
-
-def _download(file: str) -> Path:
-    """Fetch one file through the app's downloads (progress shows there) and wait for it."""
-    from ..models import downloads
-
-    url = f"https://huggingface.co/{REPO}/resolve/{REVISION}/analysis/faces/{file}"
-    job = downloads.manager().enqueue("faces", "detection", file, url, downloads.target_dir("detection") / SUBDIR, SIZES[file])
-    while job.status in ("queued", "downloading"):
-        time.sleep(0.25)
-    if job.status != "done":
-        raise RuntimeError(f"the face model {file} didn't download ({job.error or job.status})")
-    return Path(job.target) / file
+    return all(find("detection", f) for f in _files(name))
 
 
 def _net(file: str, depth: str | None):
@@ -82,9 +61,11 @@ def _net(file: str, depth: str | None):
     from .nets.iresnet import IResNet
     from .nets.scrfd import SCRFD
 
+    from .files import fetch
+
     with _lock:
         if file not in _nets:
-            path = _path(file) or _download(file)
+            path = fetch("detection", file, REPO, REVISION, f"analysis/faces/{file}", SIZES[file], "faces")
             net = SCRFD() if depth is None else IResNet(depth)
             net.load_state_dict({k: v.float() for k, v in load_file(str(path)).items()})
             _nets[file] = net.eval().to(memory_format=torch.channels_last)
