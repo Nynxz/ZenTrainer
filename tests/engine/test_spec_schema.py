@@ -113,3 +113,9 @@ def test_problems_lists_everything_at_once():
     assert not errors and spec["dataset"]["folder"] == "cats"
     _, errors, _ = S.problems({"spec_version": 2, "model": {"kind": "split"}, "dataset": {"folder": "c"}})
     assert errors and errors[0].startswith("split model needs")  # the rules across fields, once the fields are right
+
+def test_the_webs_field_list_is_current():
+    # regenerate: python -m zentrainer.spec --ts > web/src/api/engine/spec.fields.ts (in engine/);
+    # the web's type check then says which of its fields differ from the engine's
+    doc = Path(__file__).resolve().parents[2] / "web" / "src" / "api" / "engine" / "spec.fields.ts"
+    assert doc.read_text() == S.typescript()

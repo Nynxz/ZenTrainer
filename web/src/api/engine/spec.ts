@@ -1,3 +1,4 @@
+import type { SpecFields } from "./spec.fields"
 // Run specs: the TrainSpec the New run page builds, its defaults, presets. Mirrors engine/zentrainer/spec.py; keep them in step.
 
 export interface TrainSpec {
@@ -136,12 +137,16 @@ export interface TrainSpec {
     int8_forward?: boolean
     tread_steps?: number
     offloading: boolean
+    /** with offloading: VRAM kept free for activations and the LoRA (GB); 0 = auto */
+    vram_headroom?: number
     /** fp8 bases: the backward's matmuls in fp8 too */
     fp8_backward: boolean
     bypass_mode: boolean
     attention: string
   }
   samples: {
+    /** score each sample's face against the dataset's */
+    likeness?: boolean
     every: number
     /** a prompt, or a sample with its own size/length/seed */
     prompts: (string | SamplePrompt)[]
@@ -314,3 +319,14 @@ export function defaultSpec(): TrainSpec {
     slider: { kind: '', pair_set: '', dataset_end: 'positive', positive: '', negative: '', neutral: '', anchors: [], guidance: 3, anchor_weight: 1, directions: 'both' },
   }
 }
+
+// ---- kept in step with the engine's spec -----------------------------------------------------
+// Each section here must have exactly the engine's fields (spec.fields.ts is generated from
+// engine/zentrainer/spec.py): a field added or renamed there fails the type check until it's here.
+type Diff<A, B> = Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>
+type Section<T> = T extends readonly unknown[] ? never : T extends object ? T : never
+/** "section.field" for every field one side has and the other hasn't (never: in step) */
+export type SpecDrift =
+  | { [K in keyof SpecFields]: Section<SpecFields[K]> extends never ? never : `${K & string}.${Diff<Required<TrainSpec[K & keyof TrainSpec]>, SpecFields[K]> & string}` }[keyof SpecFields]
+  | (Diff<TrainSpec, SpecFields> & string)
+export const SPEC_IN_STEP: [SpecDrift] extends [never] ? true : { drift: SpecDrift } = true

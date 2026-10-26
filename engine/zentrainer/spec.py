@@ -806,6 +806,39 @@ def schema_json() -> str:
     return json.dumps({**schema(), "$id": SCHEMA_URL}, indent=2) + "\n"
 
 
+def _ts_type(hint: Any) -> str:
+    origin, args = get_origin(hint), get_args(hint)
+    if origin in (Union, types.UnionType):
+        return " | ".join(_ts_type(a) for a in args)
+    if origin is Literal:
+        return " | ".join(json.dumps(a) for a in args)
+    if origin is list or hint is list:
+        inner = _ts_type(args[0]) if args else "unknown"
+        return f"({inner})[]" if "|" in inner else f"{inner}[]"
+    return {bool: "boolean", int: "number", float: "number", str: "string", dict: "Record<string, unknown>",
+            type(None): "null"}.get(hint, "unknown")
+
+
+def typescript() -> str:
+    """web/src/api/engine/spec.fields.ts: every section's fields and types, which the web's
+    TrainSpec (spec.ts) is checked against when the web app type-checks, so a field added or
+    renamed here can't be missed there (tests check the file is current)."""
+    lines = ["// Generated from engine/zentrainer/spec.py: `python -m zentrainer.spec --ts > web/src/api/engine/spec.fields.ts`",
+             "// in engine/. Don't edit: spec.ts checks its TrainSpec against these at type-check time.", "",
+             "export interface SpecFields {"]
+    top = get_type_hints(TrainSpec)
+    for f in fields(TrainSpec):
+        sub = f.default_factory() if callable(f.default_factory) else None
+        if not is_dataclass(sub):
+            lines.append(f"  {f.name}: {_ts_type(top[f.name])}")
+            continue
+        hints = get_type_hints(type(sub))
+        lines.append(f"  {f.name}: {{")
+        lines += [f"    {g.name}: {_ts_type(hints[g.name])}" for g in fields(sub)]
+        lines.append("  }")
+    return "\n".join(lines + ["}"]) + "\n"
+
+
 def reference() -> str:
     """docs/spec.md: every field, from its setting() (tests check the file is current)."""
     def default(f) -> str:
@@ -904,4 +937,4 @@ def locked_changes(old: dict, new: dict) -> list[str]:
 if __name__ == "__main__":
     import sys
 
-    sys.stdout.write(schema_json() if "--schema" in sys.argv else reference())
+    sys.stdout.write(schema_json() if "--schema" in sys.argv else typescript() if "--ts" in sys.argv else reference())

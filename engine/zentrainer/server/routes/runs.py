@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import web
 
 from ... import presets, sharing, state
+from ...runs import preflight
 from ...runs.thin import thin
 from .. import jobqueue, system
 from ...harness import control
@@ -80,6 +81,8 @@ def register(server) -> None:
             return _bad(str(e))
         if (why := faces_missing(spec)) is not None:
             return _bad(why)
+        if found := preflight.problems(spec):  # what only this install can tell
+            return _bad("; ".join(found), problems=found)
 
         store = state.store()
         run_id = store.new_id()
@@ -118,6 +121,8 @@ def register(server) -> None:
             return _bad(str(e))
         if (why := faces_missing(spec)) is not None:
             return _bad(why)
+        if not resume_edit and (found := preflight.problems(spec)):  # a resume keeps its files (they're locked)
+            return _bad("; ".join(found), problems=found)
         if resume_edit:
             # through the dataclass so fields added since it was saved compare at their defaults
             changed = locked_changes(TrainSpec.from_dict(store.spec(run_id)).to_dict(), spec.to_dict())
