@@ -753,14 +753,14 @@ def test_compile_is_auto_unless_set(monkeypatch):
     assert comp.wanted(True, 10) == (True, "") and comp.wanted(False, 5000) == (False, "")
     monkeypatch.setattr(comp.os, "name", "posix")
     monkeypatch.setattr("importlib.util.find_spec", lambda name: object() if name == "triton" else None)
-    assert comp.wanted(None, comp.AUTO_STEPS)[0]
-    assert not comp.wanted(None, comp.AUTO_STEPS - 1)[0]  # too short to repay the compile
+    assert comp.wanted("auto", comp.AUTO_STEPS)[0]
+    assert not comp.wanted("auto", comp.AUTO_STEPS - 1)[0]  # too short to repay the compile
     monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
-    assert not comp.wanted(None, 5000)[0]  # no Triton
+    assert not comp.wanted("auto", 5000)[0]  # no Triton
 
 
 def test_the_fused_qk_rope_is_auto_by_default():
-    assert TrainSpec.from_dict(_spec()).memory.fused_qk_rope is None  # on while the blocks run uncompiled
+    assert TrainSpec.from_dict(_spec()).memory.fused_qk_rope == "auto"  # on while the blocks run uncompiled
     assert TrainSpec.from_dict({**_spec(), "memory": {"fused_qk_rope": False}}).memory.fused_qk_rope is False
 
 
@@ -806,7 +806,7 @@ def test_a_held_out_validation_set_is_measured_instead_of_the_training_set():
     train = types.SimpleNamespace(samples=[sample(8)] * 3, name="train")
     a, b = sample(6), sample(6)
     held = types.SimpleNamespace(samples=[a, a, a, b], name="held")  # a "3_name" folder repeats a
-    spec = types.SimpleNamespace(validation=types.SimpleNamespace(every=10, images=8, timesteps=2, seed=1, dataset="held"))
+    spec = types.SimpleNamespace(validation=types.SimpleNamespace(every=10, images=8, noise_levels=2, seed=1, dataset="held"))
     t = types.SimpleNamespace(spec=spec, step=5, dataset=train, val_dataset=held, _conds={"train": 1}, _val_conds={},
                               streams=types.SimpleNamespace(packed_shape=lambda s: s))
     v = callbacks.Validation()

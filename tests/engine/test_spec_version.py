@@ -88,6 +88,16 @@ def test_nulls_mean_what_the_form_showed():
     mem = lambda m: TrainSpec.from_dict({**V1, "memory": m}).memory
     assert mem({"w8a8_backward": None}).int8_backward == "w8a8"
     assert mem({"int8_forward": None}).int8_forward is True
-    assert mem({"compile_blocks": None, "fused_qk_rope": None}).compile_blocks is None  # null = auto, kept
+    m = mem({"compile_blocks": None, "fused_qk_rope": None, "checkpoint_skip": 2})  # v1's null meant auto
+    assert m.compile_blocks == m.fused_qk_rope == "auto" and m.grad_checkpoint_skip == 2
     s = TrainSpec.from_dict({**V1, "output": None})  # a null section, and v1's save_every to move into it
     assert s.output.save_every == 100 and s.output.keep == "all"
+
+
+def test_v2s_first_draft_keeps_its_settings():
+    # saved by v2 before these were renamed (unreleased, but on disk): carried over, not dropped
+    d = {"spec_version": 2, "model": MODEL, "dataset": {"folder": "d"}, "validation": {"timesteps": 6},
+         "memory": {"checkpoint_skip": 4, "compile_blocks": None, "fused_qk_rope": False}}
+    s = TrainSpec.from_dict(d)
+    assert s.validation.noise_levels == 6 and s.memory.grad_checkpoint_skip == 4
+    assert s.memory.compile_blocks == "auto" and s.memory.fused_qk_rope is False

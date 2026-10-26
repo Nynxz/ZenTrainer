@@ -24,6 +24,14 @@ def register(server) -> None:
     async def list_runs(_request):
         return web.json_response({"runs": state.store().list()})
 
+    @routes.get("/zentrainer/api/spec/schema")
+    async def spec_schema(_request):
+        """The run spec's JSON Schema: every field's type, default, choices, bounds and meaning
+        (docs/spec.md is the same, to read)."""
+        from ...spec import schema
+
+        return web.json_response(schema())
+
     def _with_size(c: dict) -> dict:
         # a cleaned-up training state can't be resumed from: say so rather than offer it
         c = {**c, "state": c["state"] if c.get("state") and Path(c["state"]).is_file() else None}

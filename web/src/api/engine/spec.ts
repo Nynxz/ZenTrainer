@@ -120,19 +120,18 @@ export interface TrainSpec {
   memory: {
     training_dtype: 'bf16' | 'fp16' | 'fp32'
     gradient_checkpointing: boolean
-    checkpoint_depth: number
+    grad_checkpoint_depth: number
     /** the last N blocks keep their activations: faster, more VRAM */
-    checkpoint_skip: number
+    grad_checkpoint_skip: number
     /** TREAD: share of a video clip's tokens routed around the middle blocks (0 = off) */
     tread?: number
     /** int8 ConvRot bases' backward: "w8a8" on int8 tensor cores (engine default), "fused" Triton at
      *  full precision, "bf16" the weight rebuilt (slowest) */
     int8_backward?: 'w8a8' | 'fused' | 'bf16'
-    /** torch.compile the main blocks; unset/null = auto (long runs, with Triton) */
-    compile_blocks?: boolean | null
-    /** Krea 2 / MOSS: the q/k norms and rope as one op that trains (experimental, engine default off) */
-    /** the fused q/k norm + rope op; unset/null = auto (on while the blocks run uncompiled) */
-    fused_qk_rope?: boolean | null
+    /** torch.compile the main blocks; 'auto' (the default) = long runs, with Triton */
+    compile_blocks?: boolean | 'auto'
+    /** the fused q/k norm + rope op; 'auto' (the default) = on while the blocks run uncompiled */
+    fused_qk_rope?: boolean | 'auto'
     /** int8 bases: frozen layers run the int8 kernel forward (engine default on) */
     int8_forward?: boolean
     tread_steps?: number
@@ -175,7 +174,7 @@ export interface TrainSpec {
     slg_end: number
   }
   /** dataset: a held-out dataset folder to measure on ('' = pictures from the training set) */
-  validation: { every: number; images: number; timesteps: number; seed: number; dataset: string }
+  validation: { every: number; images: number; noise_levels: number; seed: number; dataset: string }
   /** where checkpoints go, which resume states are kept, and which scheduled checkpoints
    *  (keep: all, the keep_count latest, or the keep_count best by likeness or validation loss;
    *  engine harness/keep.py) */
@@ -280,8 +279,8 @@ export function defaultSpec(): TrainSpec {
     memory: {
       training_dtype: 'bf16',
       gradient_checkpointing: true,
-      checkpoint_depth: 1,
-      checkpoint_skip: 0,
+      grad_checkpoint_depth: 1,
+      grad_checkpoint_skip: 0,
       offloading: false,
       fp8_backward: false,
       bypass_mode: false,
@@ -310,7 +309,7 @@ export function defaultSpec(): TrainSpec {
       slg_start: 0.01,
       slg_end: 1,
     },
-    validation: { every: 100, images: 4, timesteps: 4, seed: 1234, dataset: '' },
+    validation: { every: 100, images: 4, noise_levels: 4, seed: 1234, dataset: '' },
     output: { save_every: 250, lora_dir: null, keep_states: 'latest', save_dtype: 'bf16', keep: 'all', keep_count: 3 },
     slider: { kind: '', pair_set: '', dataset_end: 'positive', positive: '', negative: '', neutral: '', anchors: [], guidance: 3, anchor_weight: 1, directions: 'both' },
   }

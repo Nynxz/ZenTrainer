@@ -141,7 +141,7 @@ export const RECIPES: Recipe[] = [
       // Automagic v3 stalls on MOSS without a floor under its rate
       optim: { optimizer: 'Automagic3', learning_rate: 5e-4, lr_scheduler: 'constant', ema: 0.98, lr_floor: 0.5 },
       objective: { timesteps: 'logit_normal', shift: 0, bias: 'high_noise', spread: true },
-      memory: { checkpoint_skip: 4 },
+      memory: { grad_checkpoint_skip: 4 },
       // previews on the trained Base model, as the likeness above was measured
       samples: { steps: 25, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple', slg_mode: 'uncond', slg_layers: [22], slg_start: 0 },
     },

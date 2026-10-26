@@ -599,7 +599,7 @@ class Validation(Callback):
             pool = [first.setdefault(id(sm), i) for i, sm in enumerate(ds.samples) if id(sm) not in first]
         picks = rng.sample(pool, min(v.images, len(pool)))
         gen = torch.Generator().manual_seed(v.seed)
-        percents = [1.0 - (k + 0.5) / v.timesteps for k in range(v.timesteps)]  # spread over the schedule
+        percents = [1.0 - (k + 0.5) / v.noise_levels for k in range(v.noise_levels)]  # spread over the schedule
         for i in picks:
             shape = t.streams.packed_shape(tuple(ds.samples[i].latent.shape))
             noises = [torch.randn(shape, generator=gen) for _ in percents]

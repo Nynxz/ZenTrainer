@@ -24,8 +24,18 @@ and Manager show.
     form: Memory → int8 backward
   - `memory.quantized_backward` → `memory.fp8_backward` (what it is: for fp8 models)
   - `dataset.keyframes` → `dataset.video_keyframes`, `dataset.clip_stills` → `dataset.video_stills`
+  - `validation.timesteps` → `validation.noise_levels` (a count; `objective.timesteps` is the distribution)
+  - `memory.checkpoint_depth` / `checkpoint_skip` → `memory.grad_checkpoint_depth` / `grad_checkpoint_skip`
+    (gradient checkpointing, not the saved checkpoints)
+  - `memory.compile_blocks` and `memory.fused_qk_rope` take `"auto"` (the default) instead of `null`
 - A spec from a newer ZenTrainer than this one is refused with a note to update, instead of
   training with settings it doesn't understand.
+- **Every setting is checked when a run is submitted:** its type (`"steps": "1000"` or `"rank": true` is
+  refused), its choices (the optimizer, attention backend and dtypes included, which took any text
+  before and failed only once training started) and its range, each error naming the field. The same
+  rules are published: **[docs/spec.md](docs/spec.md)** lists every field with its default, what it
+  takes and what it does, and `GET /zentrainer/api/spec/schema` serves them as JSON Schema, for
+  scripts and editors. Both are generated from the spec itself, so they can't drift from it.
 
 ### AMD
 - **AMD GPUs on Windows and Linux:** `zt setup` finds a Radeon or Instinct card from its display

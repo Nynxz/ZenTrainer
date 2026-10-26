@@ -15,13 +15,13 @@ import os
 
 import torch
 
-# memory.compile_blocks unset: compile when a run is at least this long. Compiling costs about 40 s
+# memory.compile_blocks "auto": compile when a run is at least this long. Compiling costs about 40 s
 # up front (Krea 2, 1024 px, RTX 5090) and then saves 0.2 s a step, so it pays back after about
 # 200 steps; at 512 px it saves far less, and the margin keeps a short run from losing.
 AUTO_STEPS = 500
 
 
-def wanted(setting: bool | None, steps: int) -> tuple[bool, str]:
+def wanted(setting: bool | str, steps: int) -> tuple[bool, str]:
     """Whether to compile, and why when it wasn't simply what was asked. Offloaded weights are
     fine: compile was kept off with them for a while after an illegal memory access (Krea 2, 16 GB
     card, ~2 GB streaming), but the cause was the offloaded weights' stream-ordered frees, in eager
@@ -29,11 +29,11 @@ def wanted(setting: bool | None, steps: int) -> tuple[bool, str]:
     moving: MiniMax H3 (0.7-6.4 GB streaming) and Krea 2 (8.5-9.4 GB, and a 32 GB card held to 16)
     with Automagic3 + EMA and samples, 10 of 10 runs clean. It pays when little streams (H3, 0.7
     GB: 32% a step) and is even when most does (Krea 2, 9.4 of 12.9 GB: the copies set the pace).
-    Weights that move recompile fresh graphs (reset_if_moved). Auto (setting None) also needs
+    Weights that move recompile fresh graphs (reset_if_moved). "auto" also needs
     Triton, which inductor generates its kernels with (often missing on Windows, where it also
     needs a C++ compiler)."""
-    if setting is not None:
-        return setting, ""
+    if setting != "auto":
+        return bool(setting), ""
     import importlib.util
 
     if os.name == "nt" or importlib.util.find_spec("triton") is None:

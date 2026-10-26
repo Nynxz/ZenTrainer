@@ -224,7 +224,7 @@ def main():
         "optim": {"steps": 4},
         "memory": {"training_dtype": "fp32"},
         # validation's own interval misses the saves: keeping the best by it puts it on each one
-        "validation": {"every": 100, "images": 1, "timesteps": 2},
+        "validation": {"every": 100, "images": 1, "noise_levels": 2},
         "output": {"save_every": 1, "keep": "val_loss", "keep_count": 1},
         "samples": {"every": 4, "prompts": [{"prompt": "a red square"}], "width": 64, "height": 64, "steps": 2,
                     "baseline": False, "likeness": False},

@@ -70,8 +70,8 @@ def _oom_advice(spec: TrainSpec, step: int) -> str:
     tips = []
     if not m.gradient_checkpointing:
         tips.append("turn on gradient checkpointing")
-    elif m.checkpoint_skip:
-        tips.append(f"keep fewer blocks un-checkpointed ({m.checkpoint_skip} -> 0)")
+    elif m.grad_checkpoint_skip:
+        tips.append(f"keep fewer blocks un-checkpointed ({m.grad_checkpoint_skip} -> 0)")
     if not m.offloading:
         tips.append("turn on weight offloading")
     if d.resolution > 768:
@@ -258,8 +258,8 @@ class Trainer:
                 # compiled first, so checkpointing wraps the compiled forward
                 with compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, self.spec.memory.gradient_checkpointing,
-                                               self.spec.memory.checkpoint_depth, self.spec.memory.offloading,
-                                               self.spec.memory.checkpoint_skip) as ckpt:
+                                               self.spec.memory.grad_checkpoint_depth, self.spec.memory.offloading,
+                                               self.spec.memory.grad_checkpoint_skip) as ckpt:
                     self._input_grad = ckpt.input_grad
                     self.enter_training()
                     try:
@@ -698,9 +698,9 @@ class Trainer:
         that VRAM holds weights instead, and is worth as much: measured on Krea 2 int8 at 1024 px,
         16 GB card, keeping 6 blocks cost 2 GB of weights on the card for no faster steps."""
         m = self.spec.memory
-        if m.offloading and m.gradient_checkpointing and m.checkpoint_skip > 0:
-            logging.info("[ZenTrainer] keep last blocks %d -> 0: with weights offloaded, that VRAM holds weights instead", m.checkpoint_skip)
-            m.checkpoint_skip = 0
+        if m.offloading and m.gradient_checkpointing and m.grad_checkpoint_skip > 0:
+            logging.info("[ZenTrainer] keep last blocks %d -> 0: with weights offloaded, that VRAM holds weights instead", m.grad_checkpoint_skip)
+            m.grad_checkpoint_skip = 0
 
     def enter_training(self) -> None:
         """Load for training: everything else out of VRAM, model in train mode."""

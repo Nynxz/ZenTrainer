@@ -7,254 +7,252 @@ imports, so it can be validated anywhere.
 from __future__ import annotations
 
 import copy
+import json
 import re
-from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from typing import Any, Literal
+import types
+from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 ModelKind = Literal["checkpoint", "split"]
+Auto = Literal["auto"]
+
+# choices that live in the harness, which imports torch: tests keep them in step
+OPTIMIZERS = ("AdamW", "Adam", "Adafactor", "Lion", "SGD", "RMSprop", "AdamW8bit", "Lion8bit", "Automagic",
+              "Automagic3", "Automagic4", "Prodigy", "AdamWScheduleFree", "CAME")  # harness/optim OPTIMIZERS
+TRAIN_ATTENTION = ("pytorch", "xformers", "sub_quad", "split")  # harness/memory TRAINABLE_ATTENTION
+WEIGHT_DTYPES = ("default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2")  # ComfyUI's weight_dtype
+DTYPES = ("bf16", "fp16", "fp32")
+
+
+def setting(default: Any = MISSING, doc: str = "", *, factory: Any = MISSING, choices: tuple | None = None,
+            ge: float | None = None, gt: float | None = None, le: float | None = None, lt: float | None = None):
+    """A spec field and what it means: `doc` is its line in the reference (docs/spec.md) and the
+    schema; `choices` and the bounds are checked by validate() and published in the schema."""
+    meta = {"doc": doc, "choices": choices, "ge": ge, "gt": gt, "le": le, "lt": lt}
+    if factory is not MISSING:
+        return field(default_factory=factory, metadata=meta)
+    return field(default=default, metadata=meta)
 
 
 @dataclass
 class ModelSpec:
-    # "checkpoint": one file with MODEL+CLIP+VAE (SD1.5/SDXL style).
-    # "split": separate diffusion model / text encoder / VAE (Flux, Qwen-Image, Z-Image, ...).
-    kind: ModelKind = "checkpoint"
-    ckpt_name: str | None = None
-    unet_name: str | None = None
-    unet_weight_dtype: str = "default"
-    clip_name: str | None = None
-    clip_type: str | None = None
-    vae_name: str | None = None
-    # Joint audio-video models (MiniMax H3): their audio VAE, needed to train on a video's sound
-    # (dataset.video_audio) and to put sound in video samples.
-    audio_vae_name: str | None = None
+    """The model to train: one checkpoint file, or a diffusion model, text encoder and VAE."""
+    kind: ModelKind = setting("checkpoint", '"checkpoint": one file with the model, text encoder and VAE (SD 1.5, '
+                              'SDXL). "split": separate files (Flux, Qwen Image, Z-Image, ...).',
+                              choices=("checkpoint", "split"))
+    ckpt_name: str | None = setting(None, "checkpoint models: the file in ComfyUI's checkpoints folder.")
+    unet_name: str | None = setting(None, "split models: the diffusion model, in diffusion_models.")
+    unet_weight_dtype: str = setting("default", "How the diffusion model's weights load (ComfyUI's weight_dtype).",
+                                     choices=WEIGHT_DTYPES)
+    clip_name: str | None = setting(None, "split models: the text encoder, in text_encoders.")
+    clip_type: str | None = setting(None, "split models: the text encoder's type, as ComfyUI's CLIPLoader names it "
+                                          "(flux2, qwen_image, ...).")
+    vae_name: str | None = setting(None, "split models: the VAE, in vae.")
+    audio_vae_name: str | None = setting(None, "Joint audio-video models (MiniMax H3): their audio VAE, needed to "
+                                               "train on a video's sound (dataset.video_audio) and for sound in samples.")
 
 
 @dataclass
 class DatasetSpec:
-    # A subfolder of ComfyUI's input dir: images + same-name caption files. A
-    # kohya-style "N_name" subfolder repeats its images N times.
-    folder: str = ""
-    resolution: int = 1024
-    # Lower resolutions first: [{"resolution": 768, "until": 0.6}] trains at 768 for the first 60%
-    # of the run, then at `resolution`. Each change blends over `stage_blend` of the run (0.6 ->
-    # 0.8: the next resolution goes from no steps to every step), so nothing switches at once.
-    # Every resolution is cached before training. [] = one resolution throughout.
-    stages: list = field(default_factory=list)
-    stage_blend: float = 0.2
-    caption_ext: str = ".txt"
-    # Aspect-ratio buckets: images are resized to the closest bucket of ~resolution²
-    # pixels, sides multiples of bucket_step. Off = center-crop squares.
-    buckets: bool = True
-    bucket_step: int = 64
-    # Edit training: each image's input picture(s) from the chosen control sets are what the model
-    # edits from (passed as reference latents), the caption is the instruction. Models that take
-    # reference images (Flux 3 Klein, Flux 2, Kontext, Qwen Image Edit...).
-    edit: bool = False
-    # Control sets, in order: named layers of input pictures beside the dataset
-    # (_controls/<set>/<stem>.<ext>; older <stem>_control files are the "control" set). Several
-    # sets give each image several inputs. Any set turns edit on; edit with none means "control".
-    control_sets: list[str] = field(default_factory=list)
-    # how the input picture joins the sequence: "" = the model's own way ("index" for models
-    # without one, like Krea 2), or "index", "offset", "index_timestep_zero". "concat": channel
-    # inputs instead, each control set's picture (aligned with the target, the same size) as extra
-    # latent channels into a widened input layer, as ComfyUI's MOSS-Image control adapters
-    # (harness/wide_input.py)
-    edit_method: str = ""
-    # channel inputs: the share of steps each input is left out (zeros), independently, so the
-    # adapter also works with some or none of them
-    control_dropout: float = 0.0
-    # wrap each instruction: "{}" is the caption (NK2E's generalist was trained on "Make the
-    # following edit to the reference image, ...: {}", so specialists on top of it want the same)
-    edit_template: str = ""
-    # the text encoder sees the input pictures too (Qwen3-VL based: Krea 2, Qwen Image), as
-    # krea2edit's identity edits do: conditioning becomes per image, encoded when the dataset caches
-    edit_grounded: bool = False
-    # each picture's latents (and its own conditioning) in a file of its own, read when a step uses
-    # it, in bf16: for picture datasets bigger than RAM (thousands of grounded edit pairs)
-    disk_cache: bool = False
-    # MiniMax H3 image-to-video: each clip conditioned on its own first frame ("first") or first
-    # and last ("first_last"), as the fl2va model is at inference; the text encoder sees them too
-    video_keyframes: str = ""
-    caption_dropout: float = 0.0
-    # Caption sets: <img>.txt is "default", <img>.<set>.txt the others (tags, nl, bbox, ...).
-    # Train on one set, or mix several: each step picks one of the image's sets at random.
-    caption_set: str = "default"
-    caption_mix: list[str] = field(default_factory=list)
-    # Trigger word (as in ai-toolkit): "[trigger]" in captions and sample prompts becomes
-    # this, and captions that don't mention it get it prepended ("ohwx, a photo of ...").
-    trigger: str = ""
-    trigger_prepend: bool = True
-    # Masked training: images with a mask only learn where it's white. The rest of the
-    # image keeps `unmasked_weight` (0 = ignored, 0.1 = learned lightly).
-    masked_loss: bool = False
-    unmasked_weight: float = 0.0
-    # Videos (.mp4 .webm .mov .mkv ...) train as clips: `video_frames` long at most (snapped to a
-    # length the model's VAE encodes exactly), resampled to `video_fps` (0 = the video's own),
-    # picked by `video_mode` (uniform: spread over the video; head: the start; chunks:
-    # consecutive) up to `video_clips` per video, each at about `video_resolution`² pixels (a
-    # clip costs frames x pixels, so videos usually train smaller than images). An image model
-    # trains a video's frames as images.
-    video_frames: int = 49
-    video_fps: float = 0.0
-    video_mode: str = "uniform"
-    video_clips: int = 1
-    video_resolution: int = 512
-    # Train on each clip's soundtrack too (joint audio-video models with model.audio_vae_name):
-    # the audio stream joins the loss instead of being left out, so cuts can learn the beat.
-    video_audio: bool = False
-    # Keep clips inside one shot: hard cuts are detected and no clip spans one. Off for edits
-    # where the cutting is the point (music videos, PMVs).
-    video_avoid_cuts: bool = False
-    # Clip stills: each clip also trains its sharpest frame as a photo (with the clip's caption).
-    # Stills are never TREAD-routed and anchor the LoRA's detail; Fizgig's H3 default.
-    video_stills: bool = False
+    """The pictures and videos, their captions, and how they're prepared."""
+    folder: str = setting("", "The dataset folder: pictures and videos with same-name caption files. A kohya-style "
+                              '"N_name" subfolder repeats its pictures N times.')
+    resolution: int = setting(1024, "Training resolution: pictures are resized to about this many pixels squared.",
+                              ge=64)
+    stages: list[dict] = setting(doc='Lower resolutions first: [{"resolution": 768, "until": 0.6}] trains at 768 for '
+                                     "the first 60% of the run, then at `resolution`. Every resolution is cached "
+                                     "before training. [] = one resolution throughout.", factory=list)
+    stage_blend: float = setting(0.2, "How much of the run each resolution change blends over, so nothing switches "
+                                      "at once (0.6 to 0.8: the next resolution goes from no steps to every step).",
+                                 ge=0, lt=1)
+    caption_ext: str = setting(".txt", "The caption files' extension.")
+    buckets: bool = setting(True, "Aspect-ratio buckets: each picture is resized to the closest shape of about "
+                                  "resolution² pixels. Off = centre-cropped squares.")
+    bucket_step: int = setting(64, "Bucket sides are multiples of this.", ge=8)
+    edit: bool = setting(False, "Edit training: each picture's input picture(s) from `control_sets` are what the model "
+                                "edits from (as reference latents) and the caption is the instruction. For models "
+                                "that take reference images (Flux 3 Klein, Flux 2, Kontext, Qwen Image Edit, ...). Any "
+                                "control set turns it on.")
+    control_sets: list[str] = setting(doc="Control sets, in order: named folders of input pictures beside the dataset "
+                                          "(_controls/<set>/<name>.<ext>; older <name>_control files are the "
+                                          '"control" set). Several sets give each picture several inputs. Edit '
+                                          'training with none uses "control".', factory=list)
+    edit_method: str = setting("", 'How the input picture joins the sequence: "" = the model\'s own way, or "index", '
+                                   '"offset", "index_timestep_zero". "concat": channel inputs instead, each control '
+                                   "set's picture (aligned with the target, the same size) as extra latent channels "
+                                   "into a widened input layer, like ComfyUI's MOSS Image control adapters.",
+                               choices=("", "index", "offset", "index_timestep_zero", "negative_index", "uxo", "concat"))
+    control_dropout: float = setting(0.0, "Channel inputs: the share of steps each input is left out (zeros), "
+                                          "independently, so the adapter also works with some or none of them.",
+                                     ge=0, lt=1)
+    edit_template: str = setting("", 'Wraps each instruction: "{}" is the caption (e.g. a generalist edit model\'s '
+                                     "own wording, for a specialist trained on top of it). \"\" = the caption as it is.")
+    edit_grounded: bool = setting(False, "The text encoder sees the input pictures too (Qwen3-VL based: Krea 2, Qwen "
+                                         "Image): conditioning becomes per picture, encoded when the dataset caches.")
+    disk_cache: bool = setting(False, "Each picture's latents (and its own conditioning) in a file of its own, read "
+                                      "when a step uses it: for datasets bigger than RAM (thousands of grounded edit "
+                                      "pairs).")
+    video_keyframes: str = setting("", 'MiniMax H3 image-to-video: each clip conditioned on its own first frame '
+                                       '("first") or first and last ("first_last"), as the fl2va model is at '
+                                       'inference. "" = off.', choices=("", "first", "first_last"))
+    caption_dropout: float = setting(0.0, "The share of steps that train on an empty caption.", ge=0, le=1)
+    caption_set: str = setting("default", 'Which captions to train on: <name>.txt is "default", <name>.<set>.txt the '
+                                          "others (tags, nl, ...).")
+    caption_mix: list[str] = setting(doc="Several caption sets to mix: each step picks one of the picture's at "
+                                         "random. [] = caption_set only.", factory=list)
+    trigger: str = setting("", '"[trigger]" in captions and sample prompts becomes this, and captions that don\'t '
+                               'mention it get it prepended ("ohwx, a photo of ...").')
+    trigger_prepend: bool = setting(True, "Prepend the trigger to captions that don't mention it.")
+    masked_loss: bool = setting(False, "Masked training: pictures with a mask only learn where it's white.")
+    unmasked_weight: float = setting(0.0, "Masked training: how much the rest of the picture still trains "
+                                          "(0 = not at all, 0.1 = lightly).", ge=0, le=1)
+    video_frames: int = setting(49, "Videos train as clips this many frames long at most (snapped to a length the "
+                                    "model's VAE encodes exactly). An image model trains a video's frames as pictures.",
+                                ge=1)
+    video_fps: float = setting(0.0, "Clips resampled to this frame rate. 0 = the video's own.", ge=0)
+    video_mode: str = setting("uniform", 'Which parts of a video become clips: "uniform" spread over it, "head" its '
+                                         'start, "chunks" consecutive.', choices=("uniform", "head", "chunks"))
+    video_clips: int = setting(1, "Clips per video, at most.", ge=1)
+    video_resolution: int = setting(512, "Each clip at about this many pixels squared (a clip costs frames x pixels, "
+                                         "so videos usually train smaller than pictures).", ge=64)
+    video_audio: bool = setting(False, "Train on each clip's soundtrack too (joint audio-video models with "
+                                       "model.audio_vae_name), so cuts can learn the beat.")
+    video_avoid_cuts: bool = setting(False, "Keep clips inside one shot: no clip spans a hard cut. Off for edits where "
+                                            "the cutting is the point (music videos).")
+    video_stills: bool = setting(False, "Each clip also trains its sharpest frame as a picture (with the clip's "
+                                        "caption). Stills are never TREAD-routed and anchor the LoRA's detail.")
 
 
 @dataclass
 class NetworkSpec:
-    algorithm: str = "LoRA"  # LoRA | LoHa | LoKr | OFT (comfy.weight_adapter)
-    rank: int = 16
-    alpha: float | None = None  # None = rank (scale 1.0)
-    # fp32: AdamW's steps on a LoRA are smaller than bf16 can represent at the weights' size,
-    # so in bf16 most of them round away (a toy LoRA learned 6% vs 51% in fp32, same steps).
-    # bf16 only with an optimizer that rounds stochastically (Automagic).
-    lora_dtype: str = "fp32"
-    # Which layers get adapters: "attn" (attention projections), "mlp" (feed-forward linears),
-    # "attn_mlp" (both), "all" (every adaptable layer, like ComfyUI's native trainer), or a list of
-    # regexes over module names.
-    targets: str | list[str] = "attn_mlp"
-    train_bias_norm: bool = False
-    init_from: str | None = None  # a LoRA in the loras folder to continue
-    # A LoRA (loras folder) applied while training only, never in samples or the saved file:
-    # e.g. a de-distillation adapter for a guidance-distilled model (MiniMax H3), so training
-    # sits on an undistilled base and the result runs on the real one.
-    training_adapter: str | None = None
-    # A LoRA (loras folder) the trained one sits on, everywhere: training, samples and use, e.g.
-    # a fix the model always needs (MOSS-Image SFT's destripe LoRA). The saved LoRA leaves it out
-    # and records it (zentrainer.base_lora): load it beside, at this strength.
-    base_lora: str | None = None
-    base_strength: float = 1.0
-    # Only these transformer blocks get adapters, e.g. "20-49" (MiniMax H3's identity blocks,
-    # Fizgig's default) or "10-": the backward then stops at the first one, so steps are
-    # quicker, and the model's early (layout, motion) blocks stay untouched. "" = every block.
-    blocks: str = ""
-    # These blocks get no adapters, e.g. "22" or "22, 30-31" (AI Toolkit's ignore_if_contains on
-    # "layers.22."): a block sampling skips in the uncond (skip-layer guidance) stays the base's
-    skip_blocks: str = ""
+    """The adapter that trains: its kind, size, and which layers get one."""
+    algorithm: str = setting("LoRA", "The adapter (ComfyUI's weight adapters).", choices=("LoRA", "LoHa", "LoKr", "OFT"))
+    rank: int = setting(16, "The adapter's rank.", ge=1)
+    alpha: float | None = setting(None, "The adapter's alpha. null = the rank (a scale of 1).", gt=0)
+    lora_dtype: str = setting("fp32", "What the adapter trains in. fp32: AdamW's steps on a LoRA are smaller than bf16 "
+                                      "can represent at the weights' size, so most would round away. bf16 only with an "
+                                      "optimizer that rounds stochastically (Automagic).", choices=DTYPES)
+    targets: str | list[str] = setting("attn_mlp", 'Which layers get adapters: "attn" (attention projections), "mlp" '
+                                                   '(feed-forward), "attn_mlp" (both), "all" (every adaptable layer, '
+                                                   "like ComfyUI's native trainer), or a list of regexes over module "
+                                                   "names.")
+    train_bias_norm: bool = setting(False, "Train the biases and norm weights too.")
+    init_from: str | None = setting(None, "A LoRA in the loras folder to continue from.")
+    training_adapter: str | None = setting(None, "A LoRA applied while training only, never in samples or the saved "
+                                                 "file: e.g. a de-distillation adapter for a guidance-distilled "
+                                                 "model (MiniMax H3), so training sits on an undistilled base.")
+    base_lora: str | None = setting(None, "A LoRA the trained one sits on everywhere (training, samples and use), e.g. "
+                                          "a fix the model always needs. The saved LoRA leaves it out and records it: "
+                                          "load it beside, at base_strength.")
+    base_strength: float = setting(1.0, "base_lora's strength.", ge=-4, le=4)
+    blocks: str = setting("", 'Only these transformer blocks get adapters, e.g. "20-49" or "10-": the backward stops '
+                              "at the first one, so steps are quicker, and earlier blocks stay untouched. \"\" = every "
+                              "block.")
+    skip_blocks: str = setting("", 'These blocks get no adapters, e.g. "22" or "22, 30-31" (a block that skip-layer '
+                                   "guidance skips stays the base's).")
 
 
 @dataclass
 class OptimSpec:
-    optimizer: str = "AdamW"
-    learning_rate: float = 1e-4
-    weight_decay: float = 0.0
-    lr_scheduler: str = "constant"  # the learning rate over the run: constant | linear | cosine
-    warmup_steps: int = 0
-    max_grad_norm: float = 1.0  # 0 = off
-    steps: int = 1000
-    batch_size: int = 1
-    grad_accumulation_steps: int = 1
-    # LoRA+: the up (B) matrices learn this many times faster than the down (A) ones, which
-    # trains a LoRA faster for the same stability (paper: 16; 4 is a safe start). 0 or 1 = off.
-    lora_plus: float = 0.0
-    # Weight averaging: checkpoints, samples and the saved LoRA use a running average of the
-    # adapter (0.98 = roughly the last 50 steps). 0 = off.
-    ema: float = 0.0
-    # Automagic v3's (and v4's) adaptive rate never drops below this fraction of its start (0.5 =
-    # half). v3's rate peaks early and then decays, and on MOSS-Image runs stalled under-strength
-    # (likeness flat after ~500 steps); a floor keeps it learning. v4 settles on its own. 0 = no floor.
-    lr_floor: float = 0.0
+    """The optimizer, learning rate and schedule, and the run's length."""
+    optimizer: str = setting("AdamW", "The optimizer.", choices=OPTIMIZERS)
+    learning_rate: float = setting(1e-4, "The learning rate.", gt=0)
+    weight_decay: float = setting(0.0, "Weight decay.", ge=0)
+    lr_scheduler: str = setting("constant", "The learning rate over the run.", choices=("constant", "linear", "cosine"))
+    warmup_steps: int = setting(0, "Steps the learning rate ramps up over, from 0.", ge=0)
+    max_grad_norm: float = setting(1.0, "Gradients clipped to this norm. 0 = off.", ge=0)
+    steps: int = setting(1000, "Training steps.", ge=1)
+    batch_size: int = setting(1, "Pictures per step.", ge=1)
+    grad_accumulation_steps: int = setting(1, "Batches per optimizer step.", ge=1)
+    lora_plus: float = setting(0.0, "LoRA+: the up matrices learn this many times faster than the down ones, which "
+                                    "trains a LoRA faster for the same stability (paper: 16; 4 is a safe start). "
+                                    "0 or 1 = off.", ge=0)
+    ema: float = setting(0.0, "Weight averaging: checkpoints, samples and the saved LoRA use a running average of the "
+                              "adapter (0.98 = roughly the last 50 steps). 0 = off.", ge=0, lt=1)
+    lr_floor: float = setting(0.0, "Automagic v3/v4: the adaptive rate never drops below this fraction of its start "
+                                   "(v3's decays and can stall under-strength). 0 = no floor.", ge=0, le=1)
 
 
 @dataclass
 class ObjectiveSpec:
-    loss: str = "mse"  # mse | l1 | huber | smooth_l1
-    # "native": each model's own prediction space (eps for SD-style, velocity for
-    # flow models). "x0": loss on the denoised image, ComfyUI's native trainer default.
-    target: str = "native"
-    # uniform | logit_normal (AI Toolkit's "linear" | "sigmoid") | scheduler: the noise levels the
-    # ComfyUI scheduler `timestep_scheduler` samples at in `timestep_scheduler_steps` steps, each
-    # step as often (trains where the LoRA will be used; few steps for a fast LoRA, as AI Toolkit's
-    # two/four/eight_step)
-    timesteps: str = "uniform"
-    timestep_scheduler: str = "simple"
-    timestep_scheduler_steps: int = 20
-    logit_mean: float = 0.0
-    logit_std: float = 1.0
-    # share of steps drawn uniformly instead (logit-normal only): keeps a little training at
-    # the extremes it rarely visits (malcolmrey: 0.01)
-    uniform_mix: float = 0.0
-    # Training timestep shift for flow-matching models (0 = the model's own sampling shift).
-    # The sampling shift favours heavy noise (MOSS's 5 puts ~70% of steps above σ≈0.7):
-    # composition and colour. A lower one (1-3) spends more steps on detail, e.g. faces.
-    shift: float = 0.0
-    # Lean the noise levels toward one end, whatever the distribution (AI Toolkit's "content" and
-    # "style"): "high_noise" for composition, layout and pose, "low_noise" for detail and texture.
-    # The draw is cubed (bias_power 3, as AI Toolkit): high_noise puts half the steps in the
-    # noisiest eighth of the distribution. "balanced" = as drawn.
-    bias: str = "balanced"
-    bias_power: float = 3.0
-    # Per-noise-level loss weights. "flex" (flow models) is AI Toolkit's "weighted", measured on
-    # Flex.1: up to 1.5x around σ 0.85, down to 0.45x near clean. "balance" measures this model
-    # as it trains and evens the pull of every noise level (EDM2's idea, objective.Balance). "" = none.
-    weighting: str = ""
-    # Noise levels from an even, low-discrepancy sequence instead of random draws: batch 1 covers
-    # the schedule in a few steps instead of by luck, a steadier loss for the same distribution.
-    spread: bool = False
+    """What the loss compares, and which noise levels each step trains at."""
+    loss: str = setting("mse", "The loss.", choices=("mse", "l1", "huber", "smooth_l1"))
+    target: str = setting("native", '"native": each model\'s own prediction (noise for SD-style models, velocity for '
+                                    'flow models). "x0": the loss on the denoised picture (ComfyUI\'s native trainer).',
+                          choices=("native", "x0"))
+    timesteps: str = setting("uniform", 'How each step\'s noise level is drawn: "uniform"; "logit_normal" (AI '
+                                        'Toolkit\'s "sigmoid"), shaped by logit_mean and logit_std; or "scheduler": '
+                                        "the levels ComfyUI's scheduler `timestep_scheduler` samples at in "
+                                        "`timestep_scheduler_steps` steps, each as often (trains where the LoRA will "
+                                        "be used; few steps for a fast LoRA).",
+                             choices=("uniform", "logit_normal", "scheduler"))
+    timestep_scheduler: str = setting("simple", 'timesteps "scheduler": the ComfyUI scheduler.')
+    timestep_scheduler_steps: int = setting(20, 'timesteps "scheduler": its step count.', ge=1, le=1000)
+    logit_mean: float = setting(0.0, "logit_normal's centre: positive leans to heavy noise (composition), negative to "
+                                     "light (detail).", ge=-3, le=3)
+    logit_std: float = setting(1.0, "logit_normal's spread.", gt=0, le=3)
+    uniform_mix: float = setting(0.0, "logit_normal: the share of steps drawn uniformly instead, keeping a little "
+                                      "training at the extremes it rarely visits (0.01).", ge=0, le=1)
+    shift: float = setting(0.0, "Flow-matching models: the training timestep shift. 0 = the model's own sampling "
+                                "shift, which favours heavy noise (composition, colour); a lower one (1-3) spends more "
+                                "steps on detail, such as faces.", ge=0)
+    bias: str = setting("balanced", 'Lean the noise levels toward one end, whatever the distribution: "high_noise" '
+                                    'for composition, layout and pose, "low_noise" for detail and texture (AI '
+                                    "Toolkit's \"content\" and \"style\"). \"balanced\" = as drawn.",
+                        choices=("balanced", "high_noise", "low_noise"))
+    bias_power: float = setting(3.0, "How hard the bias leans: the draw to this power (3, as AI Toolkit, puts half the "
+                                     "steps in the noisiest eighth for high_noise). 1 = not at all.", ge=1, le=10)
+    weighting: str = setting("", 'Per-noise-level loss weights. "flex" (flow models): AI Toolkit\'s "weighted", '
+                                 'measured on Flex.1. "balance": measures the model as it trains and evens the pull of '
+                                 "every noise level (EDM2's idea). \"\" = none.", choices=("", "flex", "balance"))
+    spread: bool = setting(False, "Noise levels from an even, low-discrepancy sequence instead of random draws: a "
+                                  "small batch covers the schedule in a few steps, for a steadier loss.")
 
 
 @dataclass
 class MemorySpec:
-    training_dtype: str = "bf16"  # bf16 | fp16 | fp32
-    gradient_checkpointing: bool = True
-    checkpoint_depth: int = 1
-    # leave the last N blocks un-checkpointed: they keep their activations (more VRAM) and
-    # skip the recompute. Their backward runs right after their forward, so it's the
-    # cheapest place to trade memory for speed.
-    checkpoint_skip: int = 0
-    offloading: bool = False
-    # TREAD token routing on video steps (MiniMax H3): this share of a clip's tokens skips the
-    # middle blocks (2 to n-3) and rejoins unchanged. 0.5 roughly halves those blocks' work;
-    # stills, samples and validation always run whole. 0 = off.
-    tread: float = 0.0
-    # Share of clip steps that route (the rest run whole). Fizgig's recipe routes every clip but
-    # runs stills in full, and stills anchor the LoRA; a dataset of clips only routes every step,
-    # and the LoRA learns to make up for the routing: measured on H3 (all clips, 0.5): loss 0.22
-    # routed vs 0.15 whole on the same LoRA, and over-sharpened samples. Below 1 keeps whole steps.
-    tread_steps: float = 1.0
-    # int8 ConvRot bases (MiniMax H3, Krea 2 int8): how the backward gets each frozen layer's
-    # input gradient (kernels/int8_backward.py); no effect on other models.
-    # "w8a8": the gradient quantized to int8 too, so it runs on int8 tensor cores (Triton kernels:
-    #   2x the bf16 backward on H3's clip-size layers, RTX 5090; Krea 2 int8 at 1024 1.60 -> 1.35 s
-    #   a step). Some gradient precision for the speed (OneTrainer's W8A8).
-    # "fused": a fused Triton kernel instead of rebuilding the layer's bf16 weight (Fizgig's, by
-    #   @mabseyuk): saves a transient weight per layer, full gradient precision.
-    # "bf16": the weight rebuilt in bf16 for the matmul (ComfyUI's way; the slowest).
-    int8_backward: str = "w8a8"
-    # torch.compile the repeated transformer block: fuses the elementwise work around the matmuls.
-    # The first steps (and the first sample) take longer while it compiles. None (the default) =
-    # auto: on for runs long enough to repay that, with Triton and no offloading (kernels/compile.py)
-    compile_blocks: bool | None = None
-    # Krea 2, MOSS, MiniMax H3: the attention's q/k norms and rope as one op with its own backward (Triton),
-    # instead of separate ops and casts (kernels/qk_norm_rope.py): same maths, 6-9% a step uncompiled.
-    # None = auto: on while the blocks run uncompiled (compiled ones fuse these already; a custom op
-    # in them kept compile from fusing what's around it: Krea 2 1.38 -> 1.42 s a step)
-    fused_qk_rope: bool | None = None
-    # int8 bases: trained layers run ComfyUI's int8 kernel forward (activations quantized) instead
-    # of a dequantized bf16 matmul. Off = the bf16 forward (slower; for comparing quality).
-    int8_forward: bool = True
-    # With offloading: VRAM kept free for activations, the LoRA and its optimizer (GB);
-    # the rest holds as much of the model as fits. 0 = auto: 8 GB, more for long video clips.
-    vram_headroom: float = 0.0
-    # fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). Faster, less precise
-    fp8_backward: bool = False
-    # Adapters as forward hooks beside each layer instead of patched into its weight. Quantized
-    # bases always train this way (a patched weight would turn their quantized matmul off)
-    bypass_mode: bool = False
-    # Attention backend while training. Flash and sage have no backward pass, so the
-    # default pins differentiable SDPA regardless of ComfyUI's launch flags.
-    attention: str = "pytorch"
+    """Precision, checkpointing, offloading and kernels: how the run fits and how fast it goes."""
+    training_dtype: str = setting("bf16", "The precision the model computes in.", choices=DTYPES)
+    gradient_checkpointing: bool = setting(True, "Recompute activations in the backward instead of keeping them: much "
+                                                 "less VRAM, some speed.")
+    grad_checkpoint_depth: int = setting(1, "Gradient checkpointing's granularity.", ge=1)
+    grad_checkpoint_skip: int = setting(0, "Leave the last N blocks un-checkpointed: they keep their activations (more "
+                                           "VRAM) and skip the recompute, the cheapest place to trade memory for "
+                                           "speed.", ge=0)
+    offloading: bool = setting(False, "Keep part of the model in RAM and stream it in: for models bigger than the "
+                                      "card.")
+    vram_headroom: float = setting(0.0, "With offloading: the VRAM kept free for activations, the LoRA and its "
+                                        "optimizer (GB); the rest holds as much of the model as fits. 0 = auto (8 GB, "
+                                        "more for long video clips).", ge=0)
+    tread: float = setting(0.0, "TREAD token routing on video steps (MiniMax H3): this share of a clip's tokens skips "
+                                "the middle blocks and rejoins unchanged (0.5 roughly halves their work). Stills, "
+                                "samples and validation always run whole. 0 = off.", ge=0, lt=1)
+    tread_steps: float = setting(1.0, "The share of clip steps that route; the rest run whole. A dataset of clips only, "
+                                      "routed every step, lets the LoRA learn to make up for the routing "
+                                      "(over-sharpened samples): below 1 keeps whole steps.", ge=0, le=1)
+    int8_forward: bool = setting(True, "int8 bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's int8 kernel "
+                                       "forward instead of a dequantized bf16 matmul. Off is slower: for comparing "
+                                       "quality.")
+    int8_backward: str = setting("w8a8", 'int8 bases: how the backward gets each frozen layer\'s input gradient. "w8a8": '
+                                         "quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), "
+                                         'for some gradient precision. "fused": a fused Triton kernel at full '
+                                         'precision, without rebuilding the layer\'s bf16 weight. "bf16": the weight '
+                                         "rebuilt in bf16 (ComfyUI's way; the slowest).",
+                                 choices=("w8a8", "fused", "bf16"))
+    fp8_backward: bool = setting(False, "fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). "
+                                        "Faster, less precise.")
+    compile_blocks: bool | Auto = setting("auto", "torch.compile the repeated transformer block, fusing the elementwise "
+                                                  "work around the matmuls; the first steps (and first sample) are "
+                                                  'slower while it compiles. "auto": on for runs long enough to repay '
+                                                  "that, when Triton is installed.", choices=("auto", True, False))
+    fused_qk_rope: bool | Auto = setting("auto", "Krea 2, MOSS, MiniMax H3: the attention's q/k norms and rope as one "
+                                                 "op with its own backward (Triton): the same maths, 6-9% a step. "
+                                                 '"auto": on while the blocks run uncompiled (compiled ones fuse '
+                                                 "these already).", choices=("auto", True, False))
+    bypass_mode: bool = setting(False, "Adapters as forward hooks beside each layer instead of patched into its weight. "
+                                       "Quantized bases always train this way.")
+    attention: str = setting("pytorch", "The attention backend while training (only ones with a backward pass; flash "
+                                        "and sage have none).", choices=TRAIN_ATTENTION)
 
 
 @dataclass
@@ -271,127 +269,120 @@ class SamplePrompt:
 
 @dataclass
 class SampleSpec:
-    # score each sample's face against the dataset's (with faces on for the dataset)
-    likeness: bool = True
-    every: int = 0  # 0 = off
-    # each a prompt, or {"prompt", "width"?, "height"?, "frames"?, "seed"?} for its own size
-    prompts: list = field(default_factory=list)
-    negative: str = ""
-    width: int = 1024
-    height: int = 1024
-    # Video models: frames per sample (1 = a still). Snapped to a length the VAE decodes,
-    # saved as an .mp4 at `fps`.
-    frames: int = 1
-    fps: float = 24.0
-    steps: int = 20
-    cfg: float = 5.0
-    sampler: str = "euler"
-    scheduler: str = "normal"
-    # Custom sigmas, high to low (e.g. [1.0, 0.94, 0.85, 0.7, 0.5, 0.3, 0.12, 0]): the noise levels
-    # sampling steps through, in place of the scheduler and steps (len - 1 steps). [] = the scheduler.
-    sigmas: list[float] = field(default_factory=list)
-    seed: int = 42
-    # Render the prompts once before training: the base model's look, to compare against.
-    baseline: bool = True
-    # Sample with a different model than the one being trained (e.g. train Krea raw,
-    # preview on Krea turbo): a diffusion_models file for split models, a checkpoints
-    # file for checkpoint models. Same family, so the training text encoder/VAE are used.
-    model_name: str | None = None
-    model_weight_dtype: str = "default"
-    lora_strength: float = 1.0
-    # A turbo LoRA under every sample (not training, not the saved LoRA): few-step previews,
-    # e.g. MiniMax H3's minimax_h3_turbo_v4_step600_ema at 0.75 with 6 steps, CFG 1.
-    turbo_lora: str | None = None
-    turbo_strength: float = 0.75
-    # Skip-layer guidance, as ComfyUI's SkipLayerGuidanceDiT nodes do it. "uncond" skips the
-    # layers in the negative pass only (no extra cost; MOSS Image's recommended setting);
-    # "standard" adds a pass without them and pushes away from it by slg_scale. Layers are
-    # the main (single-stream) block indices; slg_double_layers is for double-stream models.
-    slg_mode: str = "off"  # off | uncond | standard
-    slg_layers: list[int] = field(default_factory=list)
-    slg_double_layers: list[int] = field(default_factory=list)
-    slg_scale: float = 3.0
-    slg_start: float = 0.01
-    slg_end: float = 1.0
+    """Sample pictures (or clips) during the run: what, how often, and how they're made."""
+    likeness: bool = setting(True, "Score each sample's face against the dataset's (with faces on for the dataset).")
+    every: int = setting(0, "Sample every this many steps. 0 = off.", ge=0)
+    prompts: list[str | dict] = setting(doc='The samples: each a prompt, or {"prompt", "width", "height", "frames", '
+                                            '"seed", "control"} with its own size, length, seed or (edit runs) '
+                                            "picture to edit.", factory=list)
+    negative: str = setting("", "The negative prompt.")
+    width: int = setting(1024, "Sample width.", ge=16)
+    height: int = setting(1024, "Sample height.", ge=16)
+    frames: int = setting(1, "Video models: frames per sample (1 = a still), snapped to a length the VAE decodes and "
+                             "saved as an .mp4 at fps.", ge=1)
+    fps: float = setting(24.0, "Video samples' frame rate.", gt=0)
+    steps: int = setting(20, "Sampling steps.", ge=1)
+    cfg: float = setting(5.0, "CFG scale.", ge=0)
+    sampler: str = setting("euler", "ComfyUI's sampler.")
+    scheduler: str = setting("normal", "ComfyUI's scheduler.")
+    sigmas: list[float] = setting(doc="Custom sigmas, high to low (e.g. [1.0, 0.94, 0.85, 0.7, 0.5, 0.3, 0.12, 0]), in "
+                                      "place of the scheduler and steps (len - 1 steps). [] = the scheduler.",
+                                  factory=list)
+    seed: int = setting(42, "The first sample's seed; each next prompt the next one.", ge=0)
+    baseline: bool = setting(True, "Render the prompts once before training: the base model's look, to compare "
+                                   "against.")
+    model_name: str | None = setting(None, "Sample with another model of the same family than the one training (e.g. "
+                                           "train a raw model, preview on its turbo): a diffusion_models file for "
+                                           "split models, a checkpoints file for checkpoint ones.")
+    model_weight_dtype: str = setting("default", "How model_name's weights load.", choices=WEIGHT_DTYPES)
+    lora_strength: float = setting(1.0, "The trained LoRA's strength in samples.")
+    turbo_lora: str | None = setting(None, "A turbo LoRA under every sample (not training, not the saved LoRA): "
+                                           "few-step previews.")
+    turbo_strength: float = setting(0.75, "turbo_lora's strength.")
+    slg_mode: str = setting("off", 'Skip-layer guidance, as ComfyUI\'s SkipLayerGuidanceDiT: "uncond" skips the layers '
+                                   'in the negative pass only (no extra cost), "standard" adds a pass without them and '
+                                   "pushes away from it by slg_scale.", choices=("off", "uncond", "standard"))
+    slg_layers: list[int] = setting(doc="Skip-layer guidance: the main (single-stream) blocks to skip.", factory=list)
+    slg_double_layers: list[int] = setting(doc="Skip-layer guidance: double-stream blocks, for models that have them.",
+                                           factory=list)
+    slg_scale: float = setting(3.0, 'Skip-layer guidance "standard": how hard it pushes.', ge=0)
+    slg_start: float = setting(0.01, "Skip-layer guidance: where in sampling it starts (0 to 1).", ge=0, le=1)
+    slg_end: float = setting(1.0, "Skip-layer guidance: where it ends (0 to 1).", ge=0, le=1)
 
 
 @dataclass
 class ValidationSpec:
-    """A smooth "is it learning" curve: loss on fixed images at fixed noise levels with
-    fixed noise, so the only thing that changes between evaluations is the LoRA."""
-    every: int = 100  # 0 = off
-    images: int = 4
-    timesteps: int = 4
-    seed: int = 1234
-    # A held-out dataset folder to measure on instead, prepared like the training one (edit inputs,
-    # masks, captions): loss on pictures the LoRA never trains on, so the curve says whether it
-    # generalises rather than how well it fits. "" = pictures from the training dataset
-    dataset: str = ""
+    """A smooth "is it learning" curve: loss on fixed pictures at fixed noise levels with fixed
+    noise, so the only thing that changes between evaluations is the LoRA."""
+    every: int = setting(100, "Measure every this many steps (and before training). 0 = off.", ge=0)
+    images: int = setting(4, "How many pictures to measure.", ge=1)
+    noise_levels: int = setting(4, "Noise levels each picture is measured at, spread over the schedule.", ge=1)
+    seed: int = setting(1234, "Picks the pictures and their noise.", ge=0)
+    dataset: str = setting("", "A held-out dataset folder to measure on instead, prepared like the training one (edit "
+                               "inputs, masks, captions): loss on pictures the LoRA never trains on, so the curve says "
+                               'whether it generalises rather than how well it fits. "" = pictures from the training '
+                               "dataset.")
 
 
 @dataclass
 class OutputSpec:
-    # A checkpoint (LoRA + resume state) every this many steps. 0 = only the final LoRA
-    save_every: int = 250
-    # One of ComfyUI's "loras" folders (e.g. your model library's, on a roomier disk);
-    # None = output/zentrainer/loras inside this install. LoRAs go in a zentrainer/
-    # subfolder of it, so ComfyUI lists them as zentrainer/<run>/<file>.
-    lora_dir: str | None = None
-    # Resume states (optimizer, schedule, RNG) beside each checkpoint, often bigger than
-    # the LoRA: "latest" keeps only the newest (resume from the last save), "all" one per
-    # checkpoint, "none" skips them (the run can't be resumed).
-    keep_states: str = "latest"
-    # What the LoRA files are written in, apart from what trains (network.lora_dtype): bf16 halves
-    # an fp32 file and loses nothing a sample shows. The resume state keeps the full weights.
-    save_dtype: str = "bf16"  # bf16 | fp16 | fp32
-    # Which scheduled checkpoints (save_every) a run keeps: "all"; the `keep_count` "latest"; the
-    # `keep_count` best by "likeness" (its samples' faces, a character dataset with faces on) or by
-    # "val_loss"; or each new best, "likeness_new_best" / "val_loss_new_best": every save that beat
-    # all before it (keep_count unused). The final LoRA, the newest checkpoint (what a resume
-    # continues from) and saves asked for by hand or at a stop always stay (harness/keep.py).
-    keep: str = "all"
-    keep_count: int = 3
+    """Where the LoRAs go, how often, in what, and which checkpoints stay."""
+    save_every: int = setting(250, "A checkpoint (the LoRA and its resume state) every this many steps. 0 = only the "
+                                   "final LoRA.", ge=0)
+    lora_dir: str | None = setting(None, "One of ComfyUI's loras folders to save in (e.g. on a roomier disk). null = "
+                                         "output/zentrainer/loras. LoRAs go in a zentrainer/<run>/ subfolder of it.")
+    keep_states: str = setting("latest", "Resume states (optimizer, schedule, RNG) beside each checkpoint, often bigger "
+                                         'than the LoRA: "latest" keeps only the newest, "all" one per checkpoint, '
+                                         '"none" skips them (the run can\'t be resumed).',
+                               choices=("latest", "all", "none"))
+    save_dtype: str = setting("bf16", "What the LoRA files are written in (training keeps network.lora_dtype): bf16 "
+                                      "halves an fp32 file and loses nothing a sample shows.", choices=DTYPES)
+    keep: str = setting("all", 'Which scheduled checkpoints a run keeps: "all"; the keep_count "latest"; the keep_count '
+                               'best by "likeness" (its samples\' faces) or by "val_loss"; or each new best, '
+                               '"likeness_new_best" / "val_loss_new_best". The final LoRA, the newest checkpoint and '
+                               "saves asked for by hand always stay.",
+                        choices=("all", "latest", "likeness", "val_loss", "likeness_new_best", "val_loss_new_best"))
+    keep_count: int = setting(3, 'How many checkpoints "latest", "likeness" and "val_loss" keep.', ge=1)
 
 
 @dataclass
 class SliderSpec:
-    """A slider LoRA (harness/slider.py): one whose strength moves an image along one attribute, +1
-    towards `positive`, -1 towards `negative`, 0 the base model.
-    "pairs": from picture pairs that differ only in it: the dataset's images are one end, a control
-    set of the same names (_controls/<pair_set>/) the other; captions are the pair's.
-    "text": a concept slider, its targets made from the base model's own predictions for the
-    prompts (no captions needed: the dataset's pictures are only where the noise starts)."""
+    """A slider LoRA: one whose strength moves a picture along one attribute, +1 towards `positive`,
+    -1 towards `negative`, 0 the base model. "pairs" learns it from picture pairs that differ only in
+    it; "text" from the base model's own predictions for the prompts (no captions needed)."""
 
-    kind: str = ""  # "" (a normal LoRA) | "pairs" | "text"
-    # pairs: the control set holding each image's partner, and which end the dataset's own are
-    pair_set: str = ""
-    dataset_end: str = "positive"  # "positive" (the dataset's images are +1) | "negative"
-    positive: str = ""  # what +1 adds, e.g. "a person, old, wrinkled skin, grey hair"
-    negative: str = ""  # what -1 adds, e.g. "a person, young, smooth skin"
-    neutral: str = ""  # what the LoRA trains on, without either: e.g. "a person"
-    # prompts whose images the slider should leave alone (at +1 and -1, pulled to the base model)
-    anchors: list[str] = field(default_factory=list)
-    guidance: float = 3.0  # how far each end is pushed past the base model's own difference
-    anchor_weight: float = 1.0
-    directions: str = "both"  # "both" | "positive" (only +1 is trained)
+    kind: str = setting("", '"" (a normal LoRA), "pairs" or "text".', choices=("", "pairs", "text"))
+    pair_set: str = setting("", "pairs: the control set holding each picture's partner (_controls/<pair_set>/, the "
+                                "same names).")
+    dataset_end: str = setting("positive", "pairs: which end the dataset's own pictures are.",
+                               choices=("positive", "negative"))
+    positive: str = setting("", 'What +1 adds, e.g. "a person, old, wrinkled skin, grey hair".')
+    negative: str = setting("", 'What -1 adds, e.g. "a person, young, smooth skin".')
+    neutral: str = setting("", 'text: what the LoRA trains on, without either end, e.g. "a person".')
+    anchors: list[str] = setting(doc="text: prompts the slider should leave alone (pulled to the base model at +1 and "
+                                     "-1).", factory=list)
+    guidance: float = setting(3.0, "text: how far each end is pushed past the base model's own difference.", gt=0, le=20)
+    anchor_weight: float = setting(1.0, "text: the anchors' weight.", ge=0)
+    directions: str = setting("both", '"both", or "positive" (only +1 is trained).', choices=("both", "positive"))
 
 
 @dataclass
 class TrainSpec:
-    # the spec's layout (SPEC_VERSION): an older one is brought up to date as it's read (migrate)
-    spec_version: int = 2
-    name: str = "untitled"
-    seed: int = 0
-    model: ModelSpec = field(default_factory=ModelSpec)
-    dataset: DatasetSpec = field(default_factory=DatasetSpec)
-    network: NetworkSpec = field(default_factory=NetworkSpec)
-    optim: OptimSpec = field(default_factory=OptimSpec)
-    objective: ObjectiveSpec = field(default_factory=ObjectiveSpec)
-    memory: MemorySpec = field(default_factory=MemorySpec)
-    samples: SampleSpec = field(default_factory=SampleSpec)
-    validation: ValidationSpec = field(default_factory=ValidationSpec)
-    output: OutputSpec = field(default_factory=OutputSpec)
-    slider: SliderSpec = field(default_factory=SliderSpec)
+    """A training run: what to train and how. Each section has its own table below."""
+    spec_version: int = setting(2, "The spec's layout. An older one is brought up to date as it's read; a newer one "
+                                   "(from a newer ZenTrainer) is refused.")
+    name: str = setting("untitled", "The run's name.")
+    seed: int = setting(0, "The run's seed: noise, shuffling and dropout.", ge=0)
+    model: ModelSpec = setting(doc="The model.", factory=ModelSpec)
+    dataset: DatasetSpec = setting(doc="The dataset.", factory=DatasetSpec)
+    network: NetworkSpec = setting(doc="The adapter.", factory=NetworkSpec)
+    optim: OptimSpec = setting(doc="The optimizer and schedule.", factory=OptimSpec)
+    objective: ObjectiveSpec = setting(doc="The loss and noise levels.", factory=ObjectiveSpec)
+    memory: MemorySpec = setting(doc="Memory and speed.", factory=MemorySpec)
+    samples: SampleSpec = setting(doc="Samples.", factory=SampleSpec)
+    validation: ValidationSpec = setting(doc="Validation loss.", factory=ValidationSpec)
+    output: OutputSpec = setting(doc="Saving.", factory=OutputSpec)
+    slider: SliderSpec = setting(doc="Slider LoRAs.", factory=SliderSpec)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -413,149 +404,166 @@ class TrainSpec:
         spec = build(cls, raw)
         for k, v in parts.items():
             setattr(spec, k, v)
+        _normalize(spec)
         spec.validate()
         return spec
 
     def validate(self) -> None:
+        """SpecError for the first thing wrong: each field's type, choices and bounds (from its
+        setting()), then what depends on several fields. It only checks; from_dict fills in."""
+        for sec in fields(self):
+            v = getattr(self, sec.name)
+            if is_dataclass(v):
+                _check_fields(v, f"{sec.name}.")
+        _check_fields(self, "", sections=False)
         m = self.model
-        if m.kind not in ("checkpoint", "split"):
-            raise SpecError(f"model.kind must be 'checkpoint' or 'split', got {m.kind!r}")
         if m.kind == "checkpoint" and not m.ckpt_name:
             raise SpecError("model.ckpt_name is required for a checkpoint model")
         if m.kind == "split":
             missing = [k for k in ("unet_name", "clip_name", "clip_type", "vae_name") if not getattr(m, k)]
             if missing:
                 raise SpecError(f"split model needs: {', '.join('model.' + k for k in missing)}")
-        if not self.dataset.folder:
+        d = self.dataset
+        if not d.folder:
             raise SpecError("dataset.folder is required")
         last = 0.0
-        for st in self.dataset.stages:
-            if not isinstance(st, dict) or not isinstance(st.get("resolution"), int) or not isinstance(st.get("until"), (int, float)):
+        for st in d.stages:
+            if not isinstance(st.get("resolution"), int) or not isinstance(st.get("until"), (int, float)) or set(st) - {"resolution", "until"}:
                 raise SpecError('dataset.stages are {"resolution": 768, "until": 0.6}')
-            if not 256 <= st["resolution"] < self.dataset.resolution:
-                raise SpecError(f"a stage's resolution is below the run's ({self.dataset.resolution}) and at least 256")
+            if not 256 <= st["resolution"] < d.resolution:
+                raise SpecError(f"a stage's resolution is below the run's ({d.resolution}) and at least 256")
             if not last < st["until"] < 1.0:
                 raise SpecError("dataset.stages end in order, each before the run does (until: 0 to 1)")
             last = st["until"]
-        if not 0.0 <= self.dataset.stage_blend < 1.0:
-            raise SpecError("dataset.stage_blend is a share of the run, 0 to below 1")
-        _choice("network.algorithm", self.network.algorithm, ("LoRA", "LoHa", "LoKr", "OFT"))
-        if self.network.base_lora and not -4.0 <= self.network.base_strength <= 4.0:
-            raise SpecError("network.base_strength is a LoRA strength, between -4 and 4 (usually 1)")
-        _choice("optim.lr_scheduler", self.optim.lr_scheduler, ("constant", "linear", "cosine"))
-        _choice("objective.loss", self.objective.loss, ("mse", "l1", "huber", "smooth_l1"))
-        _choice("objective.target", self.objective.target, ("native", "x0"))
-        _choice("objective.timesteps", self.objective.timesteps, ("uniform", "logit_normal", "scheduler"))
-        if self.objective.timesteps == "scheduler":
-            if not 1 <= self.objective.timestep_scheduler_steps <= 1000:
-                raise SpecError("objective.timestep_scheduler_steps is a step count, 1 to 1000")
-            if self.objective.shift:
-                raise SpecError("objective.shift is the model's own with a scheduler (its shift is in the schedule): set it to 0")
-        _choice("objective.bias", self.objective.bias, ("balanced", "high_noise", "low_noise"))
-        _choice("objective.weighting", self.objective.weighting, ("", "flex", "balance"))
-        if not 1.0 <= self.objective.bias_power <= 10.0:
-            raise SpecError("objective.bias_power is how hard the bias leans, 1 (not at all) to 10 (3 = AI Toolkit's)")
-        _choice("memory.training_dtype", self.memory.training_dtype, ("bf16", "fp16", "fp32"))
-        _choice("memory.int8_backward", self.memory.int8_backward, ("w8a8", "fused", "bf16"))
-        if self.memory.int8_forward is None:  # what the form shows for it: the default, on
-            self.memory.int8_forward = True
-        sl = self.slider
-        _choice("slider.kind", sl.kind, ("", "pairs", "text"))
-        _choice("slider.directions", sl.directions, ("both", "positive"))
-        _choice("slider.dataset_end", sl.dataset_end, ("positive", "negative"))
-        if sl.kind == "pairs":
-            if not CONTROL_SET_NAME.match(sl.pair_set or ""):
-                raise SpecError("an image slider needs the set holding each picture's partner: slider.pair_set "
-                                "(a folder under the dataset's _controls/)")
-            if self.dataset.edit:
-                raise SpecError("an image slider pairs pictures itself: turn edit training off (dataset.edit)")
-        if sl.kind == "text":
-            if not (sl.positive.strip() and sl.negative.strip()):
-                raise SpecError("a text slider needs both ends: slider.positive and slider.negative")
-            if not 0 < sl.guidance <= 20:
-                raise SpecError("slider.guidance is above 0 (3 is usual)")
-            if sl.anchor_weight < 0:
-                raise SpecError("slider.anchor_weight can't be negative")
-        _choice("samples.slg_mode", self.samples.slg_mode, ("off", "uncond", "standard"))
-        check_sigmas(self.samples.sigmas)
-        _choice("output.keep_states", self.output.keep_states, ("latest", "all", "none"))
-        _choice("output.save_dtype", self.output.save_dtype, ("bf16", "fp16", "fp32"))
-        _choice("output.keep", self.output.keep, ("all", "latest", "likeness", "val_loss", "likeness_new_best",
-                                                  "val_loss_new_best"))
-        if self.output.keep_count < 1:
-            raise SpecError("output.keep_count must be >= 1")
-        if self.output.keep in ("val_loss", "val_loss_new_best") and not self.validation.every:
-            raise SpecError("keeping the best checkpoints by validation loss needs validation on (validation.every)")
-        if self.output.keep in ("likeness", "likeness_new_best") and not (self.samples.prompts and self.samples.likeness):
-            raise SpecError("keeping the best checkpoints by likeness needs sample prompts with likeness on "
-                            "(samples.prompts, samples.likeness)")
-        if self.objective.shift < 0:
-            raise SpecError("objective.shift must be >= 0 (0 = the model's own)")
-        if not 0.0 <= self.samples.slg_start <= self.samples.slg_end <= 1.0:
-            raise SpecError("samples.slg_start/slg_end must satisfy 0 <= start <= end <= 1")
+        if any(not CONTROL_SET_NAME.match(c) for c in d.control_sets):
+            raise SpecError("dataset.control_sets are set names: lowercase letters, digits, - and _")
+        if d.edit_template and "{}" not in d.edit_template:
+            raise SpecError("dataset.edit_template needs {} where the instruction goes")
         if isinstance(self.network.targets, str):
             _choice("network.targets", self.network.targets, ("attn", "mlp", "attn_mlp", "all"))
-        if self.optim.steps < 1:
-            raise SpecError("optim.steps must be >= 1")
-        for p in self.samples.prompts:
-            if isinstance(p, dict):
-                if not isinstance(p.get("prompt"), str):
-                    raise SpecError("each sample needs a prompt")
-                for k in ("width", "height", "frames", "seed"):
-                    if p.get(k) is not None and (not isinstance(p[k], int) or p[k] < (0 if k == "seed" else 1)):
-                        raise SpecError(f"sample {k} must be a positive whole number")
-                if any(p.get(k) and p[k] % 16 for k in ("width", "height")):
-                    raise SpecError("sample width/height must be multiples of 16")
-            elif not isinstance(p, str):
-                raise SpecError("samples.prompts holds prompts (text) or {prompt, width, height, frames, seed}")
         if self.network.blocks and not re.fullmatch(r"\s*\d*\s*-?\s*\d*\s*", self.network.blocks):
             raise SpecError("network.blocks is a range like 20-49, 20- or 10")
         if self.network.skip_blocks and not re.fullmatch(r"\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*", self.network.skip_blocks):
             raise SpecError("network.skip_blocks is blocks and ranges like 22 or 22, 30-31")
-        if not 0.0 <= self.memory.tread < 1.0:
-            raise SpecError("memory.tread is a share of the video tokens, from 0 (off) to below 1")
-        if not 0.0 <= self.objective.uniform_mix <= 1.0:
-            raise SpecError("objective.uniform_mix is a share between 0 and 1")
-        if self.dataset.edit_method not in ("", "index", "offset", "index_timestep_zero", "negative_index", "uxo", "concat"):
-            raise SpecError("dataset.edit_method is one of index, offset, index_timestep_zero, concat (or empty for the model's own)")
-        if not 0.0 <= self.dataset.control_dropout < 1.0:
-            raise SpecError("dataset.control_dropout is a share of steps, 0 to below 1")
-        if not 0.0 <= self.memory.tread_steps <= 1.0:
-            raise SpecError("memory.tread_steps is a share between 0 and 1")
-        if any(not isinstance(c, str) or not CONTROL_SET_NAME.match(c) for c in self.dataset.control_sets):
-            raise SpecError("dataset.control_sets are set names: lowercase letters, digits, - and _")
-        if self.dataset.control_sets:
-            self.dataset.edit = True
-        elif self.dataset.edit:
-            self.dataset.control_sets = ["control"]  # specs from before control sets: the _control files
-        if self.dataset.video_keyframes not in ("", "first", "first_last"):
-            raise SpecError("dataset.video_keyframes is first, first_last or empty")
-        if self.dataset.edit_template and "{}" not in self.dataset.edit_template:
-            raise SpecError("dataset.edit_template needs {} where the instruction goes")
-        if not 0.0 <= self.optim.lr_floor <= 1.0:
-            raise SpecError("optim.lr_floor is a fraction of the start learning rate, 0 (off) to 1")
-        if not 0.0 <= self.optim.ema < 1.0:
-            raise SpecError("optim.ema is a decay between 0 (off) and below 1, e.g. 0.98")
-        if self.optim.lora_plus < 0:
-            raise SpecError("optim.lora_plus must be >= 0 (0 = off)")
-        if self.samples.frames < 1 or self.samples.fps <= 0:
-            raise SpecError("samples.frames must be >= 1 and samples.fps > 0")
-        if self.output.save_every < 0 or self.samples.every < 0:
-            raise SpecError("output.save_every and samples.every must be >= 0 (0 = off)")
-        if self.validation.every < 0 or self.validation.images < 1 or self.validation.timesteps < 1:
-            raise SpecError("validation needs every >= 0, images >= 1 and timesteps >= 1")
-        if self.validation.dataset and self.validation.dataset == self.dataset.folder:
+        if self.objective.timesteps == "scheduler" and self.objective.shift:
+            raise SpecError("objective.shift is the model's own with a scheduler (its shift is in the schedule): set it to 0")
+        sl = self.slider
+        if sl.kind == "pairs":
+            if not CONTROL_SET_NAME.match(sl.pair_set or ""):
+                raise SpecError("an image slider needs the set holding each picture's partner: slider.pair_set "
+                                "(a folder under the dataset's _controls/)")
+            if d.edit:
+                raise SpecError("an image slider pairs pictures itself: turn edit training off (dataset.edit)")
+        if sl.kind == "text" and not (sl.positive.strip() and sl.negative.strip()):
+            raise SpecError("a text slider needs both ends: slider.positive and slider.negative")
+        sa = self.samples
+        check_sigmas(sa.sigmas)
+        if sa.slg_start > sa.slg_end:
+            raise SpecError("samples.slg_start is before samples.slg_end")
+        for p in sa.prompts:
+            if isinstance(p, dict):
+                if not isinstance(p.get("prompt"), str):
+                    raise SpecError("each sample needs a prompt")
+                if set(p) - {"prompt", "width", "height", "frames", "seed", "control"}:
+                    raise SpecError(f"a sample takes prompt, width, height, frames, seed and control, not "
+                                    f"{', '.join(sorted(set(p) - {'prompt', 'width', 'height', 'frames', 'seed', 'control'}))}")
+                for k in ("width", "height", "frames", "seed"):
+                    if p.get(k) is not None and (not isinstance(p[k], int) or isinstance(p[k], bool) or p[k] < (0 if k == "seed" else 1)):
+                        raise SpecError(f"sample {k} must be a positive whole number")
+                if any(p.get(k) and p[k] % 16 for k in ("width", "height")):
+                    raise SpecError("sample width/height must be multiples of 16")
+                if p.get("control") is not None and not isinstance(p["control"], str):
+                    raise SpecError("a sample's control is a picture's path")
+        out = self.output
+        if out.keep in ("val_loss", "val_loss_new_best") and not self.validation.every:
+            raise SpecError("keeping the best checkpoints by validation loss needs validation on (validation.every)")
+        if out.keep in ("likeness", "likeness_new_best") and not (sa.prompts and sa.likeness):
+            raise SpecError("keeping the best checkpoints by likeness needs sample prompts with likeness on "
+                            "(samples.prompts, samples.likeness)")
+        if self.validation.dataset and self.validation.dataset == d.folder:
             raise SpecError("validation.dataset is the training dataset: pick a held-out one, or leave it empty "
                             "to measure on pictures from the training set")
-        if self.validation.dataset and self.slider.kind == "pairs":
+        if self.validation.dataset and sl.kind == "pairs":
             raise SpecError("a held-out validation dataset isn't for image sliders: their loss is on the pairs")
-        if not 0.0 <= self.dataset.unmasked_weight <= 1.0:
-            raise SpecError("dataset.unmasked_weight must be between 0 and 1")
-        d = self.dataset
-        if d.video_mode not in ("uniform", "head", "chunks"):
-            raise SpecError("dataset.video_mode is uniform, head or chunks")
-        if d.video_frames < 1 or d.video_clips < 1 or d.video_resolution < 64 or d.video_fps < 0:
-            raise SpecError("dataset video settings: frames and clips at least 1, resolution at least 64, fps 0 or more")
+
+
+def _type_ok(value: Any, hint: Any) -> bool:
+    """Whether a JSON value fits a field's annotation (bools are never numbers; ints are floats)."""
+    origin, args = get_origin(hint), get_args(hint)
+    if hint is Any:
+        return True
+    if origin in (Union, types.UnionType):
+        return any(_type_ok(value, a) for a in args)
+    if hint is type(None):
+        return value is None
+    if origin is Literal:
+        return any(value == a and type(value) is type(a) for a in args)
+    if origin is list or hint is list:
+        return isinstance(value, list) and (not args or all(_type_ok(x, args[0]) for x in value))
+    if origin is dict or hint is dict:
+        return isinstance(value, dict)
+    if hint is bool:
+        return isinstance(value, bool)
+    if hint is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if hint is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if hint is str:
+        return isinstance(value, str)
+    return isinstance(value, hint) if isinstance(hint, type) else True
+
+
+def _type_name(hint: Any) -> str:
+    """An annotation as the reference writes it: "number", "text or null", "list of text", ..."""
+    origin, args = get_origin(hint), get_args(hint)
+    if origin in (Union, types.UnionType):
+        return " or ".join(_type_name(a) for a in args)
+    if origin is Literal:
+        return " or ".join(json.dumps(a) for a in args)
+    if origin is list or hint is list:
+        return f"list of {_type_name(args[0])}" if args else "list"
+    return {bool: "true/false", int: "whole number", float: "number", str: "text", dict: "object",
+            type(None): "null"}.get(hint, getattr(hint, "__name__", str(hint)))
+
+
+def _bounds(meta) -> str:
+    parts = [f"{op} {meta[k]:g}" for k, op in (("ge", ">="), ("gt", ">"), ("le", "<="), ("lt", "<")) if meta.get(k) is not None]
+    return ", ".join(parts)
+
+
+def _check_fields(obj, at: str, sections: bool = True) -> None:
+    """One section's fields against their annotation, choices and bounds."""
+    hints = get_type_hints(type(obj))
+    for f in fields(obj):
+        if not sections and is_dataclass(getattr(obj, f.name)):
+            continue
+        v, meta, name = getattr(obj, f.name), f.metadata, f"{at}{f.name}"
+        if not _type_ok(v, hints[f.name]):
+            raise SpecError(f"{name} is {_type_name(hints[f.name])}, got {json.dumps(v) if _jsonable(v) else repr(v)}")
+        if meta.get("choices") is not None and isinstance(v, (str, bool)) and not any(v == c and type(v) is type(c) for c in meta["choices"]):
+            raise SpecError(f"{name} is one of {', '.join(json.dumps(c) for c in meta['choices'])}, got {json.dumps(v)}")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            lo, lo_x, hi, hi_x = meta.get("ge"), meta.get("gt"), meta.get("le"), meta.get("lt")
+            if (lo is not None and v < lo) or (lo_x is not None and v <= lo_x) or (hi is not None and v > hi) or (hi_x is not None and v >= hi_x):
+                raise SpecError(f"{name} must be {_bounds(meta)}, got {v:g}")
+
+
+def _jsonable(v) -> bool:
+    try:
+        json.dumps(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalize(spec: TrainSpec) -> None:
+    """What loading fills in, before validate(): control sets mean edit training, and edit
+    training without any uses the "control" set (specs from before control sets)."""
+    d = spec.dataset
+    if isinstance(d.control_sets, list) and d.control_sets:
+        d.edit = True
+    elif d.edit is True and d.control_sets == []:
+        d.control_sets = ["control"]
 
 
 class SpecError(ValueError):
@@ -597,6 +605,23 @@ def _v1_to_v2(d: dict) -> None:
         if w8a8 is None:  # null: the form showed the default, on
             w8a8 = True
         m.setdefault("int8_backward", "w8a8" if w8a8 else "fused" if fused else "bf16")
+    _v2_draft(d)
+
+
+def _v2_draft(d: dict) -> None:
+    """v2 as its first draft wrote it, before it was released (2026-10-26/27): these were renamed
+    after some runs were saved with them, and its nulls meant auto (or on)."""
+    for src, dst in (("validation.timesteps", "validation.noise_levels"),
+                     ("memory.checkpoint_depth", "memory.grad_checkpoint_depth"),
+                     ("memory.checkpoint_skip", "memory.grad_checkpoint_skip")):
+        _move(d, src, dst)
+    m = d.get("memory")
+    if isinstance(m, dict):
+        for k in ("compile_blocks", "fused_qk_rope"):  # v1's null meant auto
+            if k in m and m[k] is None:
+                m[k] = "auto"
+        if "int8_forward" in m and m["int8_forward"] is None:  # null: the form showed the default, on
+            m["int8_forward"] = True
 
 
 MIGRATIONS = {1: _v1_to_v2}  # from version n to n + 1
@@ -635,6 +660,8 @@ def migrate(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                         f"{SPEC_VERSION}): update ZenTrainer")
     for v in range(version, SPEC_VERSION):
         MIGRATIONS[v](d)
+    if version == 2:
+        _v2_draft(d)
     dropped: list[str] = []
     out = _known(TrainSpec, d, "", dropped)
     if "spec_version" in data or any(k in data for k in ("model", "dataset")):
@@ -649,6 +676,86 @@ CONTROL_SET_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
 def _choice(name: str, value: str, options: tuple[str, ...]) -> None:
     if value not in options:
         raise SpecError(f"{name} must be one of {', '.join(options)}; got {value!r}")
+
+
+def _json_schema_type(hint: Any) -> dict:
+    origin, args = get_origin(hint), get_args(hint)
+    if origin in (Union, types.UnionType):
+        return {"anyOf": [_json_schema_type(a) for a in args]}
+    if origin is Literal:
+        return {"enum": list(args)}
+    if origin is list or hint is list:
+        return {"type": "array", **({"items": _json_schema_type(args[0])} if args else {})}
+    return {"type": {bool: "boolean", int: "integer", float: "number", str: "string", dict: "object",
+                     type(None): "null"}.get(hint, "object")}
+
+
+def schema() -> dict:
+    """The JSON Schema of a spec, from each field's setting(): types, defaults, choices, bounds and
+    what it means (served at /zentrainer/api/spec/schema). What depends on several fields
+    (validate()) is beyond it, so a spec the schema passes can still be refused."""
+    def section(dc) -> dict:
+        hints, props = get_type_hints(dc), {}
+        for f in fields(dc):
+            sub = f.default_factory() if callable(f.default_factory) else None
+            if is_dataclass(sub):
+                props[f.name] = {**section(type(sub)), "description": f.metadata.get("doc", "")}
+                continue
+            m = f.metadata
+            entry = {**_json_schema_type(hints[f.name]), "description": m.get("doc", "")}
+            entry["default"] = f.default if f.default is not MISSING else f.default_factory()
+            if m.get("choices") is not None:
+                entry["enum"] = list(m["choices"])
+            for k, js in (("ge", "minimum"), ("gt", "exclusiveMinimum"), ("le", "maximum"), ("lt", "exclusiveMaximum")):
+                if m.get(k) is not None:
+                    entry[js] = m[k]
+            props[f.name] = entry
+        return {"type": "object", "description": (dc.__doc__ or "").strip(), "properties": props,
+                "additionalProperties": False}
+
+    out = section(TrainSpec)
+    out["properties"]["spec_version"]["const"] = SPEC_VERSION
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": f"ZenTrainer run spec, version {SPEC_VERSION}",
+            **out, "required": ["model", "dataset"]}
+
+
+def reference() -> str:
+    """docs/spec.md: every field, from its setting() (tests check the file is current)."""
+    def default(f) -> str:
+        v = f.default if f.default is not MISSING else f.default_factory()
+        return f"`{json.dumps(v)}`"
+
+    def allowed(f, hint) -> str:
+        m = f.metadata
+        if m.get("choices") is not None:
+            return " or ".join(f"`{json.dumps(c)}`" for c in m["choices"])
+        b = _bounds(m)
+        return f"{_type_name(hint)}, {b}" if b else _type_name(hint)
+
+    lines = [f"# Run spec reference (version {SPEC_VERSION})", "",
+             "<!-- generated from engine/zentrainer/spec.py: `python -m zentrainer.spec > docs/spec.md` in engine/ -->", "",
+             "A run spec is the JSON a run is made from: what the run form, `zt train`, the API and exported settings",
+             "files all speak. Every field is optional apart from `model` and `dataset.folder`; a missing one takes its",
+             "default. A spec without `spec_version` is version 1 and is brought up to date as it's read; a field this",
+             "version doesn't have is an error. The same rules as JSON Schema: `/zentrainer/api/spec/schema`.", ""]
+    top = get_type_hints(TrainSpec)
+    lines += ["## Top level", "", "| Field | Default | Allowed | What it does |", "|---|---|---|---|"]
+    sections = []
+    for f in fields(TrainSpec):
+        sub = f.default_factory() if callable(f.default_factory) else None
+        if is_dataclass(sub):
+            sections.append((f.name, type(sub)))
+            lines.append(f"| `{f.name}` | | object | {f.metadata.get('doc', '')} See [{f.name}](#{f.name}). |")
+        else:
+            lines.append(f"| `{f.name}` | {default(f)} | {allowed(f, top[f.name])} | {f.metadata.get('doc', '')} |")
+    for name, dc in sections:
+        hints = get_type_hints(dc)
+        lines += ["", f"## {name}", "", " ".join((dc.__doc__ or "").split()), "",
+                  "| Field | Default | Allowed | What it does |", "|---|---|---|---|"]
+        for f in fields(dc):
+            doc = f.metadata.get("doc", "").replace("|", "\\|")
+            lines.append(f"| `{name}.{f.name}` | {default(f)} | {allowed(f, hints[f.name])} | {doc} |")
+    return "\n".join(lines) + "\n"
 
 
 def slugify(name: str) -> str:
@@ -700,3 +807,9 @@ def locked_changes(old: dict, new: dict) -> list[str]:
         elif a != b:
             out.append(path)
     return out
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.stdout.write(json.dumps(schema(), indent=2) + "\n" if "--schema" in sys.argv else reference())
