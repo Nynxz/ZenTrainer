@@ -5,6 +5,7 @@
 // file-by-file picker for anything the catalog doesn't know.
 import { ZenButton, ZenCombo } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
+import { inputChoices } from '@/api/comfy'
 import { engine, type ModelFamily, type ModelFile, type ModelFolder, type ModelProfile, type SampleDefaults } from '@/api/engine'
 import { fmtAdded, fmtBytes, finished, hfToken, isNew, startDownloadSync, targets } from '@/stores/downloads'
 import FileState from './FileState.vue'
@@ -53,7 +54,28 @@ const PARTS: Record<'split' | 'checkpoint', { folder: ModelFolder; label: string
 const parts = computed(() => (fam.value ? PARTS[fam.value.kind] : []))
 
 const base = (n?: string | null) => (n ?? '').replace(/\\/g, '/').split('/').pop() ?? ''
-const fileOf = (folder: ModelFolder, name?: string | null) => fam.value?.files[folder]?.find((f) => f.name === base(name))
+// what ComfyUI has in each folder, as its loaders list them: a file of yours outside the catalog (a
+// quant you made, a renamed copy) is still installed, and a duplicated run keeps it rather than
+// showing it empty and asking to download the catalog's
+const LOADERS: Partial<Record<ModelFolder, [string, string]>> = {
+  checkpoints: ['CheckpointLoaderSimple', 'ckpt_name'], diffusion_models: ['UNETLoader', 'unet_name'],
+  text_encoders: ['CLIPLoader', 'clip_name'], vae: ['VAELoader', 'vae_name'],
+}
+const onDisk = ref<Partial<Record<ModelFolder, string[]>>>({})
+async function loadOnDisk() {
+  const lists = await Promise.all(
+    Object.entries(LOADERS).map(async ([folder, [node, input]]) => [folder, await inputChoices(node, input).catch(() => [])] as const),
+  )
+  onDisk.value = Object.fromEntries(lists)
+}
+/** a file of yours: installed here, not in the family's catalog */
+function yours(folder: ModelFolder, name?: string | null): ModelFile | undefined {
+  if (!name) return undefined
+  const hit = (onDisk.value[folder] ?? []).find((n) => n === name || base(n) === base(name))
+  return hit ? { name: base(name), folder, url: '', size: null, distilled: false, from_template: false, installed: hit } : undefined
+}
+const fileOf = (folder: ModelFolder, name?: string | null) =>
+  fam.value?.files[folder]?.find((f) => f.name === base(name)) ?? yours(folder, name)
 
 // which family the current spec already uses (a duplicated run, a preset)
 function detect(list: ModelFamily[]): string {
@@ -166,6 +188,7 @@ function setFile(folder: ModelFolder, key: keyof ModelValue, name: string | numb
 
 // install state changes as downloads land: refresh the family and swap in the local names
 watch(finished, async () => {
+  void loadOnDisk()
   if (!fam.value) return
   const full = await engine.family(fam.value.id, true).catch(() => null)
   if (!full) return
@@ -244,8 +267,13 @@ const familyItems = computed(() => [
     : []),
   { value: CUSTOM, label: 'Custom: pick the files yourself', keywords: 'custom manual files', f: null },
 ])
-const fileItems = (folder: ModelFolder) =>
-  (fam.value?.files[folder] ?? []).map((f) => ({ value: f.name, label: f.name, keywords: f.name, file: f }))
+// the catalog's files, and the one picked when it's one of yours (listed so it shows, tagged)
+const fileItems = (folder: ModelFolder, current?: string | null) => {
+  const items = (fam.value?.files[folder] ?? []).map((f) => ({ value: f.name, label: f.name, keywords: f.name, file: f, mine: false }))
+  const own = yours(folder, current)
+  if (own && !items.some((i) => i.value === own.name)) items.push({ value: own.name, label: own.name, keywords: own.name, file: own, mine: true })
+  return items
+}
 // installed: the tick alone; else what's left to fetch, by size (the count on hover)
 const statusOf = (f: ModelFamily) => {
   if (!f.missing.length) return ''
@@ -258,6 +286,7 @@ const statusTip = (f: ModelFamily) =>
 onMounted(() => {
   startDownloadSync()
   loadFamilies()
+  void loadOnDisk()
 })
 defineExpose({ refresh: () => fam.value && open(fam.value.id, true) })
 </script>
@@ -332,7 +361,7 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true) })
         <span class="p-label">{{ p.label }}</span>
         <ZenCombo
           :model-value="base(model[p.key] as string)"
-          :items="fileItems(p.folder)"
+          :items="fileItems(p.folder, model[p.key] as string)"
           :item-height="34"
           :menu-width="440"
           @update:model-value="setFile(p.folder, p.key, $event)"
@@ -342,6 +371,7 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true) })
               <i :class="(item.file as ModelFile).installed ? 'mdi mdi-check-circle ok' : 'mdi mdi-cloud-download-outline muted'" />
               <span class="f-name">{{ item.label }}</span>
               <span v-if="(item.file as ModelFile).distilled" class="tag" title="Distilled (turbo/lightning): fast to sample, not a good base to train on">turbo</span>
+              <span v-if="item.mine" class="tag" title="Installed here, not one of the family's files: yours">yours</span>
               <span class="f-size mono">{{ fmtBytes((item.file as ModelFile).size) }}</span>
             </div>
           </template>
