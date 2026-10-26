@@ -53,10 +53,10 @@ def test_the_defaults_pass_their_own_checks():
     ("optim", "steps", "1000", "optim.steps is whole number"),  # a number as text
     ("network", "rank", True, "network.rank is whole number"),  # a bool isn't a number
     ("optim", "learning_rate", 0, "optim.learning_rate must be > 0"),
-    ("optim", "optimizer", "AdamWW", "optim.optimizer is one of"),
+    ("optim", "optimizer", "AdamWW", "optim.optimizer: \"AdamWW\" isn't one of its choices; did you mean \"AdamW\"?"),
     ("memory", "attention", "flash", "memory.attention is one of"),
     ("memory", "compile_blocks", "yes", 'memory.compile_blocks is true/false or "auto"'),  # (null is v1's auto)
-    ("network", "lora_dtype", "fp64", "network.lora_dtype is one of"),
+    ("network", "lora_dtype", "fp64", "network.lora_dtype is one of"),  # too far off for a guess
     ("dataset", "caption_mix", "tags", "dataset.caption_mix is list of text"),
     ("objective", "logit_std", 0, "objective.logit_std must be > 0"),
 ])
@@ -101,3 +101,15 @@ def test_the_harness_choices_match_the_specs():
 
     assert set(S.OPTIMIZERS) == set(optim.OPTIMIZERS)
     assert S.TRAIN_ATTENTION == TRAINABLE_ATTENTION
+
+
+def test_problems_lists_everything_at_once():
+    _, errors, notes = S.problems({"model": {"kind": "checkpoint", "ckpt_name": "m"}, "dataset": {"folder": "c", "resolution": "big"},
+                                   "optim": {"optimizer": "adamw", "steps": 0}, "memmory": {}})
+    assert notes == ["version 1: read as version 2 (renamed fields carried over)"]
+    assert errors == ["unknown field: memmory (did you mean memory?)", 'dataset.resolution is whole number, got "big"',
+                      'optim.optimizer: "adamw" isn\'t one of its choices; did you mean "AdamW"?', "optim.steps must be >= 1, got 0"]
+    spec, errors, _ = S.problems({"spec_version": 2, **BASE})
+    assert not errors and spec["dataset"]["folder"] == "cats"
+    _, errors, _ = S.problems({"spec_version": 2, "model": {"kind": "split"}, "dataset": {"folder": "c"}})
+    assert errors and errors[0].startswith("split model needs")  # the rules across fields, once the fields are right

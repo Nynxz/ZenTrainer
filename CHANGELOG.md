@@ -290,6 +290,14 @@ and Manager show.
   now loads as it is.
 
 ### Install and run
+- **Specs from the command line:** `zt new [--profile ID] > spec.json` writes a complete spec with
+  every default to start from, and `zt check spec.json` lists every problem in one at once (with
+  what a typo likely meant: `optim.lerning_rate (did you mean optim.learning_rate?)`), offline and
+  by the server's rules. `zt train` checks the same way first, so a bad spec never reaches the
+  queue. The server's errors name the likely field or choice too.
+- **Guides for scripting:** [docs/cli.md](docs/cli.md) (the commands, with a worked example) and
+  [docs/api.md](docs/api.md) (the HTTP API the app and `zt` use: runs, the queue, live events, with
+  a Python example).
 - **A git clone into custom_nodes opens without building anything:** the first visit to
   /zentrainer/ fetches the prebuilt web app for that version (with the clone's own git), and again
   after a `git pull` that changed it. It said to run `pnpm build` before. A build of your own is

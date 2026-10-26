@@ -72,16 +72,68 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 # ---- runs ----------------------------------------------------------------------------------------
 
+def _engine_spec():
+    """The engine's spec module (plain Python, no ComfyUI or torch): the same checks as the server."""
+    if str(repo.ENGINE) not in sys.path:
+        sys.path.insert(0, str(repo.ENGINE))
+    from zentrainer import spec
+
+    return spec
+
+
+def _profile(profile: str | None) -> dict:
+    if not profile:
+        return {}
+    prof = repo.ENGINE / "profiles" / f"{profile}.json"
+    if not prof.is_file():
+        have = ", ".join(p.stem for p in (repo.ENGINE / "profiles").glob("*.json"))
+        ui.die(f"no profile {profile!r}; have {have}")
+    return json.loads(prof.read_text()).get("train", {})
+
+
+def load_spec(spec_path: str, profile: str | None = None, sets: list[str] | None = None) -> dict:
+    """A spec file (- for stdin) over a profile's settings, then --set on top."""
+    try:
+        spec = json.loads(Path(spec_path).read_text()) if spec_path != "-" else json.load(sys.stdin)
+    except (OSError, ValueError) as e:
+        ui.die(f"{spec_path}: {e}")
+    if not isinstance(spec, dict):
+        ui.die(f"{spec_path}: a spec is a JSON object")
+    return apply_sets(_deep_merge(_profile(profile), spec), sets)  # the file wins over the profile
+
+
+def _report(spec: dict) -> bool:
+    """Print every problem with the spec; True when there are none."""
+    _, errors, notes = _engine_spec().problems(spec)
+    for n in notes:
+        ui.say(n)
+    for e in errors:
+        ui.console.print(Text.assemble(("  x ", "red"), e))
+    return not errors
+
+
+def check(spec_path: str, profile: str | None = None, sets: list[str] | None = None) -> None:
+    """Every problem in a spec, without queuing anything or needing ZenTrainer running (exit 1 if
+    any). The rules are the server's; whether the model files and dataset exist is checked when
+    it's queued."""
+    if not _report(load_spec(spec_path, profile, sets)):
+        sys.exit(1)
+    ui.ok("the spec is fine")
+
+
+def new(profile: str | None = None, sets: list[str] | None = None) -> None:
+    """A complete spec with every setting at its default (a profile's on top, then --set), to start
+    from: fill in the model and dataset, and remove what you don't change."""
+    sp = _engine_spec()
+    spec = apply_sets(_deep_merge(sp.TrainSpec().to_dict(), sp.migrate(_profile(profile))[0]), sets)
+    print(json.dumps({"$schema": sp.SCHEMA_URL, **spec}, indent=2))
+
+
 def train(spec_path: str, profile: str | None = None, sets: list[str] | None = None, end: bool = False,
           follow_it: bool = False, port: int | None = None, **follow_opts) -> None:
-    spec = json.loads(Path(spec_path).read_text()) if spec_path != "-" else json.load(sys.stdin)
-    if profile:
-        prof = repo.ENGINE / "profiles" / f"{profile}.json"
-        if not prof.is_file():
-            have = ", ".join(p.stem for p in (repo.ENGINE / "profiles").glob("*.json"))
-            ui.die(f"no profile {profile!r}; have {have}")
-        spec = _deep_merge(json.loads(prof.read_text()).get("train", {}), spec)  # the file wins over the profile
-    spec = apply_sets(spec, sets)
+    spec = load_spec(spec_path, profile, sets)
+    if not _report(spec):  # all of them now, rather than the server's first
+        ui.die("not queued: fix the spec (zt check shows the same)")
     port = comfy.background(port)
     run = call("POST", "/runs", {"spec": spec, "position": "end" if end else "next"}, port)["run"]
     print(run["run_id"])

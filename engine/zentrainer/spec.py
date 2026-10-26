@@ -394,7 +394,7 @@ class TrainSpec:
         what's stored (runs, presets)."""
         raw, dropped = migrate(data)
         if strict and dropped:
-            raise SpecError(f"unknown field(s): {', '.join(dropped)}")
+            raise SpecError(f"unknown field(s): {', '.join(_unknown(k) for k in dropped)}")
 
         def build(dc, raw):
             return dc(**(raw or {}))
@@ -531,21 +531,96 @@ def _bounds(meta) -> str:
     return ", ".join(parts)
 
 
-def _check_fields(obj, at: str, sections: bool = True) -> None:
-    """One section's fields against their annotation, choices and bounds."""
+def _check_fields(obj, at: str, sections: bool = True, errors: list[str] | None = None) -> None:
+    """One section's fields against their annotation, choices and bounds: SpecError for the first
+    problem, or every problem added to `errors`."""
     hints = get_type_hints(type(obj))
     for f in fields(obj):
         if not sections and is_dataclass(getattr(obj, f.name)):
             continue
-        v, meta, name = getattr(obj, f.name), f.metadata, f"{at}{f.name}"
-        if not _type_ok(v, hints[f.name]):
-            raise SpecError(f"{name} is {_type_name(hints[f.name])}, got {json.dumps(v) if _jsonable(v) else repr(v)}")
-        if meta.get("choices") is not None and isinstance(v, (str, bool)) and not any(v == c and type(v) is type(c) for c in meta["choices"]):
-            raise SpecError(f"{name} is one of {', '.join(json.dumps(c) for c in meta['choices'])}, got {json.dumps(v)}")
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            lo, lo_x, hi, hi_x = meta.get("ge"), meta.get("gt"), meta.get("le"), meta.get("lt")
-            if (lo is not None and v < lo) or (lo_x is not None and v <= lo_x) or (hi is not None and v > hi) or (hi_x is not None and v >= hi_x):
-                raise SpecError(f"{name} must be {_bounds(meta)}, got {v:g}")
+        problem = _field_problem(getattr(obj, f.name), f.metadata, hints[f.name], f"{at}{f.name}")
+        if problem and errors is None:
+            raise SpecError(problem)
+        if problem:
+            errors.append(problem)
+
+
+def _field_problem(v, meta, hint, name: str) -> str | None:
+    if not _type_ok(v, hint):
+        return f"{name} is {_type_name(hint)}, got {json.dumps(v) if _jsonable(v) else repr(v)}"
+    if meta.get("choices") is not None and isinstance(v, (str, bool)) and not any(v == c and type(v) is type(c) for c in meta["choices"]):
+        near = _near(v, [c for c in meta["choices"] if isinstance(c, str)]) if isinstance(v, str) else None
+        if near:
+            return f"{name}: {json.dumps(v)} isn't one of its choices; did you mean {json.dumps(near)}?"
+        return f"{name} is one of {', '.join(json.dumps(c) for c in meta['choices'])}, got {json.dumps(v)}"
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        lo, lo_x, hi, hi_x = meta.get("ge"), meta.get("gt"), meta.get("le"), meta.get("lt")
+        if (lo is not None and v < lo) or (lo_x is not None and v <= lo_x) or (hi is not None and v > hi) or (hi_x is not None and v >= hi_x):
+            return f"{name} must be {_bounds(meta)}, got {v:g}"
+    return None
+
+
+def _near(word: str, options) -> str | None:
+    """The option a typo most likely meant (case aside), if any is close."""
+    import difflib
+
+    by_lower = {o.lower(): o for o in options}
+    if word.lower() in by_lower:
+        return by_lower[word.lower()]
+    hit = difflib.get_close_matches(word.lower(), list(by_lower), n=1, cutoff=0.8)
+    return by_lower[hit[0]] if hit else None
+
+
+def _unknown(path: str) -> str:
+    """An unknown field, with the field it was likely meant to be."""
+    *parent, leaf = path.split(".")
+    dc = TrainSpec
+    for k in parent:
+        f = next((f for f in fields(dc) if f.name == k), None)
+        sub = f.default_factory() if f is not None and callable(f.default_factory) else None
+        if not is_dataclass(sub):
+            return path
+        dc = type(sub)
+    near = _near(leaf, [f.name for f in fields(dc)])
+    return f"{path} (did you mean {'.'.join([*parent, near])}?)" if near else path
+
+
+def problems(data: Any) -> tuple[dict | None, list[str], list[str]]:
+    """Everything wrong with a spec at once (for `zt check`), where from_dict stops at the first:
+    (the spec as this version reads it, or None; the problems; notes on how it was read). Fields'
+    own problems come first; the rules across fields are checked once those are right."""
+    notes: list[str] = []
+    try:
+        raw, dropped = migrate(data)
+    except SpecError as e:
+        return None, [str(e)], notes
+    version = data.get("spec_version", 1) if isinstance(data, dict) else None
+    if version != SPEC_VERSION:
+        notes.append(f"version {version}: read as version {SPEC_VERSION} (renamed fields carried over)")
+    errors = [f"unknown field: {_unknown(k)}" for k in dropped]
+    nested = {f.name: f.default_factory for f in fields(TrainSpec) if callable(f.default_factory)}
+    spec = TrainSpec()
+    for k, v in raw.items():
+        if k in nested and isinstance(v, dict):
+            try:
+                setattr(spec, k, nested[k]().__class__(**v))
+            except TypeError as e:
+                errors.append(f"{k}: {e}")
+        elif k in nested and v is not None:
+            errors.append(f"{k} is a section ({{...}}), got {json.dumps(v)}")
+        elif k not in nested:
+            setattr(spec, k, v)
+    for sec in fields(spec):
+        if is_dataclass(getattr(spec, sec.name)):
+            _check_fields(getattr(spec, sec.name), f"{sec.name}.", errors=errors)
+    _check_fields(spec, "", sections=False, errors=errors)
+    if not errors:
+        _normalize(spec)
+        try:
+            spec.validate()
+        except SpecError as e:
+            errors.append(str(e))
+    return (None if errors else spec.to_dict()), errors, notes
 
 
 def _jsonable(v) -> bool:

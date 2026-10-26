@@ -132,9 +132,12 @@ zt doctor               # what's installed, where models come from
 zt update               # pull ZenTrainer, re-sync ComfyUI and the web app
 ```
 
-Headless, for scripts or a machine without a browser: `zt train spec.json --follow`, `zt runs`,
-`zt follow RUN`, `zt pause|stop|save RUN`, `zt resume RUN`, `zt sample RUN "prompt"`,
-`zt queue`, `zt caption DATASET --model FILE`. `zt --help` lists them all.
+Headless, for scripts or a machine without a browser: `zt new > spec.json` writes a spec to start
+from, `zt check spec.json` lists every problem in one, `zt train spec.json --follow` runs it; then
+`zt runs`, `zt follow RUN`, `zt pause|stop|save RUN`, `zt resume RUN`, `zt sample RUN "prompt"`,
+`zt queue`, `zt caption DATASET --model FILE`. `zt --help` lists them all. The guides:
+[docs/cli.md](docs/cli.md) (the commands, with a worked example), [docs/api.md](docs/api.md) (the
+HTTP API the app and `zt` both use) and [docs/spec.md](docs/spec.md) (every setting a run takes).
 
 `--models-from` takes an existing ComfyUI install (its `models/` and its
 `extra_model_paths.yaml`) or a plain models folder. To point at a yaml directly, use
