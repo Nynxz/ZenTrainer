@@ -1,9 +1,9 @@
 // The run's samples as the samples card's views share them: the prompt × step grid, each
 // prompt's newest render, the lightbox that pages through them, and videos played a row at a
 // time. RunSamples makes it; Latest, Progression and Manual take it with useSamplesContext().
-import { computed, inject, onUnmounted, reactive, ref, watch, type InjectionKey } from 'vue'
+import { computed, inject, onUnmounted, ref, type InjectionKey } from 'vue'
 import type { LightboxItem } from '@nynxz/zenkit-ui'
-import { promptText as specPrompt, thumbUrl, viewUrl, type SampleRow } from '@/api/engine'
+import { promptText as specPrompt, sampleInputUrl, viewUrl, type SampleRow } from '@/api/engine'
 import { playTogether } from '@/lib/videoSync'
 import type { RunContext } from './context'
 
@@ -45,37 +45,16 @@ export function useSamples(run: RunContext) {
   const latestFor = (i: number) => latestByIndex.value.get(i)
   const promptText = (i: number) => latestFor(i)?.prompt ?? prompts.value.find(([k]) => k === i)?.[1] ?? (detail.value?.spec.samples.prompts[i] != null ? specPrompt(detail.value.spec.samples.prompts[i]!) : '')
   // edit runs: each prompt's input picture, and whether tiles wipe between it and the render. The
-  // trainer finds it in the dataset or anywhere in ComfyUI's input (another folder, say held-out
-  // pairs), so a path that isn't in the dataset is tried as the folder it names, a dataset of its own
+  // run gives it, found as training finds it (the dataset, ComfyUI's input, or the path as given:
+  // a held-out folder, a picture on another drive); the input in the URL makes a changed one new
   const controlOf = (i: number) => {
     const sp = detail.value?.spec
     const p = sp?.dataset.edit ? sp.samples.prompts[i] : null
     return p && typeof p !== 'string' ? p.control || null : null
   }
-  const inputUrls = reactive<Record<string, string>>({})
-  const loads = (url: string) =>
-    new Promise<boolean>((done) => {
-      const im = new Image()
-      im.onload = () => done(true)
-      im.onerror = () => done(false)
-      im.src = url
-    })
-  watch(
-    () => [detail.value?.spec.dataset.folder, (detail.value?.spec.samples.prompts ?? []).map((_p, i) => controlOf(i))] as const,
-    async ([folder, controls]) => {
-      for (const c of controls) {
-        if (!folder || !c || inputUrls[`${folder}|${c}`]) continue
-        const own = thumbUrl(folder, c, 1024)
-        const [head, ...rest] = c.split('/')
-        const other = rest.length ? thumbUrl(head!, rest.join('/'), 1024) : null
-        inputUrls[`${folder}|${c}`] = other && !(await loads(own)) && (await loads(other)) ? other : own
-      }
-    },
-    { immediate: true },
-  )
   const inputFor = (i: number) => {
     const c = controlOf(i)
-    return c ? (inputUrls[`${detail.value!.spec.dataset.folder}|${c}`] ?? null) : null
+    return c ? sampleInputUrl(detail.value!.run.run_id, i, c) : null
   }
   const hasInputs = computed(() => (detail.value?.spec.samples.prompts ?? []).some((_p, i) => !!inputFor(i)))
   const compare = ref(true)

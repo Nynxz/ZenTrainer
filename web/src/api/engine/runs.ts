@@ -159,6 +159,9 @@ export const downloadUrl = (id: string, lora?: string) =>
 
 /** a link that saves the run's settings as a file to share (engine sharing.py) */
 export const exportUrl = (id: string) => `/zentrainer/api${runPath(id)}/export`
+/** an edit sample's input picture, as a thumbnail; `control` is the input it names, so a changed input is a new URL */
+export const sampleInputUrl = (id: string, index: number, control: string, size = 1024) =>
+  `/zentrainer/api${runPath(id)}/samples/${index}/input?${new URLSearchParams({ size: String(size), c: control })}`
 
 export interface SampleProgress {
   run_id: string

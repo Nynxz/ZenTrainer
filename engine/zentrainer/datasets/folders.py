@@ -608,13 +608,19 @@ def split_videos(name: str, seconds: float = 3.0, count: int = 20, longer_than: 
 def thumbnail(name: str, rel: str, size: int, cache: Path) -> Path:
     """A cached JPEG thumbnail (longest side `size`) of an image, a video (a frame a little way
     in, past fades from black) or a mask in the dataset."""
+    src = _inside(folder(name), rel)
+    if src.suffix.lower() not in MEDIA_EXTS or not src.is_file():
+        raise DatasetError(f"{rel!r} is not an image or video in this dataset")
+    return thumbnail_of(src, size, cache, rel)
+
+
+def thumbnail_of(src: Path, size: int, cache: Path, label: str | None = None) -> Path:
+    """The cached JPEG thumbnail of any picture or video file (thumbnail's, for a dataset's)."""
     import hashlib
 
     from PIL import Image, ImageOps
 
-    src = _inside(folder(name), rel)
-    if src.suffix.lower() not in MEDIA_EXTS or not src.is_file():
-        raise DatasetError(f"{rel!r} is not an image or video in this dataset")
+    rel = label or src.name
     size = max(32, min(int(size), 1024))
     st = src.stat()
     key = hashlib.sha1(f"{src}|{st.st_mtime_ns}|{st.st_size}|{size}".encode()).hexdigest()

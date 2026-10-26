@@ -42,6 +42,8 @@ def register(server) -> None:
             return _bad("not found", 404)
         except (datasets.DatasetError, ValueError) as e:
             return _bad(str(e))
+        except OSError as e:  # a file Pillow can't read: say so, not a 500
+            return _bad(f"{rel!r} can't be read as a picture: {e}")
         return web.FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     @routes.put("/zentrainer/api/datasets/{name}/caption")
