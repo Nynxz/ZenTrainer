@@ -5,12 +5,24 @@ them a typo in a file name fails when the run loads, or at its first sample hund
 
 from __future__ import annotations
 
+import logging
+
 from .. import paths
 from ..spec import _near
 
 
+def _listed(what: str, get) -> list[str] | None:
+    """A list this ComfyUI keeps, or None when it doesn't keep it the way this expects (an older or
+    patched ComfyUI, as a node pack can run in): that check is skipped, never a run refused for it."""
+    try:
+        return list(get())
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[ZenTrainer] can't list this ComfyUI's %s (%s); not checking them", what, e)
+        return None
+
+
 def _one_of(field: str, value: str | None, options, what: str) -> str | None:
-    if not value or value in options:
+    if not value or options is None or value in options:
         return None
     near = _near(value, options)
     return f"{field}: no {what} {value!r} here" + (f"; did you mean {near!r}?" if near else "")
@@ -35,9 +47,9 @@ def problems(spec) -> list[str]:
         out.append(_one_of("model.ckpt_name", m.ckpt_name, files("checkpoints"), "checkpoint"))
         out.append(_one_of("samples.model_name", s.model_name, files("checkpoints"), "checkpoint"))
     else:
-        vaes = list(dict.fromkeys([*files("vae"), *nodes.VAELoader.vae_list(nodes.VAELoader)]))
+        vaes = _listed("VAEs", lambda: dict.fromkeys([*files("vae"), *nodes.VAELoader.vae_list(nodes.VAELoader)]))
         # what CLIPLoader looks the type up in: an unknown one quietly loads as Stable Diffusion's
-        clip_types = [t.lower() for t in comfy.sd.CLIPType.__members__]
+        clip_types = _listed("text encoder types", lambda: [t.lower() for t in comfy.sd.CLIPType.__members__])
         out += [_one_of("model.unet_name", m.unet_name, files("diffusion_models"), "diffusion model"),
                 _one_of("model.clip_name", m.clip_name, files("text_encoders"), "text encoder"),
                 _one_of("model.clip_type", m.clip_type, clip_types, "text encoder type"),
@@ -49,8 +61,9 @@ def problems(spec) -> list[str]:
                         ("network.base_lora", n.base_lora), ("samples.turbo_lora", s.turbo_lora)):
         out.append(_one_of(field, name, loras, "LoRA"))
     # as they are now: custom nodes add samplers and schedulers after ComfyUI's own lists are made
-    samplers = list(dict.fromkeys([*comfy.samplers.KSampler.SAMPLERS, *comfy.samplers.SAMPLER_NAMES]))
-    schedulers = list(comfy.samplers.SCHEDULER_HANDLERS)
+    samplers = _listed("samplers", lambda: dict.fromkeys([*comfy.samplers.KSampler.SAMPLERS,
+                                                            *comfy.samplers.SAMPLER_NAMES]))
+    schedulers = _listed("schedulers", lambda: comfy.samplers.SCHEDULER_HANDLERS)
     out.append(_one_of("samples.sampler", s.sampler, samplers, "sampler"))
     out.append(_one_of("samples.scheduler", s.scheduler, schedulers, "scheduler"))
     if spec.objective.timesteps == "scheduler":
