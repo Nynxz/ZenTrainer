@@ -101,3 +101,10 @@ def test_the_harness_choices_match_the_specs():
 
     assert set(S.OPTIMIZERS) == set(optim.OPTIMIZERS)
     assert S.TRAIN_ATTENTION == TRAINABLE_ATTENTION
+
+
+def test_the_webs_field_list_is_current():
+    # regenerate: python -m zentrainer.spec --ts > web/src/api/engine/spec.fields.ts (in engine/);
+    # the web's type check then says which of its fields differ from the engine's
+    doc = Path(__file__).resolve().parents[2] / "web" / "src" / "api" / "engine" / "spec.fields.ts"
+    assert doc.read_text() == S.typescript()
