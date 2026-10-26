@@ -59,3 +59,30 @@ def test_training_residuals_are_out_of_place_with_the_same_values(monkeypatch):
     assert torch.allclose(qi21._gated_residual(x, y, gate, 2), want)
     mm.in_training = False
     assert qi21._gated_residual(x, y, gate, 2) is x  # sampling: ComfyUI's, in place
+
+
+def test_the_cache_finds_a_slot_among_keys_of_other_lengths(monkeypatch):
+    class PoseBranchCache:  # ComfyUI's select, as far as the slots go
+        def __init__(self):
+            self.slots, self.slot = [], None
+
+        def select(self, k, create=True):
+            for s in self.slots:
+                if s["key"].shape == k.shape and torch.equal(s["key"], k):
+                    self.slots.remove(s)
+                    self.slots.append(s)
+                    self.slot = s
+                    return True
+            return False
+
+    animate2 = types.ModuleType("comfy.ldm.wan.model_animate2")
+    animate2.PoseBranchCache = PoseBranchCache
+    for name, mod in (("comfy.ldm.wan", types.ModuleType("comfy.ldm.wan")), ("comfy.ldm.wan.model_animate2", animate2)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    _install(monkeypatch)
+    cache = PoseBranchCache()
+    cond, uncond = {"key": torch.randn(1, 9)}, {"key": torch.randn(1, 7)}  # CFG > 1, prompts of other lengths
+    cache.slots = [cond, uncond]
+    assert cache.select(uncond["key"].clone(), create=False) and cache.slot is uncond  # by value: a size error
+    assert [s is uncond for s in cache.slots] == [False, True]  # the one found, moved last
+    assert cache.select(cond["key"].clone(), create=False) and [s is cond for s in cache.slots] == [False, True]

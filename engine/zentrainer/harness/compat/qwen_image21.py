@@ -6,6 +6,12 @@
   no gradient through it. Off while training: every step computes its prefix.
 - `_gated_residual` adds each block's branch into its input in place, which the norm before it
   saved for its backward and a checkpointed block recomputes from. Out of place in training.
+- The cache's `select` (PoseBranchCache, comfy/ldm/wan/model_animate2.py) moves the slot it found
+  to the end with `slots.remove(s)`, which compares slots, and so their tensors, by value. With two
+  slots, as sampling at CFG > 1 makes when the prompts' lengths differ (each pass its own key), that
+  raises ("The size of tensor a (434187) must match the size of tensor b (425995)"). The slot is
+  removed by identity instead, which is what remove meant. The one fix here that isn't for training
+  only: it fails ComfyUI's own sampling the same way, and changes nothing else.
 """
 
 from __future__ import annotations
@@ -48,5 +54,35 @@ def apply() -> None:
 
     model.select_prefix_cache = select_prefix_cache
     qi21._gated_residual = gated_residual
+    _slots_by_identity()
     compat._applied.add("qwen_image21")
     logging.info("[ZenTrainer] Qwen-Image 2.1: prefix cache off and residuals out of place while training")
+
+
+class _Slots(list):
+    """A cache's slot list whose remove takes out that very slot, never comparing its tensors."""
+
+    def remove(self, slot) -> None:
+        for i, s in enumerate(self):
+            if s is slot:
+                del self[i]
+                return
+        raise ValueError("slot not in the cache")
+
+
+def _slots_by_identity() -> None:
+    try:
+        from comfy.ldm.wan.model_animate2 import PoseBranchCache
+    except Exception:
+        return
+    select = getattr(PoseBranchCache, "select", None)
+    if select is None or getattr(select, "_zentrainer", False):
+        return
+
+    def by_identity(self, *args, **kwargs):
+        if type(getattr(self, "slots", None)) is list:  # (free() and __init__ make plain lists)
+            self.slots = _Slots(self.slots)
+        return select(self, *args, **kwargs)
+
+    by_identity._zentrainer = True
+    PoseBranchCache.select = by_identity

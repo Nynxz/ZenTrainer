@@ -615,12 +615,19 @@ class Validation(Callback):
             return None
         from . import optim
 
+        import comfy.model_management as mm
+
         ms = t.denoiser.model_sampling
         losses, per_t = [], {}
         optim.set_mode(t.optimizer, training=False)
+        # the model as training runs it, also for the run's last pass (on_end, after training mode is
+        # off): ComfyUI's sampling paths compute a slightly different loss, and some don't run here
+        # (Qwen-Image 2.1's prefix cache failed on a validation set's several pictures)
+        was, mm.in_training = mm.in_training, True
         try:
             self._run(t, ms, losses, per_t)
         finally:
+            mm.in_training = was
             optim.set_mode(t.optimizer, training=True)
         return self._report(t, losses, per_t)
 

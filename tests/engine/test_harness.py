@@ -771,3 +771,26 @@ def test_it_s_averages_a_mix_of_step_sizes_and_leaves_out_compiles():
     assert rate([1.0, 2.0] * 10) == pytest.approx(20 / 30)
     assert rate([1.0] * 9 + [40.0]) == pytest.approx(1.0)  # a recompile isn't the pace
     assert rate([]) == 0.0 and rate([0.0]) == 0.0
+
+
+def test_validation_runs_the_model_as_training_does_even_at_the_end(monkeypatch):
+    # the run's last pass (on_end) comes after training mode is off: ComfyUI's sampling paths
+    # would compute it (Qwen-Image 2.1's prefix cache failed on it)
+    import sys
+
+    from zentrainer.harness import callbacks, optim as optim_mod
+
+    mm = types.ModuleType("comfy.model_management")
+    mm.in_training = False
+    monkeypatch.setitem(sys.modules, "comfy", types.ModuleType("comfy"))
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+    sys.modules["comfy"].model_management = mm
+    monkeypatch.setattr(optim_mod, "set_mode", lambda *a, **k: None)
+    seen = []
+    v = callbacks.Validation()
+    v._set = [object()]
+    monkeypatch.setattr(v, "_run", lambda t, ms, losses, per_t: seen.append(mm.in_training))
+    monkeypatch.setattr(v, "_report", lambda t, losses, per_t: None)
+    t = types.SimpleNamespace(denoiser=types.SimpleNamespace(model_sampling=None), optimizer=None)
+    v.evaluate(t)
+    assert seen == [True] and mm.in_training is False  # on while it ran, as it was after

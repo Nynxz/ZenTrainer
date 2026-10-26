@@ -135,6 +135,15 @@ and Manager show.
   and checkpointing (a 512 px step peaked at 24.8 GB against 14.4 GB without it); that's now out
   of place while training. Samples keep ComfyUI's fast paths. An edit LoRA at 768 px now trains
   at about 1.8 s a step on a 5090, 16 GB peak, with compile on.
+- **Fixed: Qwen Image 2.1 failing at the end of a run, or in samples at CFG above 1,** with "The
+  size of tensor a (...) must match the size of tensor b (...)". ComfyUI's prefix cache compared
+  its slots by value when it moved one, so it failed once it held two of different lengths: a
+  positive and negative prompt of different lengths, or a run's last validation pass over several
+  pictures. It now moves the slot it found. This fails ComfyUI's own Qwen Image 2.1 sampling the
+  same way, so it's fixed for everything, not just training.
+- **Fixed: a run's last validation point was computed differently from the rest:** it ran after
+  training mode was off, through ComfyUI's sampling code (fused kernels, caches), so the last point
+  on the validation curve wasn't quite comparable. It's measured as the others are now.
 - **Transparency on Qwen Image 2.1:** its VAE has an alpha channel, but training gave it every
   picture as RGB, so it saw transparent PNGs as fully opaque (whatever colour sat under the
   transparent parts showing). Targets and edit inputs now keep their alpha for a four-channel VAE,
