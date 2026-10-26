@@ -154,7 +154,8 @@ def register(server) -> None:
                        for k, v in captioner.STYLES.items()],
             "formats": list(captioner.structured.FORMATS),
             # what goes around a style's prompt, so the panel can show exactly what the model is told
-            "notes": {"video": captioner.VIDEO_NOTE, "sound": captioner.SOUND_NOTE, "subject": captioner.SUBJECT_NOTE},
+            "notes": {"video": captioner.VIDEO_NOTE, "sound": captioner.SOUND_NOTE, "subject": captioner.SUBJECT_NOTE,
+                      "mask": captioner.MASK_NOTE},
             "models": await asyncio.to_thread(captioner.models),
             "hearing": await asyncio.to_thread(captioner.hearing_models),
             "senses": await asyncio.to_thread(captioner.model_senses),
@@ -223,7 +224,7 @@ def register(server) -> None:
                                max_length=_length(length) if length is not None else (style.max_length if not b.get("prompt") else 0),
                                seed=int(b["seed"]) if b.get("seed") is not None else None,
                                **_sampling(b),
-                               format=fmt,
+                               format=fmt, hide_masked=bool(b.get("hide_masked")),
                                loras=[{"name": str(lo.get("name")), "strength": float(lo.get("strength", 1.0))}
                                       for lo in (b.get("loras") or []) if lo.get("name")])
         return await _submit_caption(job, f"caption {name}", b.get("client_id"))

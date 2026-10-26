@@ -152,3 +152,24 @@ def test_sampling_settings_reach_the_model(ds):
     captioner._answer(clip, None, job(seed=3, temperature=1.1, top_p=0.8, top_k=20, repetition_penalty=1.1))
     call = clip.calls[-1]
     assert (call["temperature"], call["top_p"], call["top_k"], call["repetition_penalty"]) == (1.1, 0.8, 20, 1.1)
+
+
+def test_hiding_masked_areas_shows_only_what_the_mask_keeps(tmp_path):
+    im = Image.new("RGB", (100, 80), (200, 0, 0))  # the background: red
+    im.paste((0, 0, 200), (60, 20, 90, 60))  # the subject: blue
+    mask = Image.new("L", (100, 80), 0)
+    mask.paste(255, (60, 20, 90, 60))
+    seen = captioner.hide_masked(im, mask)
+    pad = round(captioner.MASK_MARGIN * 100)
+    assert seen.size == (min(100, 90 + pad) - (60 - pad), 60 + pad - (20 - pad))  # cropped to it, with a margin
+    assert seen.getpixel((pad + 5, pad + 5)) == (0, 0, 200)  # the subject as it is
+    assert seen.getpixel((1, 1)) == (captioner.MASK_GREY,) * 3  # the rest grey, no red left
+    assert captioner.hide_masked(im, Image.new("L", (100, 80), 0)) is im  # keeps nothing: left as it was
+    assert captioner.hide_masked(im, mask.resize((50, 40))).size == seen.size  # a mask at another size fits
+
+
+def test_the_mask_note_is_only_for_masked_pictures():
+    job = captioner.CaptionJob(job_id="", dataset="d", set_name="default", clip_name="c", clip_type="t",
+                               prompt="Describe it.", hide_masked=True)
+    assert captioner.MASK_NOTE in captioner.instruction(job, masked=True)
+    assert captioner.MASK_NOTE not in captioner.instruction(job)

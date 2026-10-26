@@ -88,6 +88,9 @@ class CaptionJob:
     # [{"name": file in loras/, "strength": 1.0}]. Captioning only; training never uses them.
     loras: list = field(default_factory=list)
     format: str = "text"  # Style.format: "fibo_json" checks the answer is a structured caption
+    # a picture with a mask (masked training) shows the model only what the mask keeps: the rest in
+    # flat grey, cropped to the kept part, so its caption describes what the LoRA learns from
+    hide_masked: bool = False
     # prompts to rewrite instead of images to caption (no dataset, nothing written; results only)
     rewrite: list[str] = field(default_factory=list)
     status: str = "queued"  # queued | running | done | error | stopped | undone
@@ -325,12 +328,15 @@ SOUND_NOTE = ("This is a short video clip, with its soundtrack. Describe the cli
 
 
 SUBJECT_NOTE = "\nRefer to the main subject as \"{subject}\" (exactly that, not a description of who they are)."
+MASK_NOTE = ("\nThe flat grey parts of the picture are hidden on purpose: don't describe them, the background "
+             "behind them or what might be there. Describe only what is shown.")
 
 
-def instruction(job: CaptionJob, is_video: bool = False, hears: bool = False) -> str:
+def instruction(job: CaptionJob, is_video: bool = False, hears: bool = False, masked: bool = False) -> str:
     """Everything the model is told: the UI shows the same pieces (routes: caption info "notes")."""
     text = (SOUND_NOTE if is_video and hears else VIDEO_NOTE if is_video else "") + job.prompt
-    return text + SUBJECT_NOTE.format(subject=job.subject) if job.subject else text
+    text = text + SUBJECT_NOTE.format(subject=job.subject) if job.subject else text
+    return text + MASK_NOTE if masked else text
 
 
 def todo(job: CaptionJob, items: list) -> list:
@@ -473,11 +479,12 @@ def run(job: CaptionJob) -> None:
                 if job.status != "running":  # cancelled
                     break
                 is_video = video.is_video(it.path)
+                mask = it.mask if job.hide_masked and not is_video else None  # masks are per image
                 if gemma4:
-                    tokens = _gemma4_tokens(clip, job, it.path, is_video, hears)
+                    tokens = _gemma4_tokens(clip, job, it.path, is_video, hears, mask)
                 else:
-                    image = _picture(it.path)  # (1 or VIDEO_FRAMES, H, W, 3) in [0, 1]
-                    tokens = clip.tokenize(instruction(job, is_video), image=image, min_length=1)
+                    image = _picture(it.path, mask)  # (1 or VIDEO_FRAMES, H, W, 3) in [0, 1]
+                    tokens = clip.tokenize(instruction(job, is_video, masked=mask is not None), image=image, min_length=1)
                 rel = str(it.path.relative_to(root))
                 try:
                     text, cut = _answer(clip, tokens, job)
@@ -629,12 +636,13 @@ def add_te_lora(link: str, file: str | None = None) -> dict:
 GEMMA_FPS = 2  # frames a second Gemma 4 sees of a clip (it subsamples whatever it's given to `fps`)
 
 
-def _gemma4_tokens(clip, job: CaptionJob, path: Path, is_video: bool, hears: bool):
+def _gemma4_tokens(clip, job: CaptionJob, path: Path, is_video: bool, hears: bool, mask: Path | None = None):
     """Gemma 4's prompt: the picture, or the clip as frames at GEMMA_FPS with its soundtrack."""
     from ..harness.data import video
 
     if not is_video:
-        return clip.tokenize(instruction(job), image=_picture(path), skip_template=False, min_length=1)
+        return clip.tokenize(instruction(job, masked=mask is not None), image=_picture(path, mask), skip_template=False,
+                             min_length=1)
     p = video.probe(path)
     n = max(p.frames, 1)
     step = max(1.0, p.fps / GEMMA_FPS)
@@ -650,10 +658,29 @@ def _gemma4_tokens(clip, job: CaptionJob, path: Path, is_video: bool, hears: boo
                          skip_template=False, min_length=1)
 
 
-def _picture(path: Path):
+MASK_GREY = 128  # what hidden parts show as: flat, mid grey (no edges or colour to describe)
+MASK_MARGIN = 0.08  # around the kept part when cropping to it, as a share of the picture's longer side
+
+
+def hide_masked(im, mask):
+    """`im` (RGB) with what `mask` leaves out (black; soft edges blend) in flat grey, cropped to the
+    part it keeps plus MASK_MARGIN: a small subject fills the model's view. A mask that keeps
+    nothing leaves the picture as it was (nothing would be left to describe)."""
+    from PIL import Image
+
+    m = mask.convert("L").resize(im.size, Image.Resampling.BILINEAR)
+    box = m.point(lambda v: 255 if v >= 128 else 0).getbbox()
+    if box is None:
+        return im
+    im = Image.composite(im, Image.new("RGB", im.size, (MASK_GREY,) * 3), m)
+    pad = round(MASK_MARGIN * max(im.size))
+    return im.crop((max(0, box[0] - pad), max(0, box[1] - pad), min(im.width, box[2] + pad), min(im.height, box[3] + pad)))
+
+
+def _picture(path: Path, mask: Path | None = None):
     """What the model looks at: the image at most 1024 px a side, or VIDEO_FRAMES frames spread
     over a video at most 640 px (several pictures cost tokens); sides in multiples of 28 (the
-    vision encoder's patch grid)."""
+    vision encoder's patch grid). With `mask`, only what it keeps (hide_masked)."""
     import numpy as np
     import torch
     from PIL import Image
@@ -668,11 +695,17 @@ def _picture(path: Path):
         scale = min(1.0, 640 / max(w, h))
         size = (max(28, round(w * scale / 28) * 28), max(28, round(h * scale / 28) * 28))
         return video.read(path, idx, size)
+    from PIL import ImageOps
+
     with Image.open(path) as im:
-        w, h = im.size
-        scale = min(1.0, 1024 / max(w, h))
-        size = (max(28, round(w * scale / 28) * 28), max(28, round(h * scale / 28) * 28))
-        rgb = im.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        rgb = ImageOps.exif_transpose(im).convert("RGB")
+    if mask is not None:
+        with Image.open(mask) as m:
+            rgb = hide_masked(rgb, ImageOps.exif_transpose(m))
+    w, h = rgb.size
+    scale = min(1.0, 1024 / max(w, h))
+    size = (max(28, round(w * scale / 28) * 28), max(28, round(h * scale / 28) * 28))
+    rgb = rgb.resize(size, Image.Resampling.LANCZOS)
     return torch.from_numpy(np.asarray(rgb, dtype=np.float32) / 255.0)[None]
 
 

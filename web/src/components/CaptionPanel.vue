@@ -124,6 +124,8 @@ const PREFS = 'zentrainer.caption'
 const form = reactive({
   clip_name: '', style: 'nl', prompt: '', format: 'text' as CaptionFormat, set: 'nl', mode: 'missing' as CaptionMode, length: '' as '' | number, vary: false,
   advanced: false, fixedSeed: null as number | null, temperature: 0.7, top_p: 0.95, top_k: 50, repetition_penalty: 1.0, customLength: null as number | null,
+  // pictures with a mask: show the model only what it keeps, so the caption is of what the LoRA learns
+  hide_masked: true,
 })
 /** Whether this run samples (so temperature, top-p and top-k apply): Vary, or a fixed seed. */
 const sampled = computed(() => form.vary || (form.advanced && form.fixedSeed != null))
@@ -233,7 +235,9 @@ const styleItems = computed(() => [
 ])
 
 // ---- what the model is told: shown, so nobody has to take the built-in prompts on trust ----------
-const notes = ref<{ video: string; sound: string; subject: string } | null>(null)
+const notes = ref<{ video: string; sound: string; subject: string; mask?: string } | null>(null)
+const maskedCount = computed(() => props.items.filter((i) => i.mask).length)
+const maskNote = computed(() => (maskedCount.value && form.hide_masked && notes.value?.mask ? notes.value.mask.trim() : ''))
 const showPrompt = ref(false)
 const stylePrompt = computed(() => (editable.value ? form.prompt : styles.value.find((st) => st.id === form.style)?.prompt ?? ''))
 const clipNote = computed(() => (!hasVideo.value || !notes.value ? '' : hearing.value.includes(form.clip_name) ? notes.value.sound : notes.value.video))
@@ -298,6 +302,7 @@ function body(extra: Record<string, unknown> = {}) {
     paths: form.mode === 'selected' ? props.selected : undefined,
     subject: subject.value.trim() || undefined,
     loras: loras.value.filter((l) => l.name),
+    ...(maskedCount.value ? { hide_masked: form.hide_masked } : {}),
     ...(editable.value ? { prompt: form.prompt, format: form.format } : { style: form.style }),
     ...(form.advanced && form.customLength ? { max_length: form.customLength } : form.length !== '' ? { max_length: form.length } : {}),
     ...(form.advanced && form.fixedSeed != null ? { seed: form.fixedSeed } : form.vary ? { seed: seed() } : {}),
@@ -473,6 +478,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
       <p class="told-main" :class="{ long: stylePrompt.length > 600 }">{{ stylePrompt }}</p>
       <p v-if="formatOf === 'fibo_json'" class="told-wrap"><span class="eyebrow">Kept as</span>Fibo 2.0's structured JSON caption (Bria's VGL prompt and schema): checked and stored compact; an image whose answer isn't valid JSON after 3 tries keeps what it had.</p>
       <p v-if="subjectNote" class="told-wrap"><span class="eyebrow">Then</span>{{ subjectNote }}</p>
+      <p v-if="maskNote" class="told-wrap"><span class="eyebrow">Masked pictures</span>{{ maskNote }}</p>
       <div class="own-acts">
         <ZenButton size="sm" icon="mdi mdi-pencil-outline" title="Start a custom style from this prompt: the built-in stays as it is" @click="editCopy">Edit a copy</ZenButton>
       </div>
@@ -491,6 +497,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
         <button v-if="own" class="mini" title="Delete this style" @click="removeStyle"><i class="mdi mdi-trash-can-outline" /></button>
       </div>
       <p v-if="showPrompt && subjectNote" class="told-wrap"><span class="eyebrow">Then</span>{{ subjectNote }}</p>
+      <p v-if="showPrompt && maskNote" class="told-wrap"><span class="eyebrow">Masked pictures</span>{{ maskNote }}</p>
     </div>
 
     <div class="row">
@@ -520,6 +527,12 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
         <div class="seg">
           <button :class="{ on: !form.vary }" title="The model's single most likely caption: the same every time" @click="form.vary = false">Same each run</button>
           <button :class="{ on: form.vary }" title="Sampled with a new seed each run, so captioning an image again words it differently (re-roll a caption: select it, caption Selected)" @click="form.vary = true">Vary</button>
+        </div>
+      </div>
+      <div v-if="maskedCount" class="f"><span class="eyebrow">Masked parts</span>
+        <div class="seg">
+          <button :class="{ on: form.hide_masked }" :title="`The ${maskedCount} pictures with a mask show the model only what it keeps: the rest in flat grey, cropped to the kept part, so the caption describes what the LoRA learns`" @click="form.hide_masked = true">Hidden</button>
+          <button :class="{ on: !form.hide_masked }" title="The whole picture, mask or not" @click="form.hide_masked = false">Shown</button>
         </div>
       </div>
       <button class="mini adv-toggle" :class="{ on: form.advanced }" title="Seed, sampling and length settings" @click="form.advanced = !form.advanced">
