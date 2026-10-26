@@ -37,6 +37,16 @@ and Manager show.
   programs use: ROCm only reported ZenTrainer's own memory there, so the fit could plan with VRAM
   that was already taken. The memory chart shows the whole card too.
 
+### Settings
+- **Versions, at the top of Settings:** the ZenTrainer version running (release, commits since,
+  commit), the web app's build and ComfyUI's, and whether there's an update: how many new
+  commits, what they are, and what to run (`zt update`). It also says when a newer version is on
+  disk but not loaded yet (restart), when the page is an older build than its source (rebuild),
+  and when local changes or a checkout's own commits would stop `zt update`. **Copy versions**
+  puts all of it in one block to paste when asking for help. The sidebar marks a ZenTrainer
+  update as it already did ComfyUI's.
+- The page is reordered: versions, appearance, training, faces, then storage folders.
+
 ### Cloud
 - **Train on a rented GPU:** a container image (`docker/`) for RunPod and other cloud GPUs, or any
   machine with Docker. The app sits behind a password, ComfyUI is never reachable from outside,
@@ -44,6 +54,11 @@ and Manager show.
   RunPod is in docker/README.md; the image is `ghcr.io/nynxz/zentrainer`.
 
 ### Datasets
+- **Captioning leaves masked-out areas out** (Caption → Masked parts: Hidden, the default when a
+  dataset has masks): the captioning model sees what the mask hides as flat grey, cropped to what it
+  keeps, and is told not to describe it, so captions stop describing a background training ignores.
+  Videos and pictures without a mask caption as before. The captioner also turns phone photos the
+  way their EXIF says, as training already did.
 - **Faces need nothing installed:** face reports and likeness scores now run on ZenTrainer's own
   port of InsightFace's models, in plain PyTorch, so the faces extra is gone (no insightface,
   onnxruntime or OpenCV, and none of their clashes with other custom nodes). Scores are the same
@@ -53,6 +68,13 @@ and Manager show.
   any more; delete them if nothing else needs them. While a dataset's faces are checked, its page
   shows how far along it is (and the face model's download, the first time), beside the Check
   faces switch and in Health.
+- **A face model for commercial use:** Settings → Faces → Commercial (AuraFace) runs face reports
+  and likeness on fal's AuraFace (Apache 2.0) with OpenCV's YuNet detector (MIT), instead of
+  InsightFace's models, which are non-commercial. AuraFace-v1 ships InsightFace's own detector
+  beside it, so ZenTrainer pairs it with YuNet: nothing InsightFace's runs. It's a little less
+  accurate (LFW 99.56%, against 99.83% for the other two), and its scores sit lower (one person
+  around 0.6 rather than 0.7), so compare them only with each other. A 131 MB download the
+  first time.
 
 ### Runs
 - **Steadier speed and ETA:** the loss chart's speed line, and the it/s and time left on a run,

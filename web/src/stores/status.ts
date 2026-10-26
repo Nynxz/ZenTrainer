@@ -1,15 +1,21 @@
 // The app's own housekeeping status for the sidebar: the engine's code changed on disk since
 // it started (restart to load it), the web app's source is newer than its build (rebuild it: a
-// pull doesn't bring web/dist), a rebuild landed since this tab loaded (reload), or ComfyUI has
-// an update upstream. Checked at launch, the engine every minute; ComfyUI once (it fetches from git).
+// pull doesn't bring web/dist), a rebuild landed since this tab loaded (reload), or ZenTrainer or
+// ComfyUI has an update upstream. Checked at launch, the engine every minute; the updates once (they
+// fetch from git), and again from Settings > Versions.
 
-import { ref } from 'vue'
-import { engine } from '@/api/engine'
+import { computed, ref } from 'vue'
+import { engine, type ComfyVersion, type ZtVersion } from '@/api/engine'
 
 export const engineStale = ref(false)
 /** set when this ComfyUI is older than ZenTrainer needs (a node-pack install into an old one) */
 export const comfyOld = ref<string | null>(null)
-export const comfyBehind = ref(0)
+/** what's running and (once checked) what's upstream, for the sidebar and Settings > Versions */
+export const ztVersion = ref<ZtVersion | null>(null)
+export const comfyVersion = ref<ComfyVersion | null>(null)
+export const ztBehind = computed(() => ztVersion.value?.upstream?.behind ?? 0)
+export const comfyBehind = computed(() => comfyVersion.value?.upstream?.behind ?? 0)
+export const checkingUpdates = ref(false)
 export const restarting = ref(false)
 export const webStale = ref(false)
 export const webBuildable = ref(false)
@@ -34,10 +40,26 @@ export function startStatusSync(): void {
   }
   tick()
   setInterval(tick, 60_000)
-  setTimeout(async () => {
-    const v = await engine.comfyui(true).catch(() => null)
-    comfyBehind.value = v?.upstream?.behind ?? 0
-  }, 15_000)
+  setTimeout(() => checkUpdates(), 15_000)
+}
+
+/** Versions, and with `check` what's new upstream (both fetch from git: a few seconds). Without it,
+ *  only fills in what isn't known yet, so it never drops a check's result. */
+export async function checkUpdates(check = true): Promise<void> {
+  if (!check) {
+    const [z, c] = await Promise.all([engine.version().catch(() => null), engine.comfyui().catch(() => null)])
+    ztVersion.value ??= z
+    comfyVersion.value ??= c
+    return
+  }
+  checkingUpdates.value = true
+  try {
+    const [z, c] = await Promise.all([engine.version(true).catch(() => null), engine.comfyui(true).catch(() => null)])
+    if (z) ztVersion.value = z
+    if (c) comfyVersion.value = c
+  } finally {
+    checkingUpdates.value = false
+  }
 }
 
 /** Load what's waiting: rebuild the web app if its source moved on, restart ComfyUI if the

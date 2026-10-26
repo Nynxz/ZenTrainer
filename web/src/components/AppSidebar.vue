@@ -10,7 +10,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { activeRuns, latest, lossTrail, queue } from '@/stores/runs'
 import { activeCaptions, startCaptionSync } from '@/stores/captions'
 import { settings } from '@/stores/settings'
-import { comfyBehind, comfyOld, engineStale, restartEngine, restarting, startStatusSync, webBuildable, webNewer, webStale } from '@/stores/status'
+import { comfyBehind, comfyOld, engineStale, restartEngine, restarting, startStatusSync, webBuildable, webNewer, webStale, ztBehind } from '@/stores/status'
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
 import { disks, gb, memLatest, startSystemSync } from '@/stores/system'
 import { drawerOpen, toggleDrawer, unseenErrors } from '@/stores/logs'
@@ -108,7 +108,7 @@ const cap = computed(() => {
 })
 
 // ---- housekeeping: an update to load (rebuild the page, restart ComfyUI), or ComfyUI has one -
-const housekeeping = computed(() => !!(comfyOld.value || engineStale.value || webStale.value || webNewer.value || comfyBehind.value))
+const housekeeping = computed(() => !!(comfyOld.value || engineStale.value || webStale.value || webNewer.value || ztBehind.value || comfyBehind.value))
 const reload = () => location.reload()
 const trainingNow = computed(() => activeRuns.value.some((r) => r.status === 'training' || r.status === 'loading'))
 // what the square does: rebuild the page and/or restart ComfyUI, whichever is behind
@@ -320,7 +320,7 @@ onUnmounted(() => {
           <span class="ic"><i class="mdi mdi-cog-outline" /><span v-if="housekeeping" class="dot-count" /></span>
           <span class="lbl">Settings</span>
         </RouterLink>
-        <!-- housekeeping, open sidebar only: restart to load an update, or ComfyUI has one -->
+        <!-- housekeeping, open sidebar only: restart to load an update, or ZenTrainer or ComfyUI has one -->
         <template v-if="!collapsed || mobileOpen">
           <span v-if="comfyOld" class="sq warn" :title="comfyOld"><i class="mdi mdi-alert-outline" /></span>
           <button
@@ -335,6 +335,9 @@ onUnmounted(() => {
           <button v-else-if="webNewer" class="sq" title="The web app was rebuilt: reload to see the new version" @click="reload()">
             <i class="mdi mdi-refresh" />
           </button>
+          <RouterLink v-else-if="ztBehind" to="/settings" class="sq" :title="`ZenTrainer update available: ${ztBehind} new commit${ztBehind === 1 ? '' : 's'} (see Settings)`" @click="emit('navigate')">
+            <i class="mdi mdi-arrow-up-circle-outline" />
+          </RouterLink>
           <RouterLink v-else-if="comfyBehind" to="/settings" class="sq" :title="`ComfyUI update available: ${comfyBehind} commits behind upstream`" @click="emit('navigate')">
             <i class="mdi mdi-arrow-up-circle-outline" />
           </RouterLink>

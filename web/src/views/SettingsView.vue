@@ -1,11 +1,13 @@
 <script setup lang="ts">
-// Appearance, after lora.moe's settings: a mode toggle and a grid of theme-pack cards.
-// Previews are drawn from each pack's own tokens, so every ZenKit pack and user
-// drop-in gets one without shipping banner images.
+// Settings, top to bottom: versions (what's running, what's newer: the first thing to check when
+// something's off), appearance, training defaults, faces, then where things are stored.
+// Theme previews are drawn from each pack's own tokens, so every ZenKit pack and user drop-in gets
+// one without shipping banner images.
 import { ZenButton, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
-import { engine, type ComfyVersion, type EngineSettings } from '@/api/engine'
+import { engine, type EngineSettings, type Health } from '@/api/engine'
 import { SETTINGS, setSetting, settings, type SettingId } from '@/stores/settings'
+import { checkingUpdates, checkUpdates, comfyVersion as comfy, webNewer, webStale, ztVersion as zt } from '@/stores/status'
 import { currentModes, currentTheme, packCards, setMode, setTheme } from '@/lib/theme'
 
 const mode = computed(() => currentTheme.value.mode)
@@ -25,10 +27,56 @@ const shownPacks = computed(() =>
 // the swatch shows the pack in the current mode when it has it
 const sw = (p: (typeof packCards.value)[number]) => (p.modes.includes(mode.value) ? p.swatch[mode.value] : p.swatch[p.modes[0]!])!
 
-// ComfyUI: version, the tested pin, and (on request) how far upstream has moved
-const comfy = ref<ComfyVersion | null>(null)
-const checking = ref(false)
-onMounted(async () => (comfy.value = await engine.comfyui().catch(() => null)))
+// Versions: ZenTrainer (the engine), this page's build and ComfyUI. The sidebar's check fills in
+// what's upstream a little after launch; until then (or on a fresh tab) just what's running.
+const WEB = __ZT_BUILD__
+const health = ref<Health | null>(null)
+onMounted(async () => {
+  checkUpdates(false)
+  health.value = await engine.health().catch(() => null)
+})
+/** `git describe` as people read it: "v0.3.0-45-g909bb94" → 0.3.0, 45 commits on, 909bb94 */
+function described(d?: string, fallback = '') {
+  const m = /^v?(.+?)-(\d+)-g([0-9a-f]+)$/.exec(d ?? '')
+  if (m) return { release: m[1]!, after: Number(m[2]), sha: m[3]! }
+  if (d && /^[0-9a-f]{7,}$/.test(d)) return { release: fallback, after: 0, sha: d }
+  return { release: d?.replace(/^v/, '') || fallback, after: 0, sha: '' }
+}
+const ztD = computed(() => described(zt.value?.describe, zt.value?.version))
+const webD = computed(() => described(WEB.describe, WEB.version))
+// the page is the same code as the engine (or at least its web files haven't changed since)
+const webMatches = computed(() => !webStale.value && !webNewer.value)
+const showCommits = ref(false)
+const copied = ref(false)
+// one block to paste into an issue or a chat when asking for help
+function versionText() {
+  const z = zt.value
+  const c = comfy.value
+  const lines = [
+    `ZenTrainer ${z?.version ?? '?'}${z?.describe ? ` (${z.describe}${z.dirty ? ', local changes' : ''}${z.branch && z.branch !== 'main' ? `, branch ${z.branch}` : ''})` : ''}`,
+    `Web app ${WEB.version}${WEB.describe ? ` (${WEB.describe}${WEB.dirty ? ', local changes' : ''})` : ''}${webStale.value ? ', older than its source' : ''}`,
+    `ComfyUI ${c?.version ?? '?'}${c?.describe ? ` (${c.describe})` : ''}${c?.pin ? (c.matches_pin ? ', the pin' : ', not the pin') : ''}`,
+  ]
+  const cap = health.value?.capabilities
+  if (cap?.device_name || cap?.device) lines.push(`GPU ${cap.device_name ?? cap.device}`)
+  return lines.join('\n')
+}
+async function copyVersions() {
+  const text = versionText()
+  // the clipboard API is only there on localhost or https: opened by LAN address, the old way
+  if (navigator.clipboard) await navigator.clipboard.writeText(text)
+  else {
+    const t = Object.assign(document.createElement('textarea'), { value: text })
+    document.body.append(t)
+    t.select()
+    document.execCommand('copy')
+    t.remove()
+  }
+  copied.value = true
+  setTimeout(() => (copied.value = false), 1500)
+}
+const reload = () => location.reload()
+
 // Storage: the ZenTrainer folder (datasets and results out of ComfyUI's input/output). The engine
 // reads it at start, so a saved change shows as pending until ComfyUI restarts.
 const storage = ref<EngineSettings | null>(null)
@@ -96,14 +144,6 @@ async function pickFace(id: string) {
   }
 }
 
-async function checkUpdates() {
-  checking.value = true
-  try {
-    comfy.value = await engine.comfyui(true)
-  } finally {
-    checking.value = false
-  }
-}
 </script>
 
 <template>
@@ -114,86 +154,78 @@ async function checkUpdates() {
       </div>
     </div>
 
-    <section v-if="comfy" class="card section">
+    <section class="card section">
       <div>
-        <h2>ComfyUI</h2>
-        <p class="muted">ZenTrainer uses ComfyUI's internals, so it's tested against a pinned version (comfy.lock).</p>
+        <h2>Versions</h2>
+        <p class="muted">What's running here, and whether anything newer is out. Asking for help? Copy these along.</p>
       </div>
-      <dl class="kv">
-        <dt>Version</dt><dd class="mono">{{ comfy.version ?? '–' }} <span class="muted">{{ comfy.describe }}</span></dd>
-        <dt>Location</dt><dd class="mono small-t">{{ comfy.path }}</dd>
-        <template v-if="comfy.pin">
-          <dt>Tested pin</dt>
+      <dl class="kv versions">
+        <dt>ZenTrainer</dt>
+        <dd>
+          <span class="mono strong">{{ ztD.release || zt?.version || '–' }}</span>
+          <span v-if="ztD.after" class="muted">+ {{ ztD.after }} commit{{ ztD.after === 1 ? '' : 's' }}</span>
+          <span v-if="ztD.sha" class="mono muted small-t">{{ ztD.sha }}</span>
+          <span v-if="zt?.branch && zt.branch !== 'main'" class="tag-s mono">{{ zt.branch }}</span>
+          <span v-if="zt?.dirty" class="tag-s" title="ZenTrainer's files have local changes: zt update leaves them alone and skips updating">local changes</span>
+          <div class="status">
+            <span v-if="zt?.on_disk" class="warn"><i class="mdi mdi-restart" /> {{ described(zt.on_disk.describe).sha || 'a newer version' }} is on disk: restart ComfyUI to load it (the sidebar's update button does)</span>
+            <span v-else-if="zt && !zt.commit" class="muted">Not a git checkout, so it can't check for updates: compare with the releases on GitHub.</span>
+            <span v-else-if="zt?.upstream_error" class="warn">Couldn't check: {{ zt.upstream_error }}</span>
+            <template v-else-if="zt?.upstream?.behind">
+              <span class="warn">
+                <i class="mdi mdi-arrow-up-circle-outline" /> {{ zt.upstream.behind }} new commit{{ zt.upstream.behind === 1 ? '' : 's' }} on {{ zt.upstream.ref }}
+                <button class="link" @click="showCommits = !showCommits">{{ showCommits ? 'hide' : 'what’s new' }}</button>
+              </span>
+              <ul v-if="showCommits" class="commits">
+                <li v-for="c in zt.upstream.commits" :key="c"><span class="mono muted">{{ c.split(' ')[0] }}</span> {{ c.slice(c.indexOf(' ') + 1) }}</li>
+                <li v-if="zt.upstream.behind > zt.upstream.commits.length" class="muted">… and {{ zt.upstream.behind - zt.upstream.commits.length }} more</li>
+              </ul>
+              <span class="muted">
+                To update, run <span class="mono">zt update</span> (or start from the launcher, which offers it), then restart.
+                <template v-if="zt.dirty"> Your local changes stop it: commit or stash them first.</template>
+                <template v-else-if="zt.upstream.ahead"> This checkout has {{ zt.upstream.ahead }} commit{{ zt.upstream.ahead === 1 ? '' : 's' }} of its own, so it won't fast-forward: pull it yourself.</template>
+              </span>
+            </template>
+            <span v-else-if="zt?.upstream" class="ok"><i class="mdi mdi-check-circle-outline" /> up to date with {{ zt.upstream.ref }}</span>
+          </div>
+        </dd>
+
+        <dt>Web app</dt>
+        <dd>
+          <span class="mono strong">{{ webD.release || '–' }}</span>
+          <span v-if="webD.after" class="muted">+ {{ webD.after }} commit{{ webD.after === 1 ? '' : 's' }}</span>
+          <span v-if="webD.sha" class="mono muted small-t">{{ webD.sha }}</span>
+          <span v-if="WEB.dirty" class="tag-s" title="Built from web files with local changes">local changes</span>
+          <div class="status">
+            <span v-if="webNewer" class="warn"><i class="mdi mdi-refresh" /> rebuilt since this tab opened: <button class="link" @click="reload">reload</button> to see it</span>
+            <span v-else-if="webStale" class="warn"><i class="mdi mdi-hammer-wrench" /> its source is newer than this build (after an update): the sidebar's update button rebuilds it</span>
+            <span v-else-if="webMatches" class="ok"><i class="mdi mdi-check-circle-outline" /> built from the code on disk</span>
+          </div>
+        </dd>
+
+        <template v-if="comfy">
+          <dt>ComfyUI</dt>
           <dd>
-            <span class="mono">{{ comfy.pin.describe }}</span>
-            <span v-if="comfy.matches_pin" class="ok"><i class="mdi mdi-check-circle-outline" /> running the pin</span>
-            <span v-else class="warn"><i class="mdi mdi-alert-outline" /> not the pin: run <span class="mono">scripts/zt update</span></span>
+            <span class="mono strong">{{ comfy.version ?? '–' }}</span>
+            <span class="mono muted small-t">{{ comfy.describe }}</span>
+            <div class="status">
+              <template v-if="comfy.pin">
+                <span v-if="comfy.matches_pin" class="ok"><i class="mdi mdi-check-circle-outline" /> the version ZenTrainer is tested with (comfy.lock)</span>
+                <span v-else class="warn"><i class="mdi mdi-alert-outline" /> not the tested version ({{ comfy.pin.describe }}): run <span class="mono">zt update</span></span>
+              </template>
+              <span v-if="comfy.upstream_error" class="warn">Couldn't check: {{ comfy.upstream_error }}</span>
+              <span v-else-if="comfy.upstream?.behind" class="muted">
+                Upstream is {{ comfy.upstream.behind }} commits ahead ({{ comfy.upstream.describe }}). Newer isn't automatically better here:
+                ZenTrainer moves its pin once a version is tested.
+              </span>
+              <span class="mono muted small-t">{{ comfy.path }}</span>
+            </div>
           </dd>
         </template>
-        <template v-if="comfy.upstream">
-          <dt>Upstream</dt>
-          <dd>
-            <span class="mono">{{ comfy.upstream.describe }}</span>
-            <span v-if="comfy.upstream.behind" class="muted"> · {{ comfy.upstream.behind }} commits newer than this checkout</span>
-            <span v-else class="ok"> · up to date</span>
-          </dd>
-        </template>
-        <template v-if="comfy.upstream_error"><dt>Upstream</dt><dd class="warn small-t">{{ comfy.upstream_error }}</dd></template>
       </dl>
       <div class="row-actions">
-        <ZenButton size="sm" icon="mdi mdi-cloud-sync-outline" :disabled="checking" @click="checkUpdates">{{ checking ? 'Checking…' : 'Check for updates' }}</ZenButton>
-        <span v-if="comfy.upstream?.behind" class="muted small-t">Newer isn't automatically better here: move the pin with <span class="mono">scripts/zt update --ref &lt;tag&gt;</span> and test a short run first.</span>
-      </div>
-    </section>
-
-    <section v-if="storage" class="card section">
-      <div>
-        <h2>Storage</h2>
-        <p class="muted">
-          By default datasets live in ComfyUI's input folder and LoRAs, samples and merges under its output/zentrainer.
-          A ZenTrainer folder keeps them out of there: datasets in <span class="mono">datasets/</span>, results in
-          <span class="mono">output/</span>. Nothing already there moves.
-        </p>
-      </div>
-      <div class="stack">
-        <div class="eyebrow">ZenTrainer folder</div>
-        <div class="row-actions">
-          <ZenInput v-model="folderDraft" class="grow mono" placeholder="Empty: ComfyUI's input and output folders" @keydown.enter="saveFolder" />
-          <ZenButton size="sm" icon="mdi mdi-content-save-outline" :disabled="savingFolder || folderDraft.trim() === storage.settings.folder" @click="saveFolder">Save</ZenButton>
-        </div>
-        <p class="muted hint">An absolute path outside ComfyUI's input and output folders. Takes effect after restarting ComfyUI.</p>
-        <p v-if="folderError" class="warn">{{ folderError }}</p>
-        <p v-else-if="storage.restart_needed" class="warn"><i class="mdi mdi-restart" /> Saved: restart ComfyUI (System → Restart ComfyUI) to use it. Until then the folders below stay in use.</p>
-        <p v-else-if="folderNote" class="ok">{{ folderNote }}</p>
-      </div>
-      <div class="stack">
-        <div class="eyebrow">Datasets folder</div>
-        <div class="seg">
-          <button :class="{ on: dsChoice === 'default' }" title="Datasets where the ZenTrainer folder puts them, or straight in ComfyUI's input folder" @click="dsChoice = 'default'">As above</button>
-          <button :class="{ on: dsChoice === 'input' }" title="In input/datasets/: apart from everything else uploaded to ComfyUI's input folder" @click="dsChoice = 'input'">input/datasets</button>
-          <button :class="{ on: dsChoice === 'custom' }" title="Any folder, e.g. on a bigger drive" @click="dsChoice = 'custom'">Custom</button>
-        </div>
-        <div class="row-actions">
-          <ZenInput v-if="dsChoice === 'custom'" v-model="dsCustom" class="grow mono" placeholder="An absolute path, or one inside ComfyUI's input folder" @keydown.enter="saveDatasets" />
-          <span v-else class="grow" />
-          <ZenButton size="sm" icon="mdi mdi-content-save-outline" :disabled="savingDs || dsValue === (storage.settings.datasets ?? '') || (dsChoice === 'custom' && !dsValue)" @click="saveDatasets">Save</ZenButton>
-        </div>
-        <p class="muted hint">Only where ZenTrainer looks: nothing is moved. Runs still find datasets where they were. Takes effect after restarting ComfyUI.</p>
-        <p v-if="dsError" class="warn">{{ dsError }}</p>
-        <p v-else-if="dsNote && !storage.restart_needed" class="ok">{{ dsNote }}</p>
-        <div v-if="storage.datasets_elsewhere?.length" class="warn small-t">
-          <i class="mdi mdi-folder-move-outline" /> {{ storage.datasets_elsewhere.length }} dataset{{ storage.datasets_elsewhere.length === 1 ? '' : 's' }}
-          won't be listed there until moved into it (training runs still find them):
-          <ul class="mono"><li v-for="d in storage.datasets_elsewhere.slice(0, 8)" :key="d">{{ d }}</li><li v-if="storage.datasets_elsewhere.length > 8">…</li></ul>
-        </div>
-      </div>
-      <div class="stack">
-        <div class="eyebrow">In use now</div>
-        <dl class="kv">
-          <dt>Datasets</dt><dd class="mono small-t">{{ storage.active.datasets }}</dd>
-          <dt>Outputs</dt><dd class="mono small-t">{{ storage.active.output }}</dd>
-          <dt>LoRAs</dt><dd class="mono small-t">{{ storage.active.loras }}</dd>
-        </dl>
+        <ZenButton size="sm" icon="mdi mdi-cloud-sync-outline" :disabled="checkingUpdates" @click="checkUpdates()">{{ checkingUpdates ? 'Checking…' : 'Check for updates' }}</ZenButton>
+        <ZenButton size="sm" variant="ghost" :icon="copied ? 'mdi mdi-check' : 'mdi mdi-content-copy'" @click="copyVersions">{{ copied ? 'Copied' : 'Copy versions' }}</ZenButton>
       </div>
     </section>
 
@@ -335,34 +367,61 @@ async function checkUpdates() {
         <p v-if="faceError" class="warn">{{ faceError }}</p>
       </div>
     </section>
+
+    <section v-if="storage" class="card section">
+      <div>
+        <h2>Storage</h2>
+        <p class="muted">
+          By default datasets live in ComfyUI's input folder and LoRAs, samples and merges under its output/zentrainer.
+          A ZenTrainer folder keeps them out of there: datasets in <span class="mono">datasets/</span>, results in
+          <span class="mono">output/</span>. Nothing already there moves.
+        </p>
+      </div>
+      <div class="stack">
+        <div class="eyebrow">ZenTrainer folder</div>
+        <div class="row-actions">
+          <ZenInput v-model="folderDraft" class="grow mono" placeholder="Empty: ComfyUI's input and output folders" @keydown.enter="saveFolder" />
+          <ZenButton size="sm" icon="mdi mdi-content-save-outline" :disabled="savingFolder || folderDraft.trim() === storage.settings.folder" @click="saveFolder">Save</ZenButton>
+        </div>
+        <p class="muted hint">An absolute path outside ComfyUI's input and output folders. Takes effect after restarting ComfyUI.</p>
+        <p v-if="folderError" class="warn">{{ folderError }}</p>
+        <p v-else-if="storage.restart_needed" class="warn"><i class="mdi mdi-restart" /> Saved: restart ComfyUI (System → Restart ComfyUI) to use it. Until then the folders below stay in use.</p>
+        <p v-else-if="folderNote" class="ok">{{ folderNote }}</p>
+      </div>
+      <div class="stack">
+        <div class="eyebrow">Datasets folder</div>
+        <div class="segmented">
+          <button :class="{ on: dsChoice === 'default' }" title="Datasets where the ZenTrainer folder puts them, or straight in ComfyUI's input folder" @click="dsChoice = 'default'">As above</button>
+          <button :class="{ on: dsChoice === 'input' }" title="In input/datasets/: apart from everything else uploaded to ComfyUI's input folder" @click="dsChoice = 'input'">input/datasets</button>
+          <button :class="{ on: dsChoice === 'custom' }" title="Any folder, e.g. on a bigger drive" @click="dsChoice = 'custom'">Custom</button>
+        </div>
+        <div class="row-actions">
+          <ZenInput v-if="dsChoice === 'custom'" v-model="dsCustom" class="grow mono" placeholder="An absolute path, or one inside ComfyUI's input folder" @keydown.enter="saveDatasets" />
+          <span v-else class="grow" />
+          <ZenButton size="sm" icon="mdi mdi-content-save-outline" :disabled="savingDs || dsValue === (storage.settings.datasets ?? '') || (dsChoice === 'custom' && !dsValue)" @click="saveDatasets">Save</ZenButton>
+        </div>
+        <p class="muted hint">Only where ZenTrainer looks: nothing is moved. Runs still find datasets where they were. Takes effect after restarting ComfyUI.</p>
+        <p v-if="dsError" class="warn">{{ dsError }}</p>
+        <p v-else-if="dsNote && !storage.restart_needed" class="ok">{{ dsNote }}</p>
+        <div v-if="storage.datasets_elsewhere?.length" class="warn small-t">
+          <i class="mdi mdi-folder-move-outline" /> {{ storage.datasets_elsewhere.length }} dataset{{ storage.datasets_elsewhere.length === 1 ? '' : 's' }}
+          won't be listed there until moved into it (training runs still find them):
+          <ul class="mono"><li v-for="d in storage.datasets_elsewhere.slice(0, 8)" :key="d">{{ d }}</li><li v-if="storage.datasets_elsewhere.length > 8">…</li></ul>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="eyebrow">In use now</div>
+        <dl class="kv">
+          <dt>Datasets</dt><dd class="mono small-t">{{ storage.active.datasets }}</dd>
+          <dt>Outputs</dt><dd class="mono small-t">{{ storage.active.output }}</dd>
+          <dt>LoRAs</dt><dd class="mono small-t">{{ storage.active.loras }}</dd>
+        </dl>
+      </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-/* the datasets folder choice: the run form's segmented buttons (newrun/form.css) */
-.seg {
-  display: inline-flex;
-  align-self: flex-start;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--r-lg);
-  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
-}
-.seg button {
-  border: none;
-  background: none;
-  color: var(--zen-muted);
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: var(--r-md);
-  cursor: pointer;
-}
-.seg button.on {
-  background: var(--zen-selected-bg, var(--zen-surface-2));
-  color: var(--zen-selected-text, var(--zen-text));
-}
 .narrow {
   max-width: 880px;
 }
@@ -401,6 +460,45 @@ p {
   flex-wrap: wrap;
   align-items: baseline;
 }
+.versions {
+  gap: 14px 20px;
+}
+.versions dt {
+  padding-top: 1px;
+}
+.strong {
+  font-weight: 600;
+}
+.status {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.tag-s {
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--zen-warn) 16%, transparent);
+}
+.link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--zen-accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.commits {
+  margin: 2px 0 4px;
+  padding-left: 16px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .small-t {
   font-size: 11px;
   word-break: break-all;
@@ -426,6 +524,7 @@ p {
 .segmented {
   display: inline-flex;
   align-self: flex-start;
+  flex-wrap: wrap;
   gap: 2px;
   padding: 2px;
   border-radius: var(--r-lg);
