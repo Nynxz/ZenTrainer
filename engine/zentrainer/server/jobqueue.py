@@ -47,8 +47,17 @@ class Queue:
         with _lock:
             return {**self._read(), "current": self.current}
 
+    def _back_in_line(self, run_id: str) -> None:
+        """A run going back in the queue isn't the one running: its last job is over. The worker lets
+        go of the current run once it sees it end, but a resume or retry right after a stop can
+        requeue it first, and the worker then waited on it for good (it showed twice, as running
+        and as waiting). Nothing starts early: the worker still waits for no run to be active."""
+        if self.current == run_id:
+            self.current = None
+
     def add(self, run_id: str, front: bool = False) -> None:
         with _lock:
+            self._back_in_line(run_id)
             d = self._read()
             d["order"] = [r for r in d["order"] if r != run_id]
             d["order"].insert(0, run_id) if front else d["order"].append(run_id)
@@ -56,6 +65,7 @@ class Queue:
 
     def insert(self, run_id: str, at: int) -> None:
         with _lock:
+            self._back_in_line(run_id)
             d = self._read()
             d["order"] = [r for r in d["order"] if r != run_id]
             d["order"].insert(max(0, at), run_id)
