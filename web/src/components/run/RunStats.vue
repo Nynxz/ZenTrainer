@@ -90,7 +90,7 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
       <div v-for="it in g.items" :key="it.k" class="scell">
         <dt><ZenTip v-if="it.tip" :text="it.tip">{{ it.k }}</ZenTip><template v-else>{{ it.k }}</template></dt>
         <dd :class="{ mono: it.mono !== false }">
-          {{ it.v }}<span v-if="it.delta" class="delta" :class="it.delta.good ? 'good' : 'bad'">{{ it.delta.text }}</span>
+          <span class="v">{{ it.v }}</span><span v-if="it.delta" class="delta" :class="it.delta.good ? 'good' : 'bad'">{{ it.delta.text.trim() }}</span>
         </dd>
       </div>
     </dl>
@@ -115,14 +115,24 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
   gap: 3px;
 }
 
+/* the change (the green or amber arrow) is what matters most: when the cell is too narrow for
+   value and change it goes under the value, never cut off; only the value can shorten */
 .scell dd {
   margin: 2px 0 0;
   font-size: 13px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 4px;
   white-space: nowrap;
+}
+.scell dd .v {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .delta {
+  flex: none;
   font-size: 11px;
 }
 dt {
