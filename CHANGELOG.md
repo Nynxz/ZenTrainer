@@ -50,6 +50,11 @@ and Manager show.
   a Python example).
 
 ### Run form and look
+- **Fixed: a run using a model file outside the catalog lost it when duplicated** (a Qwen Image
+  2.1 run on `qwen3vl_8b_fp8_scaled`, say): it showed empty, "not in the catalog", and asked to
+  download the catalog's. A file of yours that ComfyUI has is listed, tagged yours, and installed.
+- **Comfy Classic's surfaces are tints of its colours,** not the full brand blue (dark) or neon lime
+  (light): every hovered row, chip and tile was a block of it.
 - **Recipes on New run** (top right): Simple mode's recipes for each model, and your own, without
   switching to Simple mode. Each shows what it would do to the run before it's applied: its model
   files (and what they'd download), its length, adapter, learning rate and resolution, and every
@@ -90,6 +95,8 @@ and Manager show.
   that was already taken. The memory chart shows the whole card too.
 
 ### Settings
+- **The face models' licences:** InsightFace's non-commercial note shows only under its two
+  models, with a link to Commercial (AuraFace).
 - **Versions, at the top of Settings:** the ZenTrainer version running (release, commits since,
   commit), the web app's build and ComfyUI's, and whether there's an update: how many new
   commits, what they are, and what to run (`zt update`). It also says when a newer version is on
@@ -106,6 +113,14 @@ and Manager show.
   RunPod is in docker/README.md; the image is `ghcr.io/nynxz/zentrainer`.
 
 ### Datasets
+- **Fixed: a phone photo stored turned a quarter trained cropped to the wrong shape.** Phones often
+  save a portrait sideways with a tag to turn it upright; training loaded it upright but picked its
+  bucket from the stored size, so a portrait was cropped to a landscape bucket (a 3:4 lost about
+  half its height: heads and feet). It's bucketed upright now, as the Analysis page already showed
+  it. A dataset with such a photo encodes again, once.
+- **Fixed: matched edit pairs were told they're different shapes.** The check compared an input
+  to the bucket its target trains at, a few percent off a 2:3 or 4:3 picture, so side-by-side
+  inputs that match their target drew "make it the same shape". It compares the two pictures now.
 - **The Analysis page shows how each picture is cropped:** what the crop cuts off is striped in the
   warning colour with a dashed edge, so even a 2% sliver shows (it was a shadow behind an outline on
   the picture's edge), and each says where ("cuts 4% top and bottom"). **As trained** shows each
