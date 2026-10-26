@@ -1,3 +1,0 @@
-{"name": "Quick test", "description": "200 steps to check a dataset and settings before a long run: samples and validation every 50.",
- "data": {"optim": {"steps": 200, "lr_scheduler": "constant", "warmup_steps": 0}, "network": {"rank": 8},
-          "output": {"save_every": 0}, "samples": {"every": 50, "baseline": true}, "validation": {"every": 50}}}

@@ -1,0 +1,48 @@
+{
+  "id": "isotope",
+  "name": "Isotope",
+  "description": "Reactor-room black, warm paper text, an isotope-lime accent, condensed caps for titles and mono labels.",
+  "modes": [
+    "dark"
+  ],
+  "css": [
+    "fonts.css",
+    "isotope.css"
+  ],
+  "tokens": {
+    "dark": {
+      "--radius": "4px",
+      "--font-sans": "'Isotope Sans', 'Inter Tight', 'Inter', system-ui, sans-serif",
+      "--font-mono": "'Isotope Mono', 'JetBrains Mono', ui-monospace, monospace",
+      "--background": "#0b0b0c",
+      "--foreground": "#f2eee6",
+      "--card": "#141416",
+      "--card-foreground": "#f2eee6",
+      "--popover": "#141416",
+      "--popover-foreground": "#f2eee6",
+      "--primary": "#d7ff3b",
+      "--primary-foreground": "#0b0b0c",
+      "--secondary": "#1c1c1f",
+      "--secondary-foreground": "#f2eee6",
+      "--muted": "#1c1c1f",
+      "--muted-foreground": "#9c978c",
+      "--accent": "#232327",
+      "--accent-foreground": "#f2eee6",
+      "--destructive": "#ff5a4e",
+      "--warning": "#ffb547",
+      "--success": "#4fdc9a",
+      "--info": "#7cc4ff",
+      "--border": "#2a2a2e",
+      "--input": "#26262a",
+      "--ring": "#d7ff3b",
+      "--sidebar": "#0f0f11",
+      "--sidebar-foreground": "#f2eee6",
+      "--sidebar-primary": "#d7ff3b",
+      "--sidebar-primary-foreground": "#0b0b0c",
+      "--sidebar-accent": "#1c1c1f",
+      "--sidebar-accent-foreground": "#f2eee6",
+      "--sidebar-border": "#26262a",
+      "--sidebar-ring": "#d7ff3b"
+    }
+  }
+}

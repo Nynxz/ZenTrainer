@@ -4,20 +4,49 @@
 // you're about to do (and what looks off) next to the Start buttons. Model files, folders,
 // samplers and schedulers come from ComfyUI's object_info; the rest is the harness's. The
 // sections are in components/newrun/ and share the form through form.ts.
-import { onMounted, onUnmounted, provide, ref } from 'vue'
+import { ZenButton, ZenMenuItem, ZenMenuSeparator, ZenPopover } from '@nynxz/zenkit-ui'
+import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { engine } from '@/api/engine'
 import DatasetSection from '@/components/newrun/DatasetSection.vue'
 import { RUN_FORM, useRunForm } from '@/components/newrun/form'
 import MemorySection from '@/components/newrun/MemorySection.vue'
 import ModelSection from '@/components/newrun/ModelSection.vue'
+import RecipePicker from '@/components/newrun/RecipePicker.vue'
+import SaveRecipe from '@/components/SaveRecipe.vue'
 import RunSummary from '@/components/newrun/RunSummary.vue'
 import SamplesSection from '@/components/newrun/SamplesSection.vue'
 import SliderSection from '@/components/newrun/SliderSection.vue'
 import TrainingSection from '@/components/newrun/TrainingSection.vue'
+import { remembered } from '@/lib/remembered'
+import { setSetting, settings } from '@/stores/settings'
 
 const form = useRunForm()
 provide(RUN_FORM, form)
-const { runPresets, applied, applyPreset, savePreset, editing, retrying, resuming, resumeStep } = form
-const { imported, exportSettings, copySettings, importSettings } = form
+const { spec, editing, retrying, resuming, resumeStep } = form
+const { imported, exportSettings, copySettings, importSettings, recipeApplied, undoRecipe } = form
+const recipesOpen = ref(false)
+
+const saveOpen = ref(false) // these settings as one of your recipes (the recipes dialog lists them under Yours)
+const openSave = () => (saveOpen.value = true)
+
+// new here (no run has finished yet): a note that Simple mode exists, until it's closed
+const router = useRouter()
+const simpleHint = remembered('zentrainer.simpleHint', true)
+const trainedOne = ref<boolean | null>(null) // null until the runs are in: no flash for people who have
+onMounted(async () => {
+  try {
+    trainedOne.value = (await engine.runs()).some((r) => r.status === 'done')
+  } catch {
+    trainedOne.value = true // can't tell: don't nag
+  }
+})
+const showSimpleHint = computed(() => simpleHint.value && trainedOne.value === false && !editing.value && settings.mode === 'advanced')
+async function trySimple() {
+  simpleHint.value = false
+  await setSetting('mode', 'simple')
+  await router.push('/simple')
+}
 
 // shared settings: a .zentrainer.json from Import, or its text pasted anywhere on the page
 const picker = ref<HTMLInputElement | null>(null)
@@ -54,29 +83,50 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
         <p v-if="editing" class="lede">
           {{ resuming ? `carries on from step ${resumeStep} with the new settings` : retrying ? 'goes back to the front of the queue' : 'keeps its place in the queue' }}
         </p>
+        <p v-if="recipeApplied" class="lede from">
+          From <b>{{ recipeApplied.title }}</b>
+          <button class="undo" title="Put the settings back as they were before it" @click="undoRecipe"><i class="mdi mdi-undo" /> Undo</button>
+        </p>
       </div>
+      <span v-if="copied" class="copied small"><i class="mdi mdi-check" /> Copied</span>
+      <button v-if="!resuming" class="bar-btn" title="Ready-made settings, ours and yours: applied here, sized to your dataset" @click="recipesOpen = true">
+        <i class="mdi mdi-book-open-page-variant-outline" /> Recipes
+      </button>
+      <ZenPopover placement="bottom-end">
+        <template #trigger="{ toggle }">
+          <button class="bar-btn icon" title="Save these settings as a recipe, share them, or load someone's" @click="toggle"><i class="mdi mdi-dots-horizontal" /></button>
+        </template>
+        <template #default="{ close }">
+          <ZenMenuItem icon="mdi mdi-content-save-outline" @select="openSave(); close()">
+            Save as recipe
+            <template #hint>yours, in Recipes</template>
+          </ZenMenuItem>
+          <ZenMenuSeparator />
+          <ZenMenuItem icon="mdi mdi-export-variant" @select="exportSettings(); close()">
+            Export
+            <template #hint>a file, without your dataset</template>
+          </ZenMenuItem>
+          <ZenMenuItem icon="mdi mdi-content-copy" @select="copy(); close()">
+            Copy
+            <template #hint>as text, for a chat</template>
+          </ZenMenuItem>
+          <ZenMenuItem v-if="!resuming" icon="mdi mdi-import" @select="picker?.click(); close()">
+            Import
+            <template #hint>a shared file</template>
+          </ZenMenuItem>
+        </template>
+      </ZenPopover>
+      <input ref="picker" type="file" accept=".json,application/json" hidden @change="pick" />
     </div>
 
-    <div class="presets">
-      <span class="eyebrow">Start from</span>
-      <button v-for="p in runPresets" :key="p.id" class="preset" :class="{ on: applied.includes(p.name) }" :title="p.description" @click="applyPreset(p)">
-        <i v-if="!p.builtin" class="mdi mdi-account-outline" /> {{ p.name }}
-      </button>
-      <button class="preset ghost" title="Save the current settings (not the model or dataset) as a preset" @click="savePreset">
-        <i class="mdi mdi-content-save-outline" /> Save as preset
-      </button>
-      <span class="share">
-        <button class="preset ghost" title="Download these settings as a file to share (without your dataset or folders)" @click="exportSettings">
-          <i class="mdi mdi-export-variant" /> Export
-        </button>
-        <button class="preset ghost" title="Copy these settings as text, to paste into a chat" @click="copy">
-          <i :class="copied ? 'mdi mdi-check' : 'mdi mdi-content-copy'" /> {{ copied ? 'Copied' : 'Copy' }}
-        </button>
-        <button v-if="!resuming" class="preset ghost" title="Load settings someone shared: a .zentrainer.json file (or paste its text anywhere here)" @click="picker?.click()">
-          <i class="mdi mdi-import" /> Import
-        </button>
-        <input ref="picker" type="file" accept=".json,application/json" hidden @change="pick" />
-      </span>
+    <div v-if="showSimpleHint" class="card simple-hint">
+      <i class="mdi mdi-sprout-outline lead" />
+      <div class="hint-text">
+        <b>New to training?</b>
+        <span class="muted">Simple mode trains from a recipe: pick what you're training, add your photos and a name. Settings switches back any time.</span>
+      </div>
+      <ZenButton size="sm" variant="primary" @click="trySimple">Try Simple mode</ZenButton>
+      <button class="hint-close" title="Don't show this again" @click="simpleHint = false"><i class="mdi mdi-close" /></button>
     </div>
 
     <div v-if="imported" class="card imported small">
@@ -106,42 +156,14 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
 
       <RunSummary />
     </div>
+    <RecipePicker v-model:open="recipesOpen" />
+    <SaveRecipe v-model:open="saveOpen" :spec="spec" />
   </div>
 </template>
 
 <style scoped>
 .wide {
   max-width: 1280px;
-}
-.presets {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.preset {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 30px;
-  padding: 0 12px;
-  border-radius: var(--r-lg);
-  border: 1px solid color-mix(in srgb, var(--zen-border) 80%, transparent);
-  background: color-mix(in srgb, var(--zen-surface) 50%, transparent);
-  color: var(--zen-text);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.preset:hover,
-.preset.on {
-  border-color: var(--zen-selected, var(--zen-accent));
-}
-.preset.on {
-  background: var(--zen-selected-bg, color-mix(in srgb, var(--zen-selected, var(--zen-accent)) 16%, transparent));
-}
-.share {
-  display: contents;
 }
 .imported {
   position: relative;
@@ -168,9 +190,98 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
   margin-left: 8px;
   font-family: var(--zen-mono);
 }
-.preset.ghost {
+/* the header's two buttons: one height, one look */
+.bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--zen-border);
+  background: var(--zen-surface);
+  color: var(--zen-text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.bar-btn.icon {
+  width: 30px;
+  padding: 0;
+  font-size: 17px;
+}
+.bar-btn:hover {
+  border-color: var(--zen-accent);
+}
+.from {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--zen-muted);
-  border-style: dashed;
+}
+.from b {
+  color: var(--zen-text);
+  font-weight: 600;
+}
+.copied {
+  color: var(--zen-success, var(--zen-accent));
+}
+.from .undo {
+  font: inherit;
+  font-size: 11px;
+  border: none;
+  background: color-mix(in srgb, var(--zen-text) 10%, transparent);
+  color: var(--zen-text);
+  border-radius: 999px;
+  padding: 1px 9px;
+  cursor: pointer;
+}
+.from .undo:hover {
+  background: color-mix(in srgb, var(--zen-text) 18%, transparent);
+}
+.warn {
+  color: var(--zen-warn, #d9a400);
+}
+.simple-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin: 12px 0 0;
+  border-color: color-mix(in srgb, var(--zen-accent) 45%, var(--zen-border));
+  background: color-mix(in srgb, var(--zen-accent) 7%, var(--zen-surface));
+}
+.simple-hint .lead {
+  font-size: 22px;
+  color: var(--zen-accent);
+}
+.hint-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+.hint-close {
+  border: none;
+  background: none;
+  color: var(--zen-muted);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px;
+}
+.hint-close:hover {
+  color: var(--zen-text);
+}
+@media (max-width: 720px) {
+  .simple-hint {
+    flex-wrap: wrap;
+  }
+  .hint-text {
+    flex-basis: calc(100% - 70px);
+  }
 }
 .layout {
   display: grid;

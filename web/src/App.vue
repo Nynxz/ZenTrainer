@@ -98,7 +98,7 @@ watch(
     <div class="main">
       <header class="mobile-bar">
         <button class="menu" aria-label="Open menu" @click="mobileOpen = true"><i class="mdi mdi-menu" /></button>
-        <ZenLotus class="lotus" /> <b>ZenTrainer</b>
+        <ZenLotus class="lotus" /> <b class="zt-title">ZenTrainer</b>
       </header>
       <ScrollArea ref="scroller" class="content">
         <main><RouterView /></main>

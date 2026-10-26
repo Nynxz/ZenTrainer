@@ -158,6 +158,19 @@ def test_themes_later_source_wins_and_css_refs_inline(tmp_path):
     assert packs["maroon-volt"]["name"] == "Mine"
     assert packs["maroon-volt"]["css"] == ":root{--x:1}"
 
+    # the app's list leaves each pack's CSS out (Isotope's fonts are most of its size) and says it
+    # has some; the one pack's is fetched on its own, from the winning source
+    from zentrainer.server.themes import theme_css
+
+    listed = {p["id"]: p for p in list_themes([BUNDLED, user], css=False)}
+    assert "css" not in listed["maroon-volt"] and listed["maroon-volt"]["has_css"] is True
+    assert "css" not in listed["isotope"] and listed["isotope"]["has_css"] is True
+    assert "has_css" not in listed["nynxz"]  # tokens only
+    assert theme_css("maroon-volt", [BUNDLED, user]) == ":root{--x:1}"
+    iso = theme_css("isotope", [BUNDLED])
+    assert iso and "@font-face" in iso and "Isotope Display" in iso
+    assert theme_css("nynxz", [BUNDLED]) is None and theme_css("no-such-theme", [BUNDLED]) is None
+
 
 def test_targets_match_by_structure_across_families():
     from zentrainer.harness.network import matches
@@ -439,15 +452,12 @@ def test_masks_are_found_skipped_as_images_and_weight_the_loss(tmp_path):
     assert obj.loss(x0, x0, pred, sigma).item() == pytest.approx(0.25)  # unmasked: averaged
 
 
-def test_presets_builtin_user_and_validity(tmp_path):
+def test_presets_save_list_and_delete(tmp_path):
     from zentrainer import presets
 
-    runs = presets.list_presets("run", tmp_path)
-    assert {"quick-test", "character", "style", "flow-tweaks"} <= {r["id"] for r in runs}
-    base = TrainSpec.from_dict(_spec()).to_dict()
-    for r in runs:  # every built-in merges into a valid spec
-        merged = {**base, **{k: ({**base[k], **v} if isinstance(v, dict) else v) for k, v in r["data"].items()}}
-        TrainSpec.from_dict(merged)
+    assert presets.list_presets("run", tmp_path) == []  # none ship: the form's starting points are recipes
+    saved = presets.save("run", "Short test", {"optim": {"steps": 100}}, tmp_path)
+    assert [(r["id"], r["builtin"]) for r in presets.list_presets("run", tmp_path)] == [(saved["id"], False)]
     presets.save("prompts", "Portrait checks", {"prompts": ["a portrait"], "negative": ""}, tmp_path)
     assert [p["id"] for p in presets.list_presets("prompts", tmp_path)] == ["portrait-checks"]
     with pytest.raises(presets.PresetError):
@@ -455,7 +465,7 @@ def test_presets_builtin_user_and_validity(tmp_path):
     with pytest.raises(presets.PresetError):
         presets.delete("run", "../x", tmp_path)
     assert presets.delete("prompts", "portrait-checks", tmp_path)
-    assert not presets.delete("run", "character", tmp_path)  # built-ins stay
+    assert presets.delete("run", saved["id"], tmp_path) and presets.list_presets("run", tmp_path) == []
 
 
 def test_trigger_word_like_ai_toolkit():

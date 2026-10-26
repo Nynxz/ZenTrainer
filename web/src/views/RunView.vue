@@ -6,6 +6,7 @@ import { ZenButton, ZenMenuItem, ZenMenuSeparator, ZenNumber, ZenPopover } from 
 import { computed, provide, ref, toRef } from 'vue'
 import { useRouter } from 'vue-router'
 import LossChart from '@/components/LossChart.vue'
+import SaveRecipe from '@/components/SaveRecipe.vue'
 import StatusPill from '@/components/StatusPill.vue'
 import { downloadUrl, exportUrl } from '@/api/engine/runs'
 import { fmtLr, RUN, useRun } from '@/components/run/context'
@@ -19,6 +20,7 @@ import RunStats from '@/components/run/RunStats.vue'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
+const saveOpen = ref(false) // this run's settings as one of your recipes: it worked, keep them
 
 const run = useRun(toRef(props, 'id'))
 provide(RUN, run)
@@ -124,6 +126,9 @@ const modelFile = computed(() => {
                 <ZenMenuItem icon="mdi mdi-content-copy" title="A new run with these settings" @select="router.push(`/runs/new?from=${id}`); close()">
                   Duplicate
                 </ZenMenuItem>
+                <ZenMenuItem icon="mdi mdi-book-plus-outline" title="This run's settings and model as one of your recipes (Recipes on New run)" @select="saveOpen = true; close()">
+                  Save as recipe
+                </ZenMenuItem>
                 <ZenMenuItem
                   icon="mdi mdi-export-variant"
                   title="This run's settings as a file to share (without your dataset or folders); Import it on New run"
@@ -133,6 +138,7 @@ const modelFile = computed(() => {
                 </ZenMenuItem>
               </template>
             </ZenPopover>
+            <SaveRecipe v-model:open="saveOpen" :spec="detail.spec" :suggest="detail.run.name" />
             <div v-if="lrOpen && running" class="lr-pop card">
               <span class="eyebrow">Learning rate</span>
               <ZenNumber v-model="lrInput" :min="0" :step="0.00001" :precision="6" size="sm" />

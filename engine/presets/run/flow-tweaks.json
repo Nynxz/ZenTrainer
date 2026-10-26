@@ -1,3 +1,0 @@
-{"name": "Flow-model tweaks", "description": "Layer onto another preset for Flux, Krea, Qwen-Image, Z-Image: logit-normal timesteps, bf16.",
- "data": {"objective": {"target": "native", "timesteps": "logit_normal", "logit_mean": 0.0, "logit_std": 1.0},
-          "memory": {"training_dtype": "bf16", "gradient_checkpointing": true}}}

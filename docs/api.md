@@ -75,7 +75,9 @@ subfolder, type}` (the image is at ComfyUI's `/view?filename=&subfolder=&type=`)
 | Request | What it does |
 |---|---|
 | `GET /spec/schema` | The spec's JSON Schema |
-| `GET /presets/{kind}` | Saved presets (`run`: settings a new run can start from) |
+| `GET /presets/{kind}` | Saved presets: `run`, your recipes (the settings and model a new run can start from); `prompts`, sample-prompt sets. `POST` saves one `{"name", "data", "description"?}`, `DELETE /presets/{kind}/{id}` removes it |
+| `GET /themes` | The theme packs (bundled, a linked ZenKit's, the user drop-in folder), without their extra CSS: `has_css` says a pack has some |
+| `GET /themes/{id}/css` | One pack's extra CSS (fonts, effects), with an ETag to revalidate it; 404 when it has none |
 | `GET /health` | ZenTrainer's version, what this install can do (`capabilities`: optimizers, attention backends, the GPU), whether the code or web app changed since it started |
 | `GET /version?check=1` | ZenTrainer's version and commit; with `check=1`, the new commits upstream |
 | `GET /system` | Memory samples (VRAM, RAM) |

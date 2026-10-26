@@ -93,9 +93,14 @@ export async function initTheme(): Promise<void> {
   }
   if (!loaded.some((p) => (p as { id?: string }).id === 'zen')) loaded.unshift(FALLBACK)
 
-  const raw = new Map(loaded.map((p) => [(p as { id?: string }).id, p as { description?: string; css?: string }]))
+  const raw = new Map(loaded.map((p) => [(p as { id?: string }).id, p as { description?: string; css?: string; has_css?: boolean }]))
   css.clear()
-  for (const [id, p] of raw) if (id && typeof p.css === 'string') css.set(id, p.css)
+  hasCss.clear()
+  for (const [id, p] of raw) {
+    if (!id) continue
+    if (typeof p.css === 'string') css.set(id, p.css) // a list that inlines it (an older engine)
+    else if (p.has_css) hasCss.add(id) // fetched when it's the one shown
+  }
 
   registerPacks(loaded.map(parsePack).filter((p) => p != null))
   packCards.value = packs().map((p) => {
@@ -140,11 +145,26 @@ export async function initTheme(): Promise<void> {
   const mode: ThemeMode =
     qMode === 'light' || qMode === 'dark' ? qMode : (saved?.preferred ?? saved?.mode ?? (prefersLight ? 'light' : 'dark'))
   const id = q.get('theme') ?? saved?.id
+  const start = id && getPack(id) ? id : 'zen'
+  await packCss(start) // before the first paint: its fonts don't swap in after
   // restoring isn't choosing: only a pick made here is saved back
-  setTheme(id && getPack(id) ? id : 'zen', mode, false)
+  setTheme(start, mode, false)
 }
 
+// a pack's extra CSS (fonts, effects): only the shown pack's is fetched, once a session (the
+// engine's ETag lets the browser keep it between loads)
 const css = new Map<string, string>()
+const hasCss = new Set<string>()
+async function packCss(id: string): Promise<string> {
+  if (css.has(id) || !hasCss.has(id)) return css.get(id) ?? ''
+  try {
+    const res = await fetch(`/zentrainer/api/themes/${encodeURIComponent(id)}/css`)
+    if (res.ok) css.set(id, await res.text())
+  } catch {
+    // engine unreachable: the pack's tokens still apply
+  }
+  return css.get(id) ?? ''
+}
 
 export function setTheme(id: string, preferred: ThemeMode, save = true): void {
   const applied = applyPack(id, preferred)
@@ -175,6 +195,11 @@ export function setTheme(id: string, preferred: ThemeMode, save = true): void {
     document.head.append(style)
   }
   style.textContent = css.get(id) ?? ''
+  if (!css.has(id) && hasCss.has(id)) {
+    void packCss(id).then((text) => {
+      if (currentTheme.value.id === id && style) style.textContent = text // still the one shown
+    })
+  }
 
   currentTheme.value = { id, mode: applied, preferred }
   try {

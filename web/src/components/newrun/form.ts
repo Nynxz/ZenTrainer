@@ -6,6 +6,7 @@ import { computed, inject, onMounted, reactive, ref, toRaw, watch, type Injectio
 import { useRoute } from 'vue-router'
 import { inputChoices } from '@/api/comfy'
 import type { SampleSuggestion } from '@/components/FamilyPicker.vue'
+import { deleteMyRecipe, loadMyRecipes, myRecipes } from '@/lib/myRecipes'
 import { setSetting, settings } from '@/stores/settings'
 import {
   defaultSpec,
@@ -86,7 +87,7 @@ export function useRunForm() {
   const datasets = ref<DatasetInfo[]>([])
   const optimizers = ref<OptimizerInfo[]>([])
   const trainAttention = ref<string[]>(['pytorch'])
-  const runPresets = ref<Preset<Partial<TrainSpec>>[]>([])
+  const runPresets = myRecipes // yours (lib/myRecipes.ts): shared with a run's page, which saves them too
   const promptSets = ref<Preset<Partial<TrainSpec['samples']>>[]>([])
 
   // ---- edit inputs: the chosen dataset's control sets (named layers of input pictures) ----------
@@ -150,16 +151,15 @@ export function useRunForm() {
   onMounted(async () => {
     await Promise.all(want.map(async ([k, n, i]) => (choices[k] = await inputChoices(n, i))))
     try {
-      const [ds, health, rp, ps] = await Promise.all([
+      const [ds, health, , ps] = await Promise.all([
         engine.datasets(),
         engine.health(),
-        engine.presets<Partial<TrainSpec>>('run'),
+        loadMyRecipes(true),
         engine.presets<Partial<TrainSpec['samples']>>('prompts'),
       ])
       datasets.value = ds
       optimizers.value = health.capabilities.optimizers ?? []
       trainAttention.value = health.capabilities.train_attention ?? ['pytorch']
-      runPresets.value = rp
       promptSets.value = ps
     } catch {
       // engine unreachable; the submit will say so
@@ -207,22 +207,20 @@ export function useRunForm() {
   })
 
   // ---- presets ---------------------------------------------------------------------------------
-  const applied = ref<string[]>([])
-  function applyPreset(p: Preset<Partial<TrainSpec>>) {
-    merge(spec as unknown as Record<string, unknown>, p.data as Record<string, unknown>)
-    applied.value = [...applied.value.filter((x) => x !== p.name), p.name]
+  // a recipe (Simple mode's) laid over the form from its dialog: the spec it gave, and the one
+  // before it, so it can be taken back in one go
+  const recipeApplied = ref<{ id: string; title: string; before: TrainSpec } | null>(null)
+  function applyRecipe(r: { id: string; title: string }, next: TrainSpec) {
+    const before = JSON.parse(JSON.stringify(spec)) as TrainSpec // a spec is plain JSON; parts of the form are proxies
+    Object.assign(spec, JSON.parse(JSON.stringify(next)))
+    recipeApplied.value = { id: r.id, title: r.title, before }
   }
-  async function savePreset() {
-    const name = prompt('Save these settings as a preset. Name:')
-    if (!name) return
-    const slug = name.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() // spec.py slugify
-    const same = runPresets.value.find((p) => p.id === slug || p.name.toLowerCase() === name.trim().toLowerCase())
-    if (same && !confirm(`Replace your preset “${same.name}” with these settings?`)) return
-    const { model: _m, dataset, name: _n, ...rest } = structuredClone(toRaw(spec)) as TrainSpec
-    const { folder: _f, ...ds } = dataset // presets are model- and dataset-agnostic
-    const saved = await engine.savePreset('run', name, { ...rest, dataset: ds })
-    runPresets.value = [...runPresets.value.filter((p) => p.id !== saved.preset.id), saved.preset as Preset<Partial<TrainSpec>>]
+  function undoRecipe() {
+    if (!recipeApplied.value) return
+    Object.assign(spec, recipeApplied.value.before)
+    recipeApplied.value = null
   }
+  const deleteRecipe = deleteMyRecipe
 
   // ---- sharing: the settings as a file to pass around (engine sharing.py) ---------------------
   // leaves out this machine's dataset, folders and pictures; an import fills in everything else
@@ -260,7 +258,7 @@ export function useRunForm() {
       const r = await engine.importSpec(doc)
       merge(spec as unknown as Record<string, unknown>, r.spec as Record<string, unknown>)
       if (r.name) spec.name = r.name
-      applied.value = []
+      recipeApplied.value = null
       imported.value = r
       error.value = null
     } catch (e) {
@@ -326,7 +324,7 @@ export function useRunForm() {
     datasets, optimizers, trainAttention, runPresets, promptSets, pairCount, pairItems,
     controlCounts, chosenInputs, runInputs, toggleInput, channelModel,
     editing, retrying, resuming, resumeStep, error,
-    applied, applyPreset, savePreset, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, opt, epochs, modelLabel, noise,
+    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, opt, epochs, modelLabel, noise,
   }
 }
 

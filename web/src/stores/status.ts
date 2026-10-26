@@ -40,6 +40,7 @@ export function startStatusSync(): void {
   }
   tick()
   setInterval(tick, 60_000)
+  void checkUpdates(false) // the version itself now (the sidebar shows it); what's new upstream later
   setTimeout(() => checkUpdates(), 15_000)
 }
 

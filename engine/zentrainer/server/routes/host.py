@@ -4,6 +4,7 @@ versions, restart, rebuilding the web app."""
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from pathlib import Path
@@ -24,11 +25,33 @@ def register(server) -> None:
         return web.json_response({"version": __version__, "capabilities": _capabilities(), "stale": _code_stale(),
                                   "comfy_old": comfy_too_old(), **_web_state()})
 
+    def _revalidated(request, text: str, content_type: str):
+        """`text` with an ETag the browser revalidates: it keeps its copy between loads (a 304 is a
+        few hundred bytes) yet sees an edit at once."""
+        import hashlib
+
+        tag = f'"{hashlib.sha1(text.encode()).hexdigest()[:20]}"'
+        headers = {"ETag": tag, "Cache-Control": "no-cache"}
+        if request.headers.get("If-None-Match") == tag:
+            return web.Response(status=304, headers=headers)
+        return web.Response(text=text, content_type=content_type, headers=headers)
+
     @routes.get("/zentrainer/api/themes")
-    async def themes(_request):
+    async def themes(request):
         from ..themes import list_themes
 
-        return web.json_response({"themes": await asyncio.to_thread(list_themes)})
+        packs = await asyncio.to_thread(list_themes, None, False)
+        return _revalidated(request, json.dumps({"themes": packs}), "application/json")
+
+    @routes.get("/zentrainer/api/themes/{theme_id}/css")
+    async def one_theme_css(request):
+        """One pack's CSS (the list leaves it out: it's mostly fonts, and only the shown pack's is needed)."""
+        from ..themes import theme_css
+
+        css = await asyncio.to_thread(theme_css, request.match_info["theme_id"])
+        if css is None:
+            return web.Response(status=404, text="no CSS for that theme")
+        return _revalidated(request, css, "text/css")
 
     @routes.get("/zentrainer/api/system/models")
     async def loaded_models(_request):

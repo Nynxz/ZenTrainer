@@ -6,11 +6,11 @@
 import { ZenLotus } from '@nynxz/zenkit-ui'
 import ScrollArea from './ScrollArea.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { activeRuns, latest, lossTrail, queue } from '@/stores/runs'
 import { activeCaptions, startCaptionSync } from '@/stores/captions'
 import { settings } from '@/stores/settings'
-import { comfyBehind, comfyOld, engineStale, restartEngine, restarting, startStatusSync, webBuildable, webNewer, webStale, ztBehind } from '@/stores/status'
+import { comfyBehind, comfyOld, engineStale, restartEngine, restarting, startStatusSync, webBuildable, webNewer, webStale, ztBehind, ztVersion } from '@/stores/status'
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
 import { disks, gb, memLatest, startSystemSync } from '@/stores/system'
 import { drawerOpen, toggleDrawer, unseenErrors } from '@/stores/logs'
@@ -24,7 +24,6 @@ const lotus = ref<InstanceType<typeof ZenLotus> | null>(null)
 const simple = computed(() => settings.mode === 'simple')
 const training = computed(() => activeRuns.value.some((r) => r.status === 'training'))
 const route = useRoute()
-const router = useRouter()
 
 interface NavItem {
   to: string
@@ -108,6 +107,14 @@ const cap = computed(() => {
 })
 
 // ---- housekeeping: an update to load (rebuild the page, restart ComfyUI), or ComfyUI has one -
+// the version beside the name: which build this is, and whether there's a newer one
+const versionTitle = computed(() => {
+  const v = ztVersion.value
+  if (!v) return ''
+  const build = `ZenTrainer ${v.describe ?? `v${v.version}`}${v.dirty ? ', with local changes' : ''}`
+  if (!v.upstream) return build
+  return ztBehind.value ? `${build}: ${ztBehind.value} new commit${ztBehind.value === 1 ? '' : 's'} upstream (see Settings)` : `${build}: up to date`
+})
 const housekeeping = computed(() => !!(comfyOld.value || engineStale.value || webStale.value || webNewer.value || ztBehind.value || comfyBehind.value))
 const reload = () => location.reload()
 const trainingNow = computed(() => activeRuns.value.some((r) => r.status === 'training' || r.status === 'loading'))
@@ -130,7 +137,6 @@ function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement
   if (e.metaKey || e.ctrlKey || e.altKey || t.closest('input, textarea, select, [contenteditable]')) return
   if (e.key === '[') emit('toggle')
-  else if (e.key === 'n') router.push(simple.value ? '/simple' : '/runs/new')
 }
 
 // ---- what ComfyUI holds right now, on every page: a training model, the captioner, SAM3 while it
@@ -179,13 +185,12 @@ onUnmounted(() => {
     <RouterLink to="/jobs" class="row brand" :title="training ? 'Training…' : undefined" @click="lotus?.bloom(); emit('navigate')">
       <!-- no breathing while training: a constant animation kept the page repainting for the whole run (the click still blooms) -->
       <span class="ic"><ZenLotus ref="lotus" class="lotus" :breathing="false" /></span>
-      <span class="lbl">ZenTrainer</span>
+      <span class="lbl"><span class="zt-title">ZenTrainer</span><span v-if="ztVersion" class="ver" :title="versionTitle">v{{ ztVersion.version }}</span></span>
     </RouterLink>
 
-    <RouterLink :to="simple ? '/simple' : '/runs/new'" class="row cta" :title="`${simple ? 'Train a LoRA' : 'New run'} (N)`" @click="emit('navigate')">
+    <RouterLink :to="simple ? '/simple' : '/runs/new'" class="row cta" @click="emit('navigate')">
       <span class="ic"><i class="mdi mdi-plus" /></span>
       <span class="lbl">{{ simple ? 'Train a LoRA' : 'New run' }}</span>
-      <kbd class="lbl">N</kbd>
     </RouterLink>
     <ScrollArea class="nav-scroll"><nav>
       <RouterLink
@@ -449,6 +454,15 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.ver {
+  margin-left: 7px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--zen-muted);
+  opacity: 0.8;
+}
 .brand {
   min-height: 40px;
   margin-bottom: 6px;
@@ -469,14 +483,6 @@ onUnmounted(() => {
 }
 .cta:hover {
   filter: brightness(1.07);
-}
-.cta kbd {
-  margin-left: auto;
-  margin-right: 10px;
-  font: 600 10px var(--zen-mono);
-  padding: 1px 5px;
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, currentColor 16%, transparent);
 }
 
 .nav-scroll {

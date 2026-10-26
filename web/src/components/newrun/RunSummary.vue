@@ -5,10 +5,12 @@ import { ZenButton, ZenField, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { EngineError, engine, promptText } from '@/api/engine'
+import SaveRecipe from '@/components/SaveRecipe.vue'
 import { useRunFormContext } from './form'
 
 const router = useRouter()
-const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, applied, editing, retrying, resuming, error } = useRunFormContext()
+const saveOpen = ref(false) // where you'd think of it: as you start a run
+const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error } = useRunFormContext()
 const submitting = ref(false)
 
 const warnings = computed(() => {
@@ -97,7 +99,7 @@ async function start(position: 'next' | 'end' = 'next') {
   <dt>Resolution</dt><dd class="mono">{{ stage0 ? `${spec.dataset.stages!.map((st) => st.resolution).join(' → ')} → ${spec.dataset.resolution}` : spec.dataset.resolution }}</dd>
   <dt>Samples</dt><dd>{{ spec.samples.prompts.length }} prompt{{ spec.samples.prompts.length === 1 ? '' : 's' }}{{ spec.samples.every ? ` / ${spec.samples.every} steps` : '' }}</dd>
 </dl>
-<div v-if="applied.length" class="muted small">Presets: {{ applied.join(' + ') }}</div>
+<div v-if="recipeApplied" class="muted small">Recipe: {{ recipeApplied.title }}</div>
 <ul v-if="warnings.length" class="warns">
   <li v-for="w in warnings" :key="w"><i class="mdi mdi-alert-outline" /> {{ w }}</li>
 </ul>
@@ -114,11 +116,27 @@ async function start(position: 'next' | 'end' = 'next') {
   </ZenButton>
   <ZenButton icon="mdi mdi-tray-plus" block :disabled="submitting || !!missing" title="Line it up behind everything queued" @click="start('end')">Add to queue</ZenButton>
 </template>
+<button class="save-recipe small" title="These settings and this model as one of your recipes, to start from next time" @click="saveOpen = true">
+  <i class="mdi mdi-content-save-outline" /> Save as recipe
+</button>
+<SaveRecipe v-model:open="saveOpen" :spec="spec" />
       </aside>
 </template>
 
 <style scoped src="./form.css"></style>
 <style scoped>
+.save-recipe {
+  align-self: center;
+  border: none;
+  background: none;
+  color: var(--zen-muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.save-recipe:hover {
+  color: var(--zen-accent);
+}
 .summary {
   position: sticky;
   top: 8px;
