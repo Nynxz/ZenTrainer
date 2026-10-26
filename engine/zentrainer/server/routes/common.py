@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import os
 import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -228,6 +230,65 @@ def _code_stale() -> bool:
     a restart picks it up. The sidebar offers one."""
     root = Path(__file__).resolve().parents[2]
     return any(p.stat().st_mtime > _LOADED_AT for p in root.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+REPO = Path(__file__).resolve().parents[4]
+
+
+def _git(*args: str, timeout: float = 60) -> str:
+    """A git command's output in ZenTrainer's checkout, or "" when it fails (or there's no git)."""
+    try:
+        out = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+# the commit this process loaded: the checkout can move on (a pull) while it runs
+_LOADED_COMMIT = _git("rev-parse", "HEAD", timeout=10)
+
+
+def _zt_version(check: bool) -> dict:
+    """ZenTrainer's version and the commit running, a newer one on disk (restart to load it), and
+    (check) what its upstream has that this checkout lacks: what `zt update` would bring. The
+    check fetches, so it only runs when asked; like `zt update` it never changes the checkout."""
+    from ... import __version__
+
+    out: dict = {"version": __version__}
+    if not _LOADED_COMMIT:
+        return out  # not a git checkout: nothing to compare against
+    out["commit"] = _LOADED_COMMIT
+    out["describe"] = _git("describe", "--tags", "--always", _LOADED_COMMIT)
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    out["branch"] = None if branch == "HEAD" else branch  # HEAD: detached, e.g. checked out at a tag
+    out["dirty"] = bool(_git("status", "--porcelain", "--untracked-files=no"))
+    head = _git("rev-parse", "HEAD")
+    if head and head != _LOADED_COMMIT:
+        out["on_disk"] = {"commit": head, "describe": _git("describe", "--tags", "--always", head)}
+    if not check:
+        return out
+    up = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if not up:
+        out["upstream_error"] = (f"the branch {branch} doesn't track a remote branch, so there's nothing to compare with" if out["branch"]
+                                 else "this checkout isn't on a branch (it's at a fixed commit), so there's nothing to compare with")
+        return out
+    # never stop to ask for a password or passphrase: nobody would see the prompt
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    try:
+        fetched = subprocess.run(["git", "-C", str(REPO), "fetch", "--quiet", up.split("/", 1)[0]],
+                                 capture_output=True, text=True, timeout=60, env=env)
+        err = fetched.stderr.strip() if fetched.returncode else ""
+    except (OSError, subprocess.SubprocessError) as e:
+        err = str(e)
+    if err:
+        out["upstream_error"] = err[:300]
+        return out
+    new = _git("log", "--format=%h %s", f"HEAD..{up}")
+    out["upstream"] = {"ref": up, "describe": _git("describe", "--tags", "--always", up),
+                       "behind": len(new.splitlines()), "ahead": int(_git("rev-list", "--count", f"{up}..HEAD") or 0),
+                       "commits": new.splitlines()[:12]}
+    return out
 
 
 def _web_state() -> dict:

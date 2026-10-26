@@ -1,5 +1,5 @@
-"""This process and machine: health, themes, memory telemetry, disk use, ComfyUI's version, restart,
-rebuilding the web app."""
+"""This process and machine: health, themes, memory telemetry, disk use, ZenTrainer's and ComfyUI's
+versions, restart, rebuilding the web app."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from aiohttp import web
 from ... import __version__, paths, state
 from .. import system
 from ...harness import control
-from .common import WEB_DIST, _bad, _capabilities, _code_stale, _comfy_version, _exec_self, _web_state, comfy_too_old
+from .common import WEB_DIST, _bad, _capabilities, _code_stale, _comfy_version, _exec_self, _web_state, _zt_version, comfy_too_old
 
 
 def register(server) -> None:
@@ -137,6 +137,12 @@ def register(server) -> None:
         """This ComfyUI's version and commit, the pin in comfy.lock, and (with ?check=1)
         how far upstream has moved. The check fetches, so it only runs when asked."""
         return web.json_response(await asyncio.to_thread(_comfy_version, request.query.get("check") == "1"))
+
+    @routes.get("/zentrainer/api/version")
+    async def zt_version(request):
+        """ZenTrainer's version and commit, and (with ?check=1) the new commits upstream: what
+        `zt update` would bring. The check fetches, so it only runs when asked."""
+        return web.json_response(await asyncio.to_thread(_zt_version, request.query.get("check") == "1"))
 
     building = asyncio.Lock()
 

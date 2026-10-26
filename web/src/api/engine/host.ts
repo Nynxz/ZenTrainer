@@ -47,6 +47,23 @@ export interface ComfyVersion {
   upstream_error?: string
 }
 
+/** ZenTrainer's own version (engine server/routes/common.py _zt_version) */
+export interface ZtVersion {
+  version: string
+  /** the commit this process loaded; none outside a git checkout */
+  commit?: string
+  describe?: string
+  /** null: not on a branch (detached at a commit or tag) */
+  branch?: string | null
+  /** ZenTrainer's tracked files have local changes: `zt update` skips the update */
+  dirty?: boolean
+  /** the checkout moved on since this process started: a restart loads it */
+  on_disk?: { commit: string; describe: string }
+  /** with ?check=1: the commits upstream has and this checkout lacks (newest first, at most 12) */
+  upstream?: { ref: string; describe: string; behind: number; ahead: number; commits: string[] }
+  upstream_error?: string
+}
+
 export interface OptimizerInfo {
   id: string
   label: string
@@ -103,6 +120,7 @@ export const hostApi = {
   cleanStorage: (body: { kind: 'states'; run_id: string } | { kind: 'states_all' } | { kind: 'cache'; folder: string }) =>
     call<{ freed: number; runs?: number }>('/storage/clean', { method: 'POST', body: JSON.stringify(body) }),
   loadedModels: () => call<{ models: LoadedModel[] }>('/system/models').then((r) => r.models),
+  version: (check = false) => call<ZtVersion>(`/version${check ? '?check=1' : ''}`),
   comfyui: (check = false) => call<ComfyVersion>(`/comfyui${check ? '?check=1' : ''}`),
   buildWeb: () => call<Pick<Health, 'web_built' | 'web_stale'>>('/web/build', { method: 'POST' }),
   settings: () => call<EngineSettings>('/settings'),
