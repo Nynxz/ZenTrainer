@@ -220,7 +220,7 @@ class Trainer:
         self.emit = emit
         self.control = control or control_mod.Control()
         self.callbacks = callbacks if callbacks is not None else [
-            Metrics(), Checkpoints(spec.save_every), Samples(spec.samples.every), Validation(), Keep()]
+            Metrics(), Checkpoints(spec.output.save_every), Samples(spec.samples.every), Validation(), Keep()]
         self.step = 0
         self.train_seconds = 0.0  # time spent in optimizer steps only (no sampling/validation/saves/pauses)
         self.last_step_seconds: float | None = None
@@ -387,7 +387,7 @@ class Trainer:
         compat.apply(qk_rope=s.memory.fused_qk_rope is not False)  # ComfyUI model fixes for training (see compat/)
         from .kernels import int8_backward
 
-        int8_backward.enable("w8a8" if s.memory.w8a8_backward else "fused" if s.memory.fused_int8_backward else "")
+        int8_backward.enable("" if s.memory.int8_backward == "bf16" else s.memory.int8_backward)
         lora_root(s.output.lora_dir)  # a bad save folder fails now, not at the first save
         torch.manual_seed(s.seed)
         random.seed(s.seed)
@@ -420,7 +420,7 @@ class Trainer:
         from .data.edit import is_h3
 
         self.h3 = is_h3(patcher.model)
-        if s.dataset.keyframes and not self.h3:
+        if s.dataset.video_keyframes and not self.h3:
             raise ValueError("keyframes (image-to-video training) are for MiniMax H3's fl2va model")
         self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root, cache,
                                   encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
@@ -526,7 +526,7 @@ class Trainer:
                 patcher.patches_uuid = uuid.uuid4()  # the next load re-applies the per-layer flags
             else:
                 patcher.set_model_compute_dtype(self.train_dtype)
-        mm.training_fp8_bwd = s.memory.quantized_backward
+        mm.training_fp8_bwd = s.memory.fp8_backward
 
         init = None
         if self.resume_from:
@@ -585,7 +585,7 @@ class Trainer:
         self._shift = s.objective.shift
         if self._shift and not is_flow(self.denoiser.model_sampling):
             raise ValueError(f"objective.shift is for flow-matching models; {type(self.denoiser.model_sampling).__name__} isn't one. Set it to 0.")
-        self._schedule = (scheduler_sigmas(self.denoiser.model_sampling, s.objective.scheduler, s.objective.scheduler_steps)
+        self._schedule = (scheduler_sigmas(self.denoiser.model_sampling, s.objective.timestep_scheduler, s.objective.timestep_scheduler_steps)
                           if s.objective.timesteps == "scheduler" else None)
         if s.objective.weighting == "flex" and not is_flow(self.denoiser.model_sampling):
             raise ValueError(f"objective.weighting is for flow-matching models; {type(self.denoiser.model_sampling).__name__} isn't one. Turn it off.")

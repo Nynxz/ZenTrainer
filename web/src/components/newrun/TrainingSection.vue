@@ -153,12 +153,12 @@ const patterns = computed({
       <ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" />
     </ZenField>
     <ZenField label="Schedule" stack>
-      <ZenCombo v-model="spec.optim.scheduler" :items="items(['constant', 'linear', 'cosine'])" :searchable="false" :sorted="false" />
+      <ZenCombo v-model="spec.optim.lr_scheduler" :items="items(['constant', 'linear', 'cosine'])" :searchable="false" :sorted="false" />
     </ZenField>
     <ZenField label="Save every" stack tip="0 = only the final LoRA">
-      <ZenNumber v-model="spec.save_every" :min="0" :step="50" :precision="0" />
+      <ZenNumber v-model="spec.output.save_every" :min="0" :step="50" :precision="0" />
     </ZenField>
-    <ZenField v-if="spec.save_every" label="Keep checkpoints" stack :tip="keepTip">
+    <ZenField v-if="spec.output.save_every" label="Keep checkpoints" stack :tip="keepTip">
       <div class="sw-row">
         <ZenCombo v-model="spec.output.keep" :items="keepItems" :sorted="false" :searchable="false" />
         <ZenNumber v-if="spec.output.keep !== 'all' && !spec.output.keep.endsWith('_new_best')" v-model="spec.output.keep_count" :min="1" :max="99" :step="1" :precision="0" />
@@ -281,8 +281,8 @@ const patterns = computed({
         </ZenField>
         <ZenField v-if="spec.objective.timesteps === 'scheduler'" label="Scheduler / steps" stack tip="Trains on exactly the noise levels this scheduler samples at in this many steps, each as often: the LoRA learns where it'll be used. Few steps (4–8) for a LoRA meant for fast sampling. Uses the model's own shift">
           <div class="inline">
-            <ZenCombo :model-value="spec.objective.scheduler ?? 'simple'" :items="items(schedulerNames)" :searchable="false" :sorted="false" @update:model-value="spec.objective.scheduler = String($event)" />
-            <ZenNumber :model-value="spec.objective.scheduler_steps ?? 20" :min="1" :max="200" :step="1" :precision="0" @update:model-value="spec.objective.scheduler_steps = $event" />
+            <ZenCombo :model-value="spec.objective.timestep_scheduler ?? 'simple'" :items="items(schedulerNames)" :searchable="false" :sorted="false" @update:model-value="spec.objective.timestep_scheduler = String($event)" />
+            <ZenNumber :model-value="spec.objective.timestep_scheduler_steps ?? 20" :min="1" :max="200" :step="1" :precision="0" @update:model-value="spec.objective.timestep_scheduler_steps = $event" />
           </div>
         </ZenField>
         <ZenField label="Timestep bias" stack tip="Lean the steps to one end, whatever the timesteps above. High noise teaches composition, layout and pose (AI Toolkit's content); low noise detail and texture (its style). Balanced = as drawn">

@@ -36,8 +36,8 @@ const moreNotes = computed(() => {
   const s = detail.value?.spec
   if (!s) return []
   const out: string[] = []
-  if (s.optim.scheduler !== 'constant' && !['Automagic3', 'Automagic4', 'AdamWScheduleFree'].includes(s.optim.optimizer))
-    out.push(`Its ${s.optim.scheduler} schedule spreads over the new length, so the learning rate rises again partway.`)
+  if (s.optim.lr_scheduler !== 'constant' && !['Automagic3', 'Automagic4', 'AdamWScheduleFree'].includes(s.optim.optimizer))
+    out.push(`Its ${s.optim.lr_scheduler} schedule spreads over the new length, so the learning rate rises again partway.`)
   if (s.dataset.stages?.length) out.push('Resolution stages are shares of the run: they switch at new steps.')
   return out
 })

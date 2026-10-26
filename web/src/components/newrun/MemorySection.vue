@@ -24,7 +24,7 @@ const advanced = reactive({ memory: false })
       <ZenNumber v-model="spec.memory.checkpoint_skip" :min="0" :max="64" :step="1" :precision="0" />
     </ZenField>
     <ZenField label="Offload weights" stack tip="Stream weights from RAM"><div class="sw-row"><ZenSwitch v-model="spec.memory.offloading" /><span class="sw-state">{{ spec.memory.offloading ? 'On' : 'Off' }}</span></div></ZenField>
-    <ZenField label="Quantized backward" stack tip="FP8 matmuls in backward (fp8 bases)"><div class="sw-row"><ZenSwitch v-model="spec.memory.quantized_backward" /><span class="sw-state">{{ spec.memory.quantized_backward ? 'On' : 'Off' }}</span></div></ZenField>
+    <ZenField label="FP8 backward" stack tip="fp8 bases: the backward's matmuls in fp8 too. Faster, less precise"><div class="sw-row"><ZenSwitch v-model="spec.memory.fp8_backward" /><span class="sw-state">{{ spec.memory.fp8_backward ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="TREAD (video)" stack tip="On video steps this share of the clip's tokens skips the middle blocks and rejoins unchanged: those blocks do about half the work at 50%. Stills, samples and validation run whole. Best with some stills in the dataset: they anchor the LoRA. MiniMax H3">
       <div class="sw-row">
         <ZenSwitch :model-value="(spec.memory.tread ?? 0) > 0" @update:model-value="spec.memory.tread = $event ? 0.5 : 0" />
@@ -41,16 +41,13 @@ const advanced = reactive({ memory: false })
     <ZenField label="int8 forward" stack tip="int8 ConvRot bases (MiniMax H3, Krea 2 int8): the frozen layers run ComfyUI's int8 kernel forward, activations quantized, instead of rebuilding a bf16 weight for each matmul. Off is slower: for comparing quality">
       <div class="sw-row"><ZenSwitch :model-value="spec.memory.int8_forward !== false" @update:model-value="spec.memory.int8_forward = $event" /><span class="sw-state">{{ spec.memory.int8_forward !== false ? 'On' : 'Off' }}</span></div>
     </ZenField>
-    <ZenField label="int8 backward (W8A8)" stack tip="int8 ConvRot bases (MiniMax H3, Krea 2 int8): the gradient is quantized to int8 too, so each frozen layer's input gradient runs on int8 tensor cores (about 2× the bf16 backward on an RTX 5090). Rounded stochastically so it stays unbiased; noisier per step than 16-bit. On by default">
-      <div class="sw-row"><ZenSwitch :model-value="spec.memory.w8a8_backward !== false" @update:model-value="spec.memory.w8a8_backward = $event" /><span class="sw-state">{{ spec.memory.w8a8_backward !== false ? 'On' : 'Off' }}</span></div>
+    <ZenField label="int8 backward" stack tip="int8 ConvRot bases (MiniMax H3, Krea 2 int8): how each frozen layer's input gradient is computed. W8A8 (the default): the gradient quantized to int8 too, on int8 tensor cores, about 2× the bf16 backward on an RTX 5090; rounded stochastically so it stays unbiased, noisier per step than 16-bit. Fused: a Triton kernel at full precision instead of a rebuilt bf16 weight (Fizgig's, by @mabseyuk), saving that weight's VRAM. bf16: the weight rebuilt in bf16, the slowest">
+      <ZenCombo :model-value="spec.memory.int8_backward ?? 'w8a8'" :items="items(['w8a8', 'fused', 'bf16'], { w8a8: 'W8A8', fused: 'Fused', bf16: 'bf16' })" :searchable="false" :sorted="false" @update:model-value="spec.memory.int8_backward = $event as 'w8a8' | 'fused' | 'bf16'" />
     </ZenField>
     <ZenField label="Fused q/k norm + rope" stack tip="Krea 2, MOSS and MiniMax H3: the attention's q/k norms and rope run as one op with its own backward instead of six separate ones (fewer copies and casts; 6–7% a step on Krea 2 and MOSS at 1024, 9% on H3 at 512). Same maths, slightly less rounding. Auto uses it whenever the blocks run uncompiled; compiled blocks fuse these already">
       <div class="sw-row"><ZenSwitch :model-value="spec.memory.fused_qk_rope !== false" @update:model-value="spec.memory.fused_qk_rope = $event" /><span class="sw-state">{{ spec.memory.fused_qk_rope == null ? 'Auto' : spec.memory.fused_qk_rope ? 'On' : 'Off' }}</span><button v-if="spec.memory.fused_qk_rope != null" type="button" class="sw-auto" @click="spec.memory.fused_qk_rope = null">Auto</button></div>
     </ZenField>
-    <ZenField label="Fused int8 backward" stack tip="int8 ConvRot bases (MiniMax H3, Krea 2 int8): each frozen layer's input gradient from a fused Triton kernel instead of a rebuilt bf16 weight (Fizgig's, by @mabseyuk). Saves the rebuilt weight's VRAM; not faster on an RTX 5090 (cuBLAS wins)">
-      <div class="sw-row"><ZenSwitch :model-value="!!spec.memory.fused_int8_backward" @update:model-value="spec.memory.fused_int8_backward = $event" /><span class="sw-state">{{ spec.memory.fused_int8_backward ? 'On' : 'Off' }}</span></div>
-    </ZenField>
-    <ZenField label="Bypass mode" stack tip="Forward hooks; automatic for quantized bases"><div class="sw-row"><ZenSwitch v-model="spec.memory.bypass_mode" /><span class="sw-state">{{ spec.memory.bypass_mode ? 'On' : 'Off' }}</span></div></ZenField>
+    <ZenField label="Bypass mode" stack tip="Adapters as forward hooks beside each layer instead of patched into its weight. Quantized bases always train this way"><div class="sw-row"><ZenSwitch v-model="spec.memory.bypass_mode" /><span class="sw-state">{{ spec.memory.bypass_mode ? 'On' : 'Off' }}</span></div></ZenField>
   </div>
 </section>
 </template>

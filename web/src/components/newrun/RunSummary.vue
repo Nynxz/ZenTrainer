@@ -22,11 +22,11 @@ const warnings = computed(() => {
     w.push(`${masked} picture${masked === 1 ? ' has a mask' : 's have masks'}, but Masked training is off: the parts the masks leave out train too.`)
   if (!spec.samples.prompts.length) w.push('No sample prompts: you will only see the loss curves.')
   else if (!spec.samples.every) w.push('Samples are off (Every 0): only Sample now renders them, so checkpoints get no samples or likeness. Set Every to the save interval.')
-  else if (spec.save_every && spec.save_every % spec.samples.every && !spec.output.keep.startsWith('likeness')) w.push(`Samples every ${spec.samples.every} don't land on the saves every ${spec.save_every}: checkpoints get no samples or likeness to compare.`)
+  else if (spec.output.save_every && spec.output.save_every % spec.samples.every && !spec.output.keep.startsWith('likeness')) w.push(`Samples every ${spec.samples.every} don't land on the saves every ${spec.output.save_every}: checkpoints get no samples or likeness to compare.`)
   else if (!slider && spec.dataset.trigger && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
     w.push("Sample prompts don't use [trigger].")
   if (Array.isArray(spec.network.targets) && !spec.network.targets.length) w.push('Layers is Custom with no patterns: no layer would get an adapter.')
-  const keep = spec.save_every ? spec.output.keep.replace('_new_best', '') : 'all'
+  const keep = spec.output.save_every ? spec.output.keep.replace('_new_best', '') : 'all'
   if (keep === 'likeness' && dataset.value && !dataset.value.faces)
     w.push(`Keeping by likeness needs Check faces on for ${dataset.value.folder} (its page: Settings): without it, nothing is scored.`)
   if (keep === 'likeness' && !spec.samples.prompts.length)

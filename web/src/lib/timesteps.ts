@@ -4,7 +4,7 @@
 import { ref, watch, type Ref } from 'vue'
 import { engine, type NoiseProfile, type TrainSpec } from '@/api/engine'
 
-type Objective = Pick<TrainSpec['objective'], 'timesteps' | 'logit_mean' | 'logit_std' | 'uniform_mix' | 'shift' | 'bias' | 'bias_power' | 'scheduler' | 'scheduler_steps' | 'weighting'>
+type Objective = Pick<TrainSpec['objective'], 'timesteps' | 'logit_mean' | 'logit_std' | 'uniform_mix' | 'shift' | 'bias' | 'bias_power' | 'timestep_scheduler' | 'timestep_scheduler_steps' | 'weighting'>
 
 // Acklam's inverse normal CDF: logit-normal timesteps from evenly spaced quantiles
 export function ndtri(p: number): number {
@@ -36,8 +36,8 @@ function scheduleAt(curve: number[], steps: number): number[] {
 /** [σ, share of the steps] for `n` evenly spaced draws of the objective on this model */
 export function draws(o: Objective, profile: NoiseProfile, n = 20000, exact: number[] | null = null): [number, number][] {
   const table = profile.sigmas ?? []
-  const curve = o.timesteps === 'scheduler' ? profile.schedules?.[o.scheduler ?? 'simple'] : undefined
-  const sched = o.timesteps !== 'scheduler' ? null : exact?.length ? exact : curve?.length ? scheduleAt(curve, o.scheduler_steps ?? 20) : null
+  const curve = o.timesteps === 'scheduler' ? profile.schedules?.[o.timestep_scheduler ?? 'simple'] : undefined
+  const sched = o.timesteps !== 'scheduler' ? null : exact?.length ? exact : curve?.length ? scheduleAt(curve, o.timestep_scheduler_steps ?? 20) : null
   // percent of the schedule (0 = full noise) to σ: a scheduler's own steps, a shift, or the model's own
   const sigmaAt = (percent: number) => {
     if (sched) return sched[Math.min(sched.length - 1, Math.floor(percent * sched.length))]!
@@ -67,7 +67,7 @@ export function useSchedule(profile: Ref<NoiseProfile>, objective: () => Objecti
     () => {
       const o = objective()
       const p = profile.value
-      return o?.timesteps === 'scheduler' && p.folder && p.name ? `${p.folder}|${p.name}|${o.scheduler ?? 'simple'}|${o.scheduler_steps ?? 20}` : ''
+      return o?.timesteps === 'scheduler' && p.folder && p.name ? `${p.folder}|${p.name}|${o.timestep_scheduler ?? 'simple'}|${o.timestep_scheduler_steps ?? 20}` : ''
     },
     async (key) => {
       out.value = null
@@ -76,7 +76,7 @@ export function useSchedule(profile: Ref<NoiseProfile>, objective: () => Objecti
       try {
         const r = await engine.noiseSchedule(folder, name, scheduler, Number(steps))
         const o = objective()
-        if (o && `${folder}|${name}|${o.scheduler ?? 'simple'}|${o.scheduler_steps ?? 20}` === key) out.value = r.sigmas
+        if (o && `${folder}|${name}|${o.timestep_scheduler ?? 'simple'}|${o.timestep_scheduler_steps ?? 20}` === key) out.value = r.sigmas
       } catch {
         /* the estimate stays */
       }

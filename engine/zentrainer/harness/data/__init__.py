@@ -453,16 +453,16 @@ def cache_key(items: list[Item], spec: DatasetSpec, encoder_id: str) -> str:
             h.update(b"audio")
         if spec.video_avoid_cuts:
             h.update(b"avoid_cuts")
-        if spec.clip_stills:
-            h.update(b"clip_stills")
+        if spec.video_stills:
+            h.update(b"clip_stills")  # v1's name: the caches made before keep their key
     for it in items:
         st = it.path.stat()
         h.update(f"{it.path}|{st.st_mtime_ns}|{st.st_size}|{it.caption}".encode())
         if it.mask:
             ms = it.mask.stat()
             h.update(f"|mask:{it.mask}|{ms.st_mtime_ns}|{ms.st_size}".encode())
-        if spec.keyframes:
-            h.update(f"|keyframes:{spec.keyframes}".encode())
+        if spec.video_keyframes:
+            h.update(f"|keyframes:{spec.video_keyframes}".encode())  # v1's name, as above
         if spec.edit:
             if spec.edit_grounded and spec.edit_method != "concat":
                 h.update(b"grounded")
@@ -533,7 +533,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
 
     # H3 builds references/keyframes its own way, a four-channel VAE encodes alpha (caches from
     # before it was kept were opaque); other runs keep their caches
-    key = cache_key(items, spec, encoder_id + ("|h3" if h3 and (spec.edit or spec.keyframes) else "")
+    key = cache_key(items, spec, encoder_id + ("|h3" if h3 and (spec.edit or spec.video_keyframes) else "")
                     + ("|rgba" if pixel_mode(vae) == "RGBA" else ""))
     path = cache_dir / key
     texts = TextCache(cache_dir, encoder_id)
@@ -593,9 +593,9 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             for k, frames in enumerate(windows):
                 px = video.read(it.path, frames, size)
                 latent = _encode(vae, px, it.path)
-                if h3 and ((spec.edit and it.controls) or spec.keyframes):
-                    first = px[:1].clone() if spec.keyframes else None
-                    last = px[-1:].clone() if spec.keyframes == "first_last" else None
+                if h3 and ((spec.edit and it.controls) or spec.video_keyframes):
+                    first = px[:1].clone() if spec.video_keyframes else None
+                    last = px[-1:].clone() if spec.video_keyframes == "first_last" else None
                     h3_jobs.append((len(samples), it.controls if spec.edit else [], first, last, variants[n][0],
                                     size, len(frames)))
                 if spec.video_audio and audio_vae is not None:
@@ -604,7 +604,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
                 owners.append(n)
                 if progress:
                     progress(n + 1, len(items) + len(captions), f"encoding {it.path.name} ({k + 1}/{len(windows)})")
-            if spec.clip_stills and windows:  # its sharpest frame, trained as a photo with the clip's caption
+            if spec.video_stills and windows:  # its sharpest frame, trained as a photo with the clip's caption
                 f = video.sharpest_frame(it.path, p)
                 still = video.read(it.path, [f], pick_bucket(p.width, p.height, sizes))
                 samples.append(Sample(_encode(vae, still, it.path), idx[0], None, idx))

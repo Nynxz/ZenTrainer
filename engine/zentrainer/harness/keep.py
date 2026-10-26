@@ -2,7 +2,7 @@
 likeness or validation loss (scored the way the run page marks its best one), or each new best:
 every save that beat all the saves before it, so the run's record-setters all stay.
 
-Only scheduled saves (save_every) are ever removed. The final LoRA, the newest checkpoint (what a
+Only scheduled saves (output.save_every) are ever removed. The final LoRA, the newest checkpoint (what a
 resume continues from), and saves asked for by hand or made at a stop always stay, and so does a
 checkpoint without a score yet: likeness lands a little after its samples, so it's ranked at a
 later save or at the end. What's removed goes from the run's checkpoints to its "pruned" stream,
@@ -81,7 +81,7 @@ def faces_missing(spec) -> str | None:
     scored for a dataset with faces on, and without scores the rule would keep every checkpoint."""
     from ..datasets import folders as datasets
 
-    if spec.output.keep.removesuffix("_new_best") == "likeness" and spec.save_every \
+    if spec.output.keep.removesuffix("_new_best") == "likeness" and spec.output.save_every \
             and not datasets.get_settings(spec.dataset.folder).get("faces"):
         return (f"keeping checkpoints by likeness needs faces on for the dataset {spec.dataset.folder!r} "
                 "(its page: Settings, Check faces), or keep them another way")

@@ -147,14 +147,14 @@ export function useRun(id: Ref<string>) {
     const out: { step: number; kind: 'ckpt' | 'sample'; done: boolean }[] = []
     const saved = new Set(d.checkpoints.map((c) => c.step))
     const sampled = new Set(d.samples.filter((x) => !x.manual).map((x) => x.step))
-    const every = d.spec.save_every
+    const every = d.spec.output.save_every
     if (every) for (let s = every; s < total.value; s += every) out.push({ step: s, kind: 'ckpt', done: saved.has(s) })
     const se = d.spec.samples.every
     if (se) for (let s = se; s <= total.value; s += se) out.push({ step: s, kind: 'sample', done: sampled.has(s) })
     return out
   })
   const nextSave = computed(() => {
-    const every = detail.value?.spec.save_every
+    const every = detail.value?.spec.output.save_every
     if (!every || !last.value?.it_s) return null
     const next = (Math.floor(step.value / every) + 1) * every
     if (next >= total.value) return null

@@ -82,7 +82,7 @@ def test_timestep_sampling_stays_inside_the_schedule():
 def test_schedules_warmup_then_decay():
     p = [torch.nn.Parameter(torch.zeros(1))]
     for name, end in (("constant", 1.0), ("linear", 0.0), ("cosine", 0.0)):
-        opt, sched = optim.build(p, OptimSpec(scheduler=name, warmup_steps=10, steps=110, learning_rate=1.0))
+        opt, sched = optim.build(p, OptimSpec(lr_scheduler=name, warmup_steps=10, steps=110, learning_rate=1.0))
         lrs = []
         for _ in range(110):
             lrs.append(opt.param_groups[0]["lr"])

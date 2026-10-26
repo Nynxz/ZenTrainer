@@ -6,8 +6,9 @@ imports, so it can be validated anywhere.
 
 from __future__ import annotations
 
+import copy
 import re
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Any, Literal
 
 ModelKind = Literal["checkpoint", "split"]
@@ -74,7 +75,7 @@ class DatasetSpec:
     disk_cache: bool = False
     # MiniMax H3 image-to-video: each clip conditioned on its own first frame ("first") or first
     # and last ("first_last"), as the fl2va model is at inference; the text encoder sees them too
-    keyframes: str = ""
+    video_keyframes: str = ""
     caption_dropout: float = 0.0
     # Caption sets: <img>.txt is "default", <img>.<set>.txt the others (tags, nl, bbox, ...).
     # Train on one set, or mix several: each step picks one of the image's sets at random.
@@ -107,7 +108,7 @@ class DatasetSpec:
     video_avoid_cuts: bool = False
     # Clip stills: each clip also trains its sharpest frame as a photo (with the clip's caption).
     # Stills are never TREAD-routed and anchor the LoRA's detail; Fizgig's H3 default.
-    clip_stills: bool = False
+    video_stills: bool = False
 
 
 @dataclass
@@ -148,7 +149,7 @@ class OptimSpec:
     optimizer: str = "AdamW"
     learning_rate: float = 1e-4
     weight_decay: float = 0.0
-    scheduler: str = "constant"  # constant | linear | cosine
+    lr_scheduler: str = "constant"  # the learning rate over the run: constant | linear | cosine
     warmup_steps: int = 0
     max_grad_norm: float = 1.0  # 0 = off
     steps: int = 1000
@@ -172,12 +173,13 @@ class ObjectiveSpec:
     # "native": each model's own prediction space (eps for SD-style, velocity for
     # flow models). "x0": loss on the denoised image, ComfyUI's native trainer default.
     target: str = "native"
-    # uniform | logit_normal (AI Toolkit's "linear" | "sigmoid") | scheduler: the noise levels a
-    # ComfyUI scheduler samples at in `scheduler_steps` steps, each step as often (trains where
-    # the LoRA will be used; few steps for a fast LoRA, as AI Toolkit's two/four/eight_step)
+    # uniform | logit_normal (AI Toolkit's "linear" | "sigmoid") | scheduler: the noise levels the
+    # ComfyUI scheduler `timestep_scheduler` samples at in `timestep_scheduler_steps` steps, each
+    # step as often (trains where the LoRA will be used; few steps for a fast LoRA, as AI Toolkit's
+    # two/four/eight_step)
     timesteps: str = "uniform"
-    scheduler: str = "simple"
-    scheduler_steps: int = 20
+    timestep_scheduler: str = "simple"
+    timestep_scheduler_steps: int = 20
     logit_mean: float = 0.0
     logit_std: float = 1.0
     # share of steps drawn uniformly instead (logit-normal only): keeps a little training at
@@ -221,15 +223,15 @@ class MemorySpec:
     # and the LoRA learns to make up for the routing: measured on H3 (all clips, 0.5): loss 0.22
     # routed vs 0.15 whole on the same LoRA, and over-sharpened samples. Below 1 keeps whole steps.
     tread_steps: float = 1.0
-    # int8 ConvRot bases (MiniMax H3, Krea 2 int8): the backward computes each frozen layer's
-    # input gradient with a fused Triton kernel instead of rebuilding its bf16 weight (Fizgig's,
-    # by @mabseyuk). Saves a transient weight per layer; faster at large token counts.
-    fused_int8_backward: bool = False
-    # int8 ConvRot bases: the backward's gradient quantized to int8 as well, so the frozen layers'
-    # input gradients run on int8 tensor cores (Triton kernels: 2x the bf16 backward on H3's
-    # clip-size layers, RTX 5090). Some gradient precision for the speed (OneTrainer's W8A8).
-    # On by default: 1.60 -> 1.35 s a step on Krea 2 int8 at 1024 (RTX 5090); no effect elsewhere
-    w8a8_backward: bool = True
+    # int8 ConvRot bases (MiniMax H3, Krea 2 int8): how the backward gets each frozen layer's
+    # input gradient (kernels/int8_backward.py); no effect on other models.
+    # "w8a8": the gradient quantized to int8 too, so it runs on int8 tensor cores (Triton kernels:
+    #   2x the bf16 backward on H3's clip-size layers, RTX 5090; Krea 2 int8 at 1024 1.60 -> 1.35 s
+    #   a step). Some gradient precision for the speed (OneTrainer's W8A8).
+    # "fused": a fused Triton kernel instead of rebuilding the layer's bf16 weight (Fizgig's, by
+    #   @mabseyuk): saves a transient weight per layer, full gradient precision.
+    # "bf16": the weight rebuilt in bf16 for the matmul (ComfyUI's way; the slowest).
+    int8_backward: str = "w8a8"
     # torch.compile the repeated transformer block: fuses the elementwise work around the matmuls.
     # The first steps (and the first sample) take longer while it compiles. None (the default) =
     # auto: on for runs long enough to repay that, with Triton and no offloading (kernels/compile.py)
@@ -245,7 +247,10 @@ class MemorySpec:
     # With offloading: VRAM kept free for activations, the LoRA and its optimizer (GB);
     # the rest holds as much of the model as fits. 0 = auto: 8 GB, more for long video clips.
     vram_headroom: float = 0.0
-    quantized_backward: bool = False
+    # fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). Faster, less precise
+    fp8_backward: bool = False
+    # Adapters as forward hooks beside each layer instead of patched into its weight. Quantized
+    # bases always train this way (a patched weight would turn their quantized matmul off)
     bypass_mode: bool = False
     # Attention backend while training. Flash and sage have no backward pass, so the
     # default pins differentiable SDPA regardless of ComfyUI's launch flags.
@@ -322,6 +327,8 @@ class ValidationSpec:
 
 @dataclass
 class OutputSpec:
+    # A checkpoint (LoRA + resume state) every this many steps. 0 = only the final LoRA
+    save_every: int = 250
     # One of ComfyUI's "loras" folders (e.g. your model library's, on a roomier disk);
     # None = output/zentrainer/loras inside this install. LoRAs go in a zentrainer/
     # subfolder of it, so ComfyUI lists them as zentrainer/<run>/<file>.
@@ -367,9 +374,10 @@ class SliderSpec:
 
 @dataclass
 class TrainSpec:
+    # the spec's layout (SPEC_VERSION): an older one is brought up to date as it's read (migrate)
+    spec_version: int = 2
     name: str = "untitled"
     seed: int = 0
-    save_every: int = 250
     model: ModelSpec = field(default_factory=ModelSpec)
     dataset: DatasetSpec = field(default_factory=DatasetSpec)
     network: NetworkSpec = field(default_factory=NetworkSpec)
@@ -385,16 +393,17 @@ class TrainSpec:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TrainSpec:
-        def build(dc, raw):
-            raw = raw or {}
-            known = {f.name for f in fields(dc)}
-            unknown = set(raw) - known
-            if unknown:
-                raise SpecError(f"unknown {dc.__name__} field(s): {', '.join(sorted(unknown))}")
-            return dc(**raw)
+    def from_dict(cls, data: dict[str, Any], strict: bool = True) -> TrainSpec:
+        """A spec from its dict, any version (migrated first). strict: a field this version doesn't
+        have is an error (a typo in a spec written by hand); else it's left out, as migrate does for
+        what's stored (runs, presets)."""
+        raw, dropped = migrate(data)
+        if strict and dropped:
+            raise SpecError(f"unknown field(s): {', '.join(dropped)}")
 
-        raw = dict(data)
+        def build(dc, raw):
+            return dc(**(raw or {}))
+
         nested = {f.name: f.default_factory for f in fields(cls) if callable(f.default_factory)}
         parts = {k: build(dc, raw.pop(k, None)) for k, dc in nested.items()}
         spec = build(cls, raw)
@@ -429,13 +438,13 @@ class TrainSpec:
         _choice("network.algorithm", self.network.algorithm, ("LoRA", "LoHa", "LoKr", "OFT"))
         if self.network.base_lora and not -4.0 <= self.network.base_strength <= 4.0:
             raise SpecError("network.base_strength is a LoRA strength, between -4 and 4 (usually 1)")
-        _choice("optim.scheduler", self.optim.scheduler, ("constant", "linear", "cosine"))
+        _choice("optim.lr_scheduler", self.optim.lr_scheduler, ("constant", "linear", "cosine"))
         _choice("objective.loss", self.objective.loss, ("mse", "l1", "huber", "smooth_l1"))
         _choice("objective.target", self.objective.target, ("native", "x0"))
         _choice("objective.timesteps", self.objective.timesteps, ("uniform", "logit_normal", "scheduler"))
         if self.objective.timesteps == "scheduler":
-            if not 1 <= self.objective.scheduler_steps <= 1000:
-                raise SpecError("objective.scheduler_steps is a step count, 1 to 1000")
+            if not 1 <= self.objective.timestep_scheduler_steps <= 1000:
+                raise SpecError("objective.timestep_scheduler_steps is a step count, 1 to 1000")
             if self.objective.shift:
                 raise SpecError("objective.shift is the model's own with a scheduler (its shift is in the schedule): set it to 0")
         _choice("objective.bias", self.objective.bias, ("balanced", "high_noise", "low_noise"))
@@ -443,6 +452,9 @@ class TrainSpec:
         if not 1.0 <= self.objective.bias_power <= 10.0:
             raise SpecError("objective.bias_power is how hard the bias leans, 1 (not at all) to 10 (3 = AI Toolkit's)")
         _choice("memory.training_dtype", self.memory.training_dtype, ("bf16", "fp16", "fp32"))
+        _choice("memory.int8_backward", self.memory.int8_backward, ("w8a8", "fused", "bf16"))
+        if self.memory.int8_forward is None:  # what the form shows for it: the default, on
+            self.memory.int8_forward = True
         sl = self.slider
         _choice("slider.kind", sl.kind, ("", "pairs", "text"))
         _choice("slider.directions", sl.directions, ("both", "positive"))
@@ -512,8 +524,8 @@ class TrainSpec:
             self.dataset.edit = True
         elif self.dataset.edit:
             self.dataset.control_sets = ["control"]  # specs from before control sets: the _control files
-        if self.dataset.keyframes not in ("", "first", "first_last"):
-            raise SpecError("dataset.keyframes is first, first_last or empty")
+        if self.dataset.video_keyframes not in ("", "first", "first_last"):
+            raise SpecError("dataset.video_keyframes is first, first_last or empty")
         if self.dataset.edit_template and "{}" not in self.dataset.edit_template:
             raise SpecError("dataset.edit_template needs {} where the instruction goes")
         if not 0.0 <= self.optim.lr_floor <= 1.0:
@@ -524,8 +536,8 @@ class TrainSpec:
             raise SpecError("optim.lora_plus must be >= 0 (0 = off)")
         if self.samples.frames < 1 or self.samples.fps <= 0:
             raise SpecError("samples.frames must be >= 1 and samples.fps > 0")
-        if self.save_every < 0 or self.samples.every < 0:
-            raise SpecError("save_every and samples.every must be >= 0 (0 = off)")
+        if self.output.save_every < 0 or self.samples.every < 0:
+            raise SpecError("output.save_every and samples.every must be >= 0 (0 = off)")
         if self.validation.every < 0 or self.validation.images < 1 or self.validation.timesteps < 1:
             raise SpecError("validation needs every >= 0, images >= 1 and timesteps >= 1")
         if not 0.0 <= self.dataset.unmasked_weight <= 1.0:
@@ -539,6 +551,86 @@ class TrainSpec:
 
 class SpecError(ValueError):
     pass
+
+
+SPEC_VERSION = 2
+
+
+def _move(d: dict, src: str, dst: str) -> None:
+    """d's value at dotted path src to dst (sections made as needed), when src is there and dst
+    isn't already."""
+    *path, key = src.split(".")
+    parent = d
+    for k in path:
+        parent = parent.get(k) if isinstance(parent, dict) else None
+    if not isinstance(parent, dict) or key not in parent:
+        return
+    value = parent.pop(key)
+    *path, key = dst.split(".")
+    for k in path:
+        if not isinstance(d.get(k), dict):  # missing, or null (a section left at its defaults)
+            d[k] = {}
+        d = d[k]
+    d.setdefault(key, value)
+
+
+def _v1_to_v2(d: dict) -> None:
+    """The renames of spec v2 (2026-10-26)."""
+    for src, dst in (("save_every", "output.save_every"), ("optim.scheduler", "optim.lr_scheduler"),
+                     ("objective.scheduler", "objective.timestep_scheduler"),
+                     ("objective.scheduler_steps", "objective.timestep_scheduler_steps"),
+                     ("memory.quantized_backward", "memory.fp8_backward"),
+                     ("dataset.keyframes", "dataset.video_keyframes"), ("dataset.clip_stills", "dataset.video_stills")):
+        _move(d, src, dst)
+    m = d.get("memory")
+    if isinstance(m, dict) and ("w8a8_backward" in m or "fused_int8_backward" in m):
+        w8a8, fused = m.pop("w8a8_backward", True), m.pop("fused_int8_backward", False)  # v1's defaults
+        if w8a8 is None:  # null: the form showed the default, on
+            w8a8 = True
+        m.setdefault("int8_backward", "w8a8" if w8a8 else "fused" if fused else "bf16")
+
+
+MIGRATIONS = {1: _v1_to_v2}  # from version n to n + 1
+
+
+def _known(dc, raw: dict, at: str, dropped: list[str]) -> dict:
+    """`raw` with only the fields dataclass `dc` has, nested dataclasses likewise."""
+    kinds = {f.name: f for f in fields(dc)}
+    out = {}
+    for k, v in raw.items():
+        f = kinds.get(k)
+        if f is None:
+            dropped.append(f"{at}{k}")
+            continue
+        sub = f.default_factory() if callable(f.default_factory) else None
+        if is_dataclass(sub) and isinstance(v, dict):
+            out[k] = _known(type(sub), v, f"{at}{k}.", dropped)
+        else:
+            out[k] = v
+    return out
+
+
+def migrate(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """A spec, or part of one (a preset, a profile's settings), in this version's layout, and the
+    fields it had that this version doesn't (left out). An older layout is renamed step by step
+    (MIGRATIONS); one without spec_version is version 1. A newer one than this version is an error:
+    its settings may mean things this version can't do."""
+    if not isinstance(data, dict):
+        raise SpecError("a spec is a JSON object")
+    d = copy.deepcopy(data)
+    version = d.pop("spec_version", 1)
+    if not isinstance(version, int) or version < 1:
+        raise SpecError(f"spec_version is a whole number from 1, got {version!r}")
+    if version > SPEC_VERSION:
+        raise SpecError(f"this spec is version {version}, from a newer ZenTrainer (this one reads up to "
+                        f"{SPEC_VERSION}): update ZenTrainer")
+    for v in range(version, SPEC_VERSION):
+        MIGRATIONS[v](d)
+    dropped: list[str] = []
+    out = _known(TrainSpec, d, "", dropped)
+    if "spec_version" in data or any(k in data for k in ("model", "dataset")):
+        out["spec_version"] = SPEC_VERSION  # a whole spec says what it is; a fragment stays a fragment
+    return out, sorted(dropped)
 
 
 # a control set's name, as caption sets' (harness/data SET_NAME)

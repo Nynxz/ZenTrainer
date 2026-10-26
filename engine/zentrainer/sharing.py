@@ -13,11 +13,10 @@ a file from a newer ZenTrainer still loads what it can.
 from __future__ import annotations
 
 import copy
-from dataclasses import fields, is_dataclass
 from typing import Any
 
 from . import __version__
-from .spec import TrainSpec
+from .spec import SpecError, migrate
 
 FORMAT = "zentrainer-run"
 VERSION = 1
@@ -76,23 +75,6 @@ def export(spec: dict[str, Any]) -> dict[str, Any]:
             "left_out": sorted(set(left_out)), "spec": s}
 
 
-def _known(dc, raw: dict, at: str, dropped: list[str]) -> dict:
-    """`raw` with only the fields dataclass `dc` has, nested dataclasses likewise."""
-    kinds = {f.name: f for f in fields(dc)}
-    out = {}
-    for k, v in raw.items():
-        f = kinds.get(k)
-        if f is None:
-            dropped.append(f"{at}{k}")
-            continue
-        sub = f.default_factory() if callable(f.default_factory) else None
-        if is_dataclass(sub) and isinstance(v, dict):
-            out[k] = _known(type(sub), v, f"{at}{k}.", dropped)
-        else:
-            out[k] = v
-    return out
-
-
 def read(doc: Any) -> dict[str, Any]:
     """What an imported file brings: {spec (partial, to lay over the form), name, warnings,
     local (what to choose here), files (model files named, with whether they're installed)}."""
@@ -112,8 +94,10 @@ def read(doc: Any) -> dict[str, Any]:
         raw = doc  # a bare spec, e.g. a run folder's spec.json
     else:
         raise ShareError("not a ZenTrainer run file: no settings in it")
-    dropped: list[str] = []
-    spec = _known(TrainSpec, copy.deepcopy(raw), "", dropped)
+    try:
+        spec, dropped = migrate(raw)  # an older layout renamed, what this version lacks left out
+    except SpecError as e:
+        raise ShareError(str(e)) from None
     if dropped:
         warnings.append("not in this version, left out: " + ", ".join(sorted(dropped)))
     here = export(spec)  # a bare spec still has the sender's dataset, folders, pictures

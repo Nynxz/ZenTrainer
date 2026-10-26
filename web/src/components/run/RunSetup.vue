@@ -25,7 +25,7 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
   const mem = [
     m.offloading ? 'offload' : '',
     m.int8_forward !== false && /int8/i.test(model) ? 'int8 fwd' : '',
-    m.w8a8_backward !== false && /int8/i.test(model) ? 'W8A8' : m.fused_int8_backward ? 'fused int8' : '',
+    /int8/i.test(model) ? { w8a8: 'W8A8', fused: 'fused int8', bf16: '' }[m.int8_backward ?? 'w8a8'] : '',
     m.compile_blocks ? 'compile' : m.compile_blocks == null ? 'compile auto' : '',
     m.fused_qk_rope ? 'fused q/k rope' : '',
     m.gradient_checkpointing ? (m.checkpoint_skip ? `checkpoint · keep ${m.checkpoint_skip}` : 'checkpoint') : '',
@@ -49,7 +49,7 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
     },
     {
       k: 'Optimizer',
-      v: [OPT_NAMES[opt.optimizer] ?? opt.optimizer, `from ${fmtLr(opt.learning_rate)}`, ADAPTIVE.has(opt.optimizer) ? '' : opt.scheduler].filter(Boolean).join(' · '),
+      v: [OPT_NAMES[opt.optimizer] ?? opt.optimizer, `from ${fmtLr(opt.learning_rate)}`, ADAPTIVE.has(opt.optimizer) ? '' : opt.lr_scheduler].filter(Boolean).join(' · '),
     },
     { k: 'Network', v: `${sp.network.algorithm} r${sp.network.rank} · ${Array.isArray(sp.network.targets) ? `${sp.network.targets.length} layer types` : sp.network.targets.replace('_', ' + ')}${sp.dataset.masked_loss ? ' · masked' : ''}` },
     ...(sp.network.base_lora

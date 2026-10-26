@@ -62,7 +62,7 @@ const FIELDS: [string, (s: RunDetail['spec']) => unknown][] = [
   ['Batch × accumulation', (s) => `${s.optim.batch_size} × ${s.optim.grad_accumulation_steps}`],
   ['Optimizer', (s) => s.optim.optimizer],
   ['Learning rate', (s) => s.optim.learning_rate],
-  ['Schedule', (s) => `${s.optim.scheduler}, warmup ${s.optim.warmup_steps}`],
+  ['Schedule', (s) => `${s.optim.lr_scheduler}, warmup ${s.optim.warmup_steps}`],
   ['Weight decay', (s) => s.optim.weight_decay],
   ['Network', (s) => `${s.network.algorithm} r${s.network.rank} α${s.network.alpha ?? s.network.rank}`],
   ['Layers', (s) => (Array.isArray(s.network.targets) ? s.network.targets.join(', ') : s.network.targets)],

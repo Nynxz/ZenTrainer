@@ -32,7 +32,7 @@
     "memory": {
       "offloading": true,
       "gradient_checkpointing": true,
-      "w8a8_backward": true,
+      "int8_backward": "w8a8",
       "int8_forward": true,
       "tread": 0.0
     },

@@ -658,7 +658,7 @@ class Validation(Callback):
 def _scores_saves(t, rule: str) -> bool:
     """A scheduled save this step whose score output.keep ranks it by: samples (likeness) or
     validation have to land on it too, whatever their own interval."""
-    every = t.spec.save_every
+    every = t.spec.output.save_every
     keep = t.spec.output.keep.removesuffix("_new_best")  # "likeness_new_best" scores saves as "likeness" does
     return keep == rule and bool(every) and t.step % every == 0 and t.step < t.spec.optim.steps
 
@@ -669,7 +669,7 @@ class Keep(Callback):
     first."""
 
     def on_step(self, t):
-        if t.spec.save_every and t.step % t.spec.save_every == 0:
+        if t.spec.output.save_every and t.step % t.spec.output.save_every == 0:
             gone = self._prune(t)
             if gone:  # said on the run page; the run's status is the trainer's to set
                 t.emit(events.STATUS, {"run_id": t.run_id, "status": "training", "step": t.step,
@@ -746,7 +746,7 @@ def _special(t, it):
       sample's size and length; the negative stays plain.
     - grounded edits: the encoder sees the picture with the prompt and with the negative."""
     d = t.spec.dataset
-    if not it.control or not (d.edit or (getattr(t, "h3", False) and d.keyframes)):
+    if not it.control or not (d.edit or (getattr(t, "h3", False) and d.video_keyframes)):
         return None
     path = _control_path(t, it.control)
     base = f"{path}|{path.stat().st_mtime_ns}"
