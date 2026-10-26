@@ -22,6 +22,13 @@ and Manager show.
   RunPod is in docker/README.md; the image is `ghcr.io/nynxz/zentrainer`.
 
 ### Datasets
+- **A face model for commercial use:** Settings → Faces → Commercial (AuraFace) runs face reports
+  and likeness on fal's AuraFace (Apache 2.0) with OpenCV's YuNet detector (MIT), instead of
+  InsightFace's models, which are non-commercial. AuraFace-v1 ships InsightFace's own detector
+  beside it, so ZenTrainer pairs it with YuNet: nothing InsightFace's runs. It's a little less
+  accurate (LFW 99.56%, against 99.83% for the other two), and its scores sit lower (one person
+  around 0.6 rather than 0.7), so compare them only with each other. A 131 MB download the
+  first time.
 - **Faces need nothing installed:** face reports and likeness scores now run on ZenTrainer's own
   port of InsightFace's models, in plain PyTorch, so the faces extra is gone (no insightface,
   onnxruntime or OpenCV, and none of their clashes with other custom nodes). Scores are the same
