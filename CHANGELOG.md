@@ -125,6 +125,16 @@ and Manager show.
   card it checks the steps didn't get slower, but it compared raw step times, and video clips of
   different lengths take very different times (1.4 to 3 s a step on H3). It often "measured" a
   slowdown and moved the weights back off. It now compares steps of the same shape.
+- **Fixed: Qwen Image 2.1 couldn't train.** Every run stopped before its first step: with
+  "Boolean value of Tensor with more than one value is ambiguous", or out of VRAM even at 512 px,
+  or "Recomputed values ... have different metadata" with compile on. Two things in ComfyUI's
+  Qwen Image 2.1 are built for sampling only. Its prefix cache (the text and reference part,
+  kept between sampling steps) is now off while training: it failed with a slot per training
+  pair, and would have trained on that part as the LoRA was steps before, with no gradient
+  through it. And each block added its output into its input in place, which broke the gradients
+  and checkpointing (a 512 px step peaked at 24.8 GB against 14.4 GB without it); that's now out
+  of place while training. Samples keep ComfyUI's fast paths. An edit LoRA at 768 px now trains
+  at about 1.8 s a step on a 5090, 16 GB peak, with compile on.
 - **Transparency on Qwen Image 2.1:** its VAE has an alpha channel, but training gave it every
   picture as RGB, so it saw transparent PNGs as fully opaque (whatever colour sat under the
   transparent parts showing). Targets and edit inputs now keep their alpha for a four-channel VAE,
