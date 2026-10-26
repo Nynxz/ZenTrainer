@@ -37,7 +37,8 @@ TARGET_SIDE = 768  # a picture's short side at or above this is training-ready a
 NEAR_DUP = (24, 0.95, 15)
 TRANSPARENT = 0.01  # share of a picture's pixels see-through for it to count as transparent
 JPEG_LOW = 60  # estimated JPEG quality below this: compression artifacts a LoRA can learn
-LOOK_VERSION = 4  # 2: transparency and JPEG quality; 3: the pair signature (_signature); 4: bars need an edge
+LOOK_VERSION = 5  # 2: transparency and JPEG quality; 3: the pair signature (_signature); 4: bars need an edge;
+# 5: a transparent picture measured on what shows
 
 
 def _store_dir() -> Path:
@@ -88,7 +89,8 @@ def jpeg_quality(im) -> int | None:
 def _look(path: Path) -> dict | None:
     """One pass over a picture (a clip's middle frame), at 256 px: its 64-bit difference hash
     (near-identical pictures land a few bits apart), its image statistics, how much of it is
-    see-through (training drops alpha: what's under it shows) and its JPEG quality."""
+    see-through (most models train on what's under it; a four-channel VAE, Qwen Image 2.1's, keeps
+    it) and its JPEG quality."""
     import numpy as np
     from PIL import Image
 
@@ -107,10 +109,12 @@ def _look(path: Path) -> dict | None:
             im = Image.open(path)
             jpeg_q = jpeg_quality(im)
             im.draft("RGB", (512, 512))  # JPEGs decode small
+            seen = None
             if im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info):
                 im = im.convert("RGBA")
                 im.thumbnail((256, 256))
-                alpha = float((np.asarray(im)[..., 3] < 250).mean())
+                seen = np.asarray(im)[..., 3] / 255.0  # how much each pixel shows
+                alpha = float((seen < 250 / 255).mean())
             else:
                 im = im.convert("RGB")
                 im.thumbnail((256, 256))
@@ -121,9 +125,23 @@ def _look(path: Path) -> dict | None:
         lap = -4 * luma[1:-1, 1:-1] + luma[:-2, 1:-1] + luma[2:, 1:-1] + luma[1:-1, :-2] + luma[1:-1, 2:]
         mx, mn = rgb.max(-1), rgb.min(-1)
         sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0)
-        return {**_signature(im), "bright": round(float(luma.mean()), 4), "contrast": round(float(luma.std()), 4),
-                "sharp": round(float(lap.var()) * 1000, 4), "sat": round(float(sat.mean()), 4),
-                "border": round(_border(luma), 3), "alpha": round(alpha, 4), "jpeg_q": jpeg_q}
+        border = _border(luma)
+        bright, contrast, sharp, sat = float(luma.mean()), float(luma.std()), float(lap.var()), float(sat.mean())
+        if alpha > TRANSPARENT and seen.sum() > 0.01 * seen.size:
+            # the picture as it looks: what's under its see-through parts (black, mostly) isn't dark,
+            # flat or a bar ("transparent" says it's there), so each pixel counts as much as it shows,
+            # and sharpness is where a pixel and its neighbours all show (the cut-out's edge isn't)
+            def mean(x, w):
+                return float((x * w).sum() / w.sum())
+
+            bright = mean(luma, seen)
+            contrast, sat, border = mean((luma - bright) ** 2, seen) ** 0.5, mean(sat, seen), 0.0
+            inner = np.minimum.reduce([seen[1:-1, 1:-1], seen[:-2, 1:-1], seen[2:, 1:-1], seen[1:-1, :-2], seen[1:-1, 2:]])
+            if inner.sum() > 0:
+                sharp = mean((lap - mean(lap, inner)) ** 2, inner)
+        return {**_signature(im), "bright": round(bright, 4), "contrast": round(contrast, 4),
+                "sharp": round(sharp * 1000, 4), "sat": round(sat, 4),
+                "border": round(border, 3), "alpha": round(alpha, 4), "jpeg_q": jpeg_q}
     except Exception:
         return None
 

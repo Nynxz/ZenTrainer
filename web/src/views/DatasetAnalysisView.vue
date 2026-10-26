@@ -49,7 +49,7 @@ const FLAG_INFO: Record<string, string> = {
   flat: 'Very little contrast.',
   bars: 'Flat bars along the edges (letterboxing or a frame).',
   greyscale: 'No colour, in a set that has colour.',
-  transparent: 'See-through parts: training drops transparency, so whatever colour sits under it shows.',
+  transparent: 'See-through parts: most models train on whatever colour sits under them (often black). Qwen Image 2.1 keeps the transparency.',
   compressed: 'Heavily compressed JPEG: its blocky artefacts can be learned.',
   'near-duplicate': 'A re-saved, resized, lightly edited or mirrored copy of another picture: it counts twice.',
 }

@@ -36,6 +36,10 @@ and Manager show.
   warning colour with a dashed edge, so even a 2% sliver shows (it was a shadow behind an outline on
   the picture's edge), and each says where ("cuts 4% top and bottom"). **As trained** shows each
   picture in its bucket's shape, cropped from the centre exactly as training does.
+- **Fixed: transparent pictures were called dark** (and flat, or as having bars) on the Analysis
+  page, from the black usually kept under their see-through parts. They're judged by what shows
+  now, each pixel as much as it shows; "transparent" still says the rest is there. Analysis runs
+  again once.
 - **Captioning leaves masked-out areas out** (Caption → Masked parts: Hidden, the default when a
   dataset has masks): the captioning model sees what the mask hides as flat grey, cropped to what it
   keeps, and is told not to describe it, so captions stop describing a background training ignores.
