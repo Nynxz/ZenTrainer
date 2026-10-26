@@ -96,8 +96,9 @@ def register(server) -> None:
     async def edit_queued_run(request):
         """Change a run's settings: {"spec"}. A run waiting in the queue keeps its place; one
         that ended before it trained a step (failed loading, out of VRAM at step one, stopped
-        while queued) goes back to the front of the queue with them. A run that has trained
-        keeps its spec: its checkpoints were made with it (Duplicate makes a new one)."""
+        while queued) goes back to the front of the queue with them. A stopped run that has
+        trained can change all but what its LoRA and optimizer state were made with
+        (spec.LOCKED_AT_RESUME) before it resumes; Duplicate makes a new run for the rest."""
         store, run_id = state.store(), request.match_info["run_id"]
         try:
             meta = store.meta(run_id)

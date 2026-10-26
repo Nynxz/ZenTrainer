@@ -10,7 +10,11 @@
     zt update [--ref REF]      pull ZenTrainer (fast-forward only), re-sync ComfyUI and the web app
     zt attach COMFYUI_DIR      zt doctor      zt web [--build]
 
-Headless (starts ComfyUI in the background when it isn't running):
+Specs (no ComfyUI needed; docs/spec.md lists every setting):
+    zt new [--profile ID] [--set key=value]... > spec.json    a complete spec to start from
+    zt check SPEC.json [--profile ID] [--set key=value]...    every problem in it, without queuing
+
+Headless (starts ComfyUI in the background when it isn't running; docs/cli.md, docs/api.md):
     zt train SPEC.json [--profile ID] [--set key=value]... [--end] [--follow]
     zt runs [--json]           zt follow RUN       zt spec RUN > spec.json
     zt pause|unpause|stop|save RUN                 zt resume RUN [--set key=value]...
@@ -82,6 +86,13 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--end", action="store_true", help="join the end of the queue instead of starting next")
     s.add_argument("--follow", action="store_true", help="show progress until it ends")
     _follow_flags(s)
+    s = sub.add_parser("check", help="every problem in a spec file, without queuing it (exit 1 if any)")
+    s.add_argument("spec")
+    s.add_argument("--profile", help="over an engine profile's settings, as train does")
+    s.add_argument("--set", action="append", metavar="KEY=VALUE", help="override a setting (dotted key, JSON value)")
+    s = sub.add_parser("new", help="print a complete spec with every default, to start from (> spec.json)")
+    s.add_argument("--profile", help="an engine profile's settings on top (e.g. minimax-h3)")
+    s.add_argument("--set", action="append", metavar="KEY=VALUE", help="set a setting (dotted key, JSON value)")
     s = _client(sub, "runs", "list runs")
     s.add_argument("--json", action="store_true")
     s = _client(sub, "spec", "print a run's settings as JSON")
@@ -167,6 +178,10 @@ def dispatch(a: argparse.Namespace) -> None:
             web.ensure(force=a.build)
         case "train":
             api.train(a.spec, a.profile, a.set, a.end, a.follow, port, **follow)
+        case "check":
+            api.check(a.spec, a.profile, a.set)
+        case "new":
+            api.new(a.profile, a.set)
         case "runs":
             api.runs(a.json, port)
         case "spec":

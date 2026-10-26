@@ -235,3 +235,40 @@ def test_comfyui_runs_on_the_amd_gpu_torch_has_kernels_for(monkeypatch):
     assert comfy.amd_device({}, Path("py")) is None
     monkeypatch.setattr(repo, "local", lambda: {"cuda_device": 1})
     assert comfy.args(8189) == ["--port", "8189", "--cuda-device", "1"]
+
+
+@pytest.fixture
+def real_repo():
+    """zt pointed at this checkout (its engine and profiles), as it is for a user."""
+    root = Path(__file__).resolve().parents[2]
+    before = repo.ROOT
+    repo.set_root(root)
+    yield root
+    repo.set_root(before)
+
+
+def test_check_lists_every_problem_and_new_makes_a_spec_that_passes(real_repo, tmp_path, capsys):
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"model": {"kind": "checkpoint", "ckpt_name": "m"}, "dataset": {"folder": "cats"},
+                               "optim": {"optimizer": "Adamw", "lerning_rate": 1e-4, "steps": 0}}))
+    with pytest.raises(SystemExit) as e:
+        api.check(str(bad))
+    assert e.value.code == 1
+    out = capsys.readouterr().out
+    assert "did you mean optim.learning_rate?" in out and 'did you mean "AdamW"?' in out and "optim.steps must be >= 1" in out
+    api.new("minimax-h3", ["dataset.folder=cats", "model.ckpt_name=m.safetensors"])
+    made = json.loads(capsys.readouterr().out)
+    assert made["$schema"].endswith("docs/spec.schema.json") and made["network"]["blocks"] == "20-49"  # the profile's
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps(made))
+    api.check(str(good))
+    assert "the spec is fine" in capsys.readouterr().out
+
+
+def test_train_refuses_a_bad_spec_before_reaching_the_server(real_repo, tmp_path, monkeypatch):
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"model": {"kind": "checkpoint", "ckpt_name": "m"}, "dataset": {"folder": "cats"},
+                               "optim": {"steps": "1000"}}))
+    monkeypatch.setattr(api.comfy, "background", lambda port: pytest.fail("started a server for a bad spec"))
+    with pytest.raises(SystemExit):
+        api.train(str(bad))

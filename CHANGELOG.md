@@ -39,6 +39,16 @@ and Manager show.
   they can't drift from it. A spec file can name the schema (`"$schema": "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json"`,
   as the examples do) and editors such as VS Code complete and check it as you type.
 
+### Command line
+- **Specs from the command line:** `zt new [--profile ID] > spec.json` writes a complete spec with
+  every default to start from, and `zt check spec.json` lists every problem in one at once (with
+  what a typo likely meant: `optim.lerning_rate (did you mean optim.learning_rate?)`), offline and
+  by the server's rules. `zt train` checks the same way first, so a bad spec never reaches the
+  queue. The server's errors name the likely field or choice too.
+- **Guides for scripting:** [docs/cli.md](docs/cli.md) (the commands, with a worked example) and
+  [docs/api.md](docs/api.md) (the HTTP API the app and `zt` use: runs, the queue, live events, with
+  a Python example).
+
 ### AMD
 - **AMD GPUs on Windows and Linux:** `zt setup` finds a Radeon or Instinct card from its display
   driver alone and installs PyTorch's ROCm build from AMD's wheel index, with only that GPU's
