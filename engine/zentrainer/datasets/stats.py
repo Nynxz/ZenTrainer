@@ -55,19 +55,13 @@ def _key(name: str) -> str:
 
 def size(path: Path) -> tuple[int, int] | None:
     """A picture's (or clip's) width and height as training sees them: EXIF rotation applied."""
-    from PIL import Image
-
-    from ..harness.data import video
+    from ..harness.data import upright_size, video
 
     try:
         if video.is_video(path):
             p = video.probe(path)
             return (p.width, p.height) if p else None
-        with Image.open(path) as im:
-            w, h = im.size
-            if im.getexif().get(0x0112) in (5, 6, 7, 8):  # orientation: turned a quarter
-                w, h = h, w
-            return w, h
+        return upright_size(path)
     except Exception:
         return None
 

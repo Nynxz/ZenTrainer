@@ -164,8 +164,7 @@ def _disk_samples(spec, items, variants, cap_index, sizes, vae, folder: Path, pr
                 if grounding and not has and it.controls:
                     grounded.append((n, it.controls, variants[n][0]))
                 continue
-        with Image.open(it.path) as im:
-            size = pick_bucket(*im.size, sizes)
+        size = pick_bucket(*upright_size(it.path), sizes)
         todo.setdefault(size, []).append(n)
     if any(s is not None for s in samples):
         logging.info("[ZenTrainer] disk cache: %d of %d pictures already encoded, carrying on",
@@ -176,14 +175,11 @@ def _disk_samples(spec, items, variants, cap_index, sizes, vae, folder: Path, pr
     def load(n: int, size):
         it = items[n]
         inputs = _inputs_of(spec, it)
-        for c in inputs:
-            if c is None:
-                continue
-            with Image.open(c) as cim:
-                cw, ch = cim.size
-            if abs((cw / ch) / (size[0] / size[1]) - 1) > (0.02 if spec.edit_method == "concat" else 0.08):
-                logging.warning("[ZenTrainer] %s is a different shape from %s: it's cropped to match, which cuts "
-                                "part of it off", f"{c.parent.name}/{c.name}", it.path.name)
+        if any(c is not None for c in inputs):
+            target = upright_size(it.path)
+            for c in inputs:
+                if c is not None:
+                    _warn_if_shaped_apart(c, it.path, target, spec.edit_method == "concat")
         mask = load_image(it.mask, size, mode="L")[None, None] if it.mask else None
         return (load_image(it.path, size, mode), [load_image(c, size, mode) if c is not None else None for c in inputs],
                 mask)
@@ -396,6 +392,40 @@ def bucket_sizes(resolution: int, step: int, max_ratio: float = 4.0) -> list[tup
     return sorted(out)
 
 
+def _quarter_turned(path) -> bool:
+    from PIL import Image
+
+    try:
+        with Image.open(path) as im:
+            return im.getexif().get(0x0112) in (5, 6, 7, 8)
+    except Exception:  # noqa: BLE001 - unreadable: the build says so
+        return False
+
+
+def upright_size(path) -> tuple[int, int]:
+    """A picture's width and height as it's shown and trained: its EXIF orientation applied (phone
+    photos are often stored turned a quarter, with a tag to turn them back). load_image turns it,
+    so the bucket and shape checks have to go by this, not the stored size, or a portrait photo
+    trains cropped to a landscape bucket."""
+    from PIL import Image
+
+    with Image.open(path) as im:
+        w, h = im.size
+    return (h, w) if _quarter_turned(path) else (w, h)
+
+
+def _warn_if_shaped_apart(c, target, target_wh: tuple[int, int], concat: bool) -> None:
+    """An input a different shape from its target: both are cropped from the centre to the target's
+    bucket, so a different shape loses a different part. Against the target itself, not the bucket:
+    buckets come in 64 px steps, so a matched 2:3 pair sits a few percent off its 832x1216."""
+    cw, ch = upright_size(c)
+    tw, th = target_wh
+    if abs((cw / ch) / (tw / th) - 1) > (0.02 if concat else 0.08):
+        logging.warning("[ZenTrainer] %s is a different shape from %s: it's cropped to match, which cuts part of "
+                        "it off%s", f"{c.parent.name}/{c.name}", target.name,
+                        " (channel inputs line up pixel for pixel: make it the same shape)" if concat else "")
+
+
 def pick_bucket(w: int, h: int, sizes: list[tuple[int, int]]) -> tuple[int, int]:
     ar = math.log(w / h)
     return min(sizes, key=lambda s: (abs(math.log(s[0] / s[1]) - ar), -s[0] * s[1]))
@@ -455,6 +485,10 @@ def cache_key(items: list[Item], spec: DatasetSpec, encoder_id: str) -> str:
             h.update(b"avoid_cuts")
         if spec.video_stills:
             h.update(b"clip_stills")  # v1's name: the caches made before keep their key
+    # a picture stored turned a quarter was bucketed by its stored size before (cropped to the wrong
+    # shape): a dataset with one encodes again, once; the rest keep their caches
+    if any(not is_video(it.path) and _quarter_turned(it.path) for it in items):
+        h.update(b"upright")
     for it in items:
         st = it.path.stat()
         h.update(f"{it.path}|{st.st_mtime_ns}|{st.st_size}|{it.caption}".encode())
@@ -610,8 +644,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
                 samples.append(Sample(_encode(vae, still, it.path), idx[0], None, idx))
                 owners.append(n)
             continue
-        with Image.open(it.path) as im:
-            w, h = im.size
+        w, h = upright_size(it.path)
         size = pick_bucket(w, h, sizes)
         latent = _encode(vae, load_image(it.path, size, pixel_mode(vae)).unsqueeze(0), it.path)
         mask = None
@@ -626,14 +659,8 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             # channel inputs: each set's (first) input in its slot, lined up with the target
             inputs = [next(iter(it.control_sets.get(c, [])), None) for c in spec.control_sets] if concat else it.controls
             for c in inputs:
-                if c is None:
-                    continue
-                with Image.open(c) as cim:
-                    cw, ch = cim.size
-                if abs((cw / ch) / (size[0] / size[1]) - 1) > (0.02 if concat else 0.08):
-                    logging.warning("[ZenTrainer] %s is a different shape from %s: it's cropped to match, which "
-                                    "cuts part of it off%s", f"{c.parent.name}/{c.name}", it.path.name,
-                                    " (channel inputs line up pixel for pixel: make it the same shape)" if concat else "")
+                if c is not None:
+                    _warn_if_shaped_apart(c, it.path, (w, h), concat)
             refs = [_encode(vae, load_image(c, size, pixel_mode(vae)).unsqueeze(0), c) if c is not None else None
                     for c in inputs]
             if spec.edit_grounded and not concat:  # channel inputs reach the model, not its encoder
