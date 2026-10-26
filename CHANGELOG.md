@@ -34,8 +34,10 @@ and Manager show.
   refused), its choices (the optimizer, attention backend and dtypes included, which took any text
   before and failed only once training started) and its range, each error naming the field. The same
   rules are published: **[docs/spec.md](docs/spec.md)** lists every field with its default, what it
-  takes and what it does, and `GET /zentrainer/api/spec/schema` serves them as JSON Schema, for
-  scripts and editors. Both are generated from the spec itself, so they can't drift from it.
+  takes and what it does, and [docs/spec.schema.json](docs/spec.schema.json) (also served at
+  `GET /zentrainer/api/spec/schema`) is the JSON Schema. Both are generated from the spec itself, so
+  they can't drift from it. A spec file can name the schema (`"$schema": "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json"`,
+  as the examples do) and editors such as VS Code complete and check it as you type.
 
 ### AMD
 - **AMD GPUs on Windows and Linux:** `zt setup` finds a Radeon or Instinct card from its display

@@ -1,0 +1,1163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ZenTrainer run spec, version 2",
+  "type": "object",
+  "description": "A training run: what to train and how. Each section has its own table below.",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "This schema's address, for editors: ignored."
+    },
+    "spec_version": {
+      "type": "integer",
+      "description": "The spec's layout. An older one is brought up to date as it's read; a newer one (from a newer ZenTrainer) is refused.",
+      "default": 2,
+      "const": 2
+    },
+    "name": {
+      "type": "string",
+      "description": "The run's name.",
+      "default": "untitled"
+    },
+    "seed": {
+      "type": "integer",
+      "description": "The run's seed: noise, shuffling and dropout.",
+      "default": 0,
+      "minimum": 0
+    },
+    "model": {
+      "type": "object",
+      "description": "The model.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "checkpoint",
+            "split"
+          ],
+          "description": "\"checkpoint\": one file with the model, text encoder and VAE (SD 1.5, SDXL). \"split\": separate files (Flux, Qwen Image, Z-Image, ...).",
+          "default": "checkpoint"
+        },
+        "ckpt_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "checkpoint models: the file in ComfyUI's checkpoints folder.",
+          "default": null
+        },
+        "unet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "split models: the diffusion model, in diffusion_models.",
+          "default": null
+        },
+        "unet_weight_dtype": {
+          "type": "string",
+          "description": "How the diffusion model's weights load (ComfyUI's weight_dtype).",
+          "default": "default",
+          "enum": [
+            "default",
+            "fp8_e4m3fn",
+            "fp8_e4m3fn_fast",
+            "fp8_e5m2"
+          ]
+        },
+        "clip_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "split models: the text encoder, in text_encoders.",
+          "default": null
+        },
+        "clip_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "split models: the text encoder's type, as ComfyUI's CLIPLoader names it (flux2, qwen_image, ...).",
+          "default": null
+        },
+        "vae_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "split models: the VAE, in vae.",
+          "default": null
+        },
+        "audio_vae_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Joint audio-video models (MiniMax H3): their audio VAE, needed to train on a video's sound (dataset.video_audio) and for sound in samples.",
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "dataset": {
+      "type": "object",
+      "description": "The dataset.",
+      "properties": {
+        "folder": {
+          "type": "string",
+          "description": "The dataset folder: pictures and videos with same-name caption files. A kohya-style \"N_name\" subfolder repeats its pictures N times.",
+          "default": ""
+        },
+        "resolution": {
+          "type": "integer",
+          "description": "Training resolution: pictures are resized to about this many pixels squared.",
+          "default": 1024,
+          "minimum": 64
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Lower resolutions first: [{\"resolution\": 768, \"until\": 0.6}] trains at 768 for the first 60% of the run, then at `resolution`. Every resolution is cached before training. [] = one resolution throughout.",
+          "default": []
+        },
+        "stage_blend": {
+          "type": "number",
+          "description": "How much of the run each resolution change blends over, so nothing switches at once (0.6 to 0.8: the next resolution goes from no steps to every step).",
+          "default": 0.2,
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "caption_ext": {
+          "type": "string",
+          "description": "The caption files' extension.",
+          "default": ".txt"
+        },
+        "buckets": {
+          "type": "boolean",
+          "description": "Aspect-ratio buckets: each picture is resized to the closest shape of about resolution\u00b2 pixels. Off = centre-cropped squares.",
+          "default": true
+        },
+        "bucket_step": {
+          "type": "integer",
+          "description": "Bucket sides are multiples of this.",
+          "default": 64,
+          "minimum": 8
+        },
+        "edit": {
+          "type": "boolean",
+          "description": "Edit training: each picture's input picture(s) from `control_sets` are what the model edits from (as reference latents) and the caption is the instruction. For models that take reference images (Flux 3 Klein, Flux 2, Kontext, Qwen Image Edit, ...). Any control set turns it on.",
+          "default": false
+        },
+        "control_sets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Control sets, in order: named folders of input pictures beside the dataset (_controls/<set>/<name>.<ext>; older <name>_control files are the \"control\" set). Several sets give each picture several inputs. Edit training with none uses \"control\".",
+          "default": []
+        },
+        "edit_method": {
+          "type": "string",
+          "description": "How the input picture joins the sequence: \"\" = the model's own way, or \"index\", \"offset\", \"index_timestep_zero\". \"concat\": channel inputs instead, each control set's picture (aligned with the target, the same size) as extra latent channels into a widened input layer, like ComfyUI's MOSS Image control adapters.",
+          "default": "",
+          "enum": [
+            "",
+            "index",
+            "offset",
+            "index_timestep_zero",
+            "negative_index",
+            "uxo",
+            "concat"
+          ]
+        },
+        "control_dropout": {
+          "type": "number",
+          "description": "Channel inputs: the share of steps each input is left out (zeros), independently, so the adapter also works with some or none of them.",
+          "default": 0.0,
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "edit_template": {
+          "type": "string",
+          "description": "Wraps each instruction: \"{}\" is the caption (e.g. a generalist edit model's own wording, for a specialist trained on top of it). \"\" = the caption as it is.",
+          "default": ""
+        },
+        "edit_grounded": {
+          "type": "boolean",
+          "description": "The text encoder sees the input pictures too (Qwen3-VL based: Krea 2, Qwen Image): conditioning becomes per picture, encoded when the dataset caches.",
+          "default": false
+        },
+        "disk_cache": {
+          "type": "boolean",
+          "description": "Each picture's latents (and its own conditioning) in a file of its own, read when a step uses it: for datasets bigger than RAM (thousands of grounded edit pairs).",
+          "default": false
+        },
+        "video_keyframes": {
+          "type": "string",
+          "description": "MiniMax H3 image-to-video: each clip conditioned on its own first frame (\"first\") or first and last (\"first_last\"), as the fl2va model is at inference. \"\" = off.",
+          "default": "",
+          "enum": [
+            "",
+            "first",
+            "first_last"
+          ]
+        },
+        "caption_dropout": {
+          "type": "number",
+          "description": "The share of steps that train on an empty caption.",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "caption_set": {
+          "type": "string",
+          "description": "Which captions to train on: <name>.txt is \"default\", <name>.<set>.txt the others (tags, nl, ...).",
+          "default": "default"
+        },
+        "caption_mix": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Several caption sets to mix: each step picks one of the picture's at random. [] = caption_set only.",
+          "default": []
+        },
+        "trigger": {
+          "type": "string",
+          "description": "\"[trigger]\" in captions and sample prompts becomes this, and captions that don't mention it get it prepended (\"ohwx, a photo of ...\").",
+          "default": ""
+        },
+        "trigger_prepend": {
+          "type": "boolean",
+          "description": "Prepend the trigger to captions that don't mention it.",
+          "default": true
+        },
+        "masked_loss": {
+          "type": "boolean",
+          "description": "Masked training: pictures with a mask only learn where it's white.",
+          "default": false
+        },
+        "unmasked_weight": {
+          "type": "number",
+          "description": "Masked training: how much the rest of the picture still trains (0 = not at all, 0.1 = lightly).",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "video_frames": {
+          "type": "integer",
+          "description": "Videos train as clips this many frames long at most (snapped to a length the model's VAE encodes exactly). An image model trains a video's frames as pictures.",
+          "default": 49,
+          "minimum": 1
+        },
+        "video_fps": {
+          "type": "number",
+          "description": "Clips resampled to this frame rate. 0 = the video's own.",
+          "default": 0.0,
+          "minimum": 0
+        },
+        "video_mode": {
+          "type": "string",
+          "description": "Which parts of a video become clips: \"uniform\" spread over it, \"head\" its start, \"chunks\" consecutive.",
+          "default": "uniform",
+          "enum": [
+            "uniform",
+            "head",
+            "chunks"
+          ]
+        },
+        "video_clips": {
+          "type": "integer",
+          "description": "Clips per video, at most.",
+          "default": 1,
+          "minimum": 1
+        },
+        "video_resolution": {
+          "type": "integer",
+          "description": "Each clip at about this many pixels squared (a clip costs frames x pixels, so videos usually train smaller than pictures).",
+          "default": 512,
+          "minimum": 64
+        },
+        "video_audio": {
+          "type": "boolean",
+          "description": "Train on each clip's soundtrack too (joint audio-video models with model.audio_vae_name), so cuts can learn the beat.",
+          "default": false
+        },
+        "video_avoid_cuts": {
+          "type": "boolean",
+          "description": "Keep clips inside one shot: no clip spans a hard cut. Off for edits where the cutting is the point (music videos).",
+          "default": false
+        },
+        "video_stills": {
+          "type": "boolean",
+          "description": "Each clip also trains its sharpest frame as a picture (with the clip's caption). Stills are never TREAD-routed and anchor the LoRA's detail.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "network": {
+      "type": "object",
+      "description": "The adapter.",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "description": "The adapter (ComfyUI's weight adapters).",
+          "default": "LoRA",
+          "enum": [
+            "LoRA",
+            "LoHa",
+            "LoKr",
+            "OFT"
+          ]
+        },
+        "rank": {
+          "type": "integer",
+          "description": "The adapter's rank.",
+          "default": 16,
+          "minimum": 1
+        },
+        "alpha": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The adapter's alpha. null = the rank (a scale of 1).",
+          "default": null,
+          "exclusiveMinimum": 0
+        },
+        "lora_dtype": {
+          "type": "string",
+          "description": "What the adapter trains in. fp32: AdamW's steps on a LoRA are smaller than bf16 can represent at the weights' size, so most would round away. bf16 only with an optimizer that rounds stochastically (Automagic).",
+          "default": "fp32",
+          "enum": [
+            "bf16",
+            "fp16",
+            "fp32"
+          ]
+        },
+        "targets": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ],
+          "description": "Which layers get adapters: \"attn\" (attention projections), \"mlp\" (feed-forward), \"attn_mlp\" (both), \"all\" (every adaptable layer, like ComfyUI's native trainer), or a list of regexes over module names.",
+          "default": "attn_mlp"
+        },
+        "train_bias_norm": {
+          "type": "boolean",
+          "description": "Train the biases and norm weights too.",
+          "default": false
+        },
+        "init_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A LoRA in the loras folder to continue from.",
+          "default": null
+        },
+        "training_adapter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A LoRA applied while training only, never in samples or the saved file: e.g. a de-distillation adapter for a guidance-distilled model (MiniMax H3), so training sits on an undistilled base.",
+          "default": null
+        },
+        "base_lora": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A LoRA the trained one sits on everywhere (training, samples and use), e.g. a fix the model always needs. The saved LoRA leaves it out and records it: load it beside, at base_strength.",
+          "default": null
+        },
+        "base_strength": {
+          "type": "number",
+          "description": "base_lora's strength.",
+          "default": 1.0,
+          "minimum": -4,
+          "maximum": 4
+        },
+        "blocks": {
+          "type": "string",
+          "description": "Only these transformer blocks get adapters, e.g. \"20-49\" or \"10-\": the backward stops at the first one, so steps are quicker, and earlier blocks stay untouched. \"\" = every block.",
+          "default": ""
+        },
+        "skip_blocks": {
+          "type": "string",
+          "description": "These blocks get no adapters, e.g. \"22\" or \"22, 30-31\" (a block that skip-layer guidance skips stays the base's).",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "optim": {
+      "type": "object",
+      "description": "The optimizer and schedule.",
+      "properties": {
+        "optimizer": {
+          "type": "string",
+          "description": "The optimizer.",
+          "default": "AdamW",
+          "enum": [
+            "AdamW",
+            "Adam",
+            "Adafactor",
+            "Lion",
+            "SGD",
+            "RMSprop",
+            "AdamW8bit",
+            "Lion8bit",
+            "Automagic",
+            "Automagic3",
+            "Automagic4",
+            "Prodigy",
+            "AdamWScheduleFree",
+            "CAME"
+          ]
+        },
+        "learning_rate": {
+          "type": "number",
+          "description": "The learning rate.",
+          "default": 0.0001,
+          "exclusiveMinimum": 0
+        },
+        "weight_decay": {
+          "type": "number",
+          "description": "Weight decay.",
+          "default": 0.0,
+          "minimum": 0
+        },
+        "lr_scheduler": {
+          "type": "string",
+          "description": "The learning rate over the run.",
+          "default": "constant",
+          "enum": [
+            "constant",
+            "linear",
+            "cosine"
+          ]
+        },
+        "warmup_steps": {
+          "type": "integer",
+          "description": "Steps the learning rate ramps up over, from 0.",
+          "default": 0,
+          "minimum": 0
+        },
+        "max_grad_norm": {
+          "type": "number",
+          "description": "Gradients clipped to this norm. 0 = off.",
+          "default": 1.0,
+          "minimum": 0
+        },
+        "steps": {
+          "type": "integer",
+          "description": "Training steps.",
+          "default": 1000,
+          "minimum": 1
+        },
+        "batch_size": {
+          "type": "integer",
+          "description": "Pictures per step.",
+          "default": 1,
+          "minimum": 1
+        },
+        "grad_accumulation_steps": {
+          "type": "integer",
+          "description": "Batches per optimizer step.",
+          "default": 1,
+          "minimum": 1
+        },
+        "lora_plus": {
+          "type": "number",
+          "description": "LoRA+: the up matrices learn this many times faster than the down ones, which trains a LoRA faster for the same stability (paper: 16; 4 is a safe start). 0 or 1 = off.",
+          "default": 0.0,
+          "minimum": 0
+        },
+        "ema": {
+          "type": "number",
+          "description": "Weight averaging: checkpoints, samples and the saved LoRA use a running average of the adapter (0.98 = roughly the last 50 steps). 0 = off.",
+          "default": 0.0,
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "lr_floor": {
+          "type": "number",
+          "description": "Automagic v3/v4: the adaptive rate never drops below this fraction of its start (v3's decays and can stall under-strength). 0 = no floor.",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "objective": {
+      "type": "object",
+      "description": "The loss and noise levels.",
+      "properties": {
+        "loss": {
+          "type": "string",
+          "description": "The loss.",
+          "default": "mse",
+          "enum": [
+            "mse",
+            "l1",
+            "huber",
+            "smooth_l1"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "description": "\"native\": each model's own prediction (noise for SD-style models, velocity for flow models). \"x0\": the loss on the denoised picture (ComfyUI's native trainer).",
+          "default": "native",
+          "enum": [
+            "native",
+            "x0"
+          ]
+        },
+        "timesteps": {
+          "type": "string",
+          "description": "How each step's noise level is drawn: \"uniform\"; \"logit_normal\" (AI Toolkit's \"sigmoid\"), shaped by logit_mean and logit_std; or \"scheduler\": the levels ComfyUI's scheduler `timestep_scheduler` samples at in `timestep_scheduler_steps` steps, each as often (trains where the LoRA will be used; few steps for a fast LoRA).",
+          "default": "uniform",
+          "enum": [
+            "uniform",
+            "logit_normal",
+            "scheduler"
+          ]
+        },
+        "timestep_scheduler": {
+          "type": "string",
+          "description": "timesteps \"scheduler\": the ComfyUI scheduler.",
+          "default": "simple"
+        },
+        "timestep_scheduler_steps": {
+          "type": "integer",
+          "description": "timesteps \"scheduler\": its step count.",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "logit_mean": {
+          "type": "number",
+          "description": "logit_normal's centre: positive leans to heavy noise (composition), negative to light (detail).",
+          "default": 0.0,
+          "minimum": -3,
+          "maximum": 3
+        },
+        "logit_std": {
+          "type": "number",
+          "description": "logit_normal's spread.",
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "maximum": 3
+        },
+        "uniform_mix": {
+          "type": "number",
+          "description": "logit_normal: the share of steps drawn uniformly instead, keeping a little training at the extremes it rarely visits (0.01).",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "shift": {
+          "type": "number",
+          "description": "Flow-matching models: the training timestep shift. 0 = the model's own sampling shift, which favours heavy noise (composition, colour); a lower one (1-3) spends more steps on detail, such as faces.",
+          "default": 0.0,
+          "minimum": 0
+        },
+        "bias": {
+          "type": "string",
+          "description": "Lean the noise levels toward one end, whatever the distribution: \"high_noise\" for composition, layout and pose, \"low_noise\" for detail and texture (AI Toolkit's \"content\" and \"style\"). \"balanced\" = as drawn.",
+          "default": "balanced",
+          "enum": [
+            "balanced",
+            "high_noise",
+            "low_noise"
+          ]
+        },
+        "bias_power": {
+          "type": "number",
+          "description": "How hard the bias leans: the draw to this power (3, as AI Toolkit, puts half the steps in the noisiest eighth for high_noise). 1 = not at all.",
+          "default": 3.0,
+          "minimum": 1,
+          "maximum": 10
+        },
+        "weighting": {
+          "type": "string",
+          "description": "Per-noise-level loss weights. \"flex\" (flow models): AI Toolkit's \"weighted\", measured on Flex.1. \"balance\": measures the model as it trains and evens the pull of every noise level (EDM2's idea). \"\" = none.",
+          "default": "",
+          "enum": [
+            "",
+            "flex",
+            "balance"
+          ]
+        },
+        "spread": {
+          "type": "boolean",
+          "description": "Noise levels from an even, low-discrepancy sequence instead of random draws: a small batch covers the schedule in a few steps, for a steadier loss.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "memory": {
+      "type": "object",
+      "description": "Memory and speed.",
+      "properties": {
+        "training_dtype": {
+          "type": "string",
+          "description": "The precision the model computes in.",
+          "default": "bf16",
+          "enum": [
+            "bf16",
+            "fp16",
+            "fp32"
+          ]
+        },
+        "gradient_checkpointing": {
+          "type": "boolean",
+          "description": "Recompute activations in the backward instead of keeping them: much less VRAM, some speed.",
+          "default": true
+        },
+        "grad_checkpoint_depth": {
+          "type": "integer",
+          "description": "Gradient checkpointing's granularity.",
+          "default": 1,
+          "minimum": 1
+        },
+        "grad_checkpoint_skip": {
+          "type": "integer",
+          "description": "Leave the last N blocks un-checkpointed: they keep their activations (more VRAM) and skip the recompute, the cheapest place to trade memory for speed.",
+          "default": 0,
+          "minimum": 0
+        },
+        "offloading": {
+          "type": "boolean",
+          "description": "Keep part of the model in RAM and stream it in: for models bigger than the card.",
+          "default": false
+        },
+        "vram_headroom": {
+          "type": "number",
+          "description": "With offloading: the VRAM kept free for activations, the LoRA and its optimizer (GB); the rest holds as much of the model as fits. 0 = auto (8 GB, more for long video clips).",
+          "default": 0.0,
+          "minimum": 0
+        },
+        "tread": {
+          "type": "number",
+          "description": "TREAD token routing on video steps (MiniMax H3): this share of a clip's tokens skips the middle blocks and rejoins unchanged (0.5 roughly halves their work). Stills, samples and validation always run whole. 0 = off.",
+          "default": 0.0,
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "tread_steps": {
+          "type": "number",
+          "description": "The share of clip steps that route; the rest run whole. A dataset of clips only, routed every step, lets the LoRA learn to make up for the routing (over-sharpened samples): below 1 keeps whole steps.",
+          "default": 1.0,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "int8_forward": {
+          "type": "boolean",
+          "description": "int8 bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's int8 kernel forward instead of a dequantized bf16 matmul. Off is slower: for comparing quality.",
+          "default": true
+        },
+        "int8_backward": {
+          "type": "string",
+          "description": "int8 bases: how the backward gets each frozen layer's input gradient. \"w8a8\": quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), for some gradient precision. \"fused\": a fused Triton kernel at full precision, without rebuilding the layer's bf16 weight. \"bf16\": the weight rebuilt in bf16 (ComfyUI's way; the slowest).",
+          "default": "w8a8",
+          "enum": [
+            "w8a8",
+            "fused",
+            "bf16"
+          ]
+        },
+        "fp8_backward": {
+          "type": "boolean",
+          "description": "fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). Faster, less precise.",
+          "default": false
+        },
+        "compile_blocks": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "enum": [
+                "auto"
+              ]
+            }
+          ],
+          "description": "torch.compile the repeated transformer block, fusing the elementwise work around the matmuls; the first steps (and first sample) are slower while it compiles. \"auto\": on for runs long enough to repay that, when Triton is installed.",
+          "default": "auto",
+          "enum": [
+            "auto",
+            true,
+            false
+          ]
+        },
+        "fused_qk_rope": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "enum": [
+                "auto"
+              ]
+            }
+          ],
+          "description": "Krea 2, MOSS, MiniMax H3: the attention's q/k norms and rope as one op with its own backward (Triton): the same maths, 6-9% a step. \"auto\": on while the blocks run uncompiled (compiled ones fuse these already).",
+          "default": "auto",
+          "enum": [
+            "auto",
+            true,
+            false
+          ]
+        },
+        "bypass_mode": {
+          "type": "boolean",
+          "description": "Adapters as forward hooks beside each layer instead of patched into its weight. Quantized bases always train this way.",
+          "default": false
+        },
+        "attention": {
+          "type": "string",
+          "description": "The attention backend while training (only ones with a backward pass; flash and sage have none).",
+          "default": "pytorch",
+          "enum": [
+            "pytorch",
+            "xformers",
+            "sub_quad",
+            "split"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "samples": {
+      "type": "object",
+      "description": "Samples.",
+      "properties": {
+        "likeness": {
+          "type": "boolean",
+          "description": "Score each sample's face against the dataset's (with faces on for the dataset).",
+          "default": true
+        },
+        "every": {
+          "type": "integer",
+          "description": "Sample every this many steps. 0 = off.",
+          "default": 0,
+          "minimum": 0
+        },
+        "prompts": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "description": "The samples: each a prompt, or {\"prompt\", \"width\", \"height\", \"frames\", \"seed\", \"control\"} with its own size, length, seed or (edit runs) picture to edit.",
+          "default": []
+        },
+        "negative": {
+          "type": "string",
+          "description": "The negative prompt.",
+          "default": ""
+        },
+        "width": {
+          "type": "integer",
+          "description": "Sample width.",
+          "default": 1024,
+          "minimum": 16
+        },
+        "height": {
+          "type": "integer",
+          "description": "Sample height.",
+          "default": 1024,
+          "minimum": 16
+        },
+        "frames": {
+          "type": "integer",
+          "description": "Video models: frames per sample (1 = a still), snapped to a length the VAE decodes and saved as an .mp4 at fps.",
+          "default": 1,
+          "minimum": 1
+        },
+        "fps": {
+          "type": "number",
+          "description": "Video samples' frame rate.",
+          "default": 24.0,
+          "exclusiveMinimum": 0
+        },
+        "steps": {
+          "type": "integer",
+          "description": "Sampling steps.",
+          "default": 20,
+          "minimum": 1
+        },
+        "cfg": {
+          "type": "number",
+          "description": "CFG scale.",
+          "default": 5.0,
+          "minimum": 0
+        },
+        "sampler": {
+          "type": "string",
+          "description": "ComfyUI's sampler.",
+          "default": "euler"
+        },
+        "scheduler": {
+          "type": "string",
+          "description": "ComfyUI's scheduler.",
+          "default": "normal"
+        },
+        "sigmas": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Custom sigmas, high to low (e.g. [1.0, 0.94, 0.85, 0.7, 0.5, 0.3, 0.12, 0]), in place of the scheduler and steps (len - 1 steps). [] = the scheduler.",
+          "default": []
+        },
+        "seed": {
+          "type": "integer",
+          "description": "The first sample's seed; each next prompt the next one.",
+          "default": 42,
+          "minimum": 0
+        },
+        "baseline": {
+          "type": "boolean",
+          "description": "Render the prompts once before training: the base model's look, to compare against.",
+          "default": true
+        },
+        "model_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sample with another model of the same family than the one training (e.g. train a raw model, preview on its turbo): a diffusion_models file for split models, a checkpoints file for checkpoint ones.",
+          "default": null
+        },
+        "model_weight_dtype": {
+          "type": "string",
+          "description": "How model_name's weights load.",
+          "default": "default",
+          "enum": [
+            "default",
+            "fp8_e4m3fn",
+            "fp8_e4m3fn_fast",
+            "fp8_e5m2"
+          ]
+        },
+        "lora_strength": {
+          "type": "number",
+          "description": "The trained LoRA's strength in samples.",
+          "default": 1.0
+        },
+        "turbo_lora": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A turbo LoRA under every sample (not training, not the saved LoRA): few-step previews.",
+          "default": null
+        },
+        "turbo_strength": {
+          "type": "number",
+          "description": "turbo_lora's strength.",
+          "default": 0.75
+        },
+        "slg_mode": {
+          "type": "string",
+          "description": "Skip-layer guidance, as ComfyUI's SkipLayerGuidanceDiT: \"uncond\" skips the layers in the negative pass only (no extra cost), \"standard\" adds a pass without them and pushes away from it by slg_scale.",
+          "default": "off",
+          "enum": [
+            "off",
+            "uncond",
+            "standard"
+          ]
+        },
+        "slg_layers": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Skip-layer guidance: the main (single-stream) blocks to skip.",
+          "default": []
+        },
+        "slg_double_layers": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Skip-layer guidance: double-stream blocks, for models that have them.",
+          "default": []
+        },
+        "slg_scale": {
+          "type": "number",
+          "description": "Skip-layer guidance \"standard\": how hard it pushes.",
+          "default": 3.0,
+          "minimum": 0
+        },
+        "slg_start": {
+          "type": "number",
+          "description": "Skip-layer guidance: where in sampling it starts (0 to 1).",
+          "default": 0.01,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "slg_end": {
+          "type": "number",
+          "description": "Skip-layer guidance: where it ends (0 to 1).",
+          "default": 1.0,
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "validation": {
+      "type": "object",
+      "description": "Validation loss.",
+      "properties": {
+        "every": {
+          "type": "integer",
+          "description": "Measure every this many steps (and before training). 0 = off.",
+          "default": 100,
+          "minimum": 0
+        },
+        "images": {
+          "type": "integer",
+          "description": "How many pictures to measure.",
+          "default": 4,
+          "minimum": 1
+        },
+        "noise_levels": {
+          "type": "integer",
+          "description": "Noise levels each picture is measured at, spread over the schedule.",
+          "default": 4,
+          "minimum": 1
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Picks the pictures and their noise.",
+          "default": 1234,
+          "minimum": 0
+        },
+        "dataset": {
+          "type": "string",
+          "description": "A held-out dataset folder to measure on instead, prepared like the training one (edit inputs, masks, captions): loss on pictures the LoRA never trains on, so the curve says whether it generalises rather than how well it fits. \"\" = pictures from the training dataset.",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "description": "Saving.",
+      "properties": {
+        "save_every": {
+          "type": "integer",
+          "description": "A checkpoint (the LoRA and its resume state) every this many steps. 0 = only the final LoRA.",
+          "default": 250,
+          "minimum": 0
+        },
+        "lora_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "One of ComfyUI's loras folders to save in (e.g. on a roomier disk). null = output/zentrainer/loras. LoRAs go in a zentrainer/<run>/ subfolder of it.",
+          "default": null
+        },
+        "keep_states": {
+          "type": "string",
+          "description": "Resume states (optimizer, schedule, RNG) beside each checkpoint, often bigger than the LoRA: \"latest\" keeps only the newest, \"all\" one per checkpoint, \"none\" skips them (the run can't be resumed).",
+          "default": "latest",
+          "enum": [
+            "latest",
+            "all",
+            "none"
+          ]
+        },
+        "save_dtype": {
+          "type": "string",
+          "description": "What the LoRA files are written in (training keeps network.lora_dtype): bf16 halves an fp32 file and loses nothing a sample shows.",
+          "default": "bf16",
+          "enum": [
+            "bf16",
+            "fp16",
+            "fp32"
+          ]
+        },
+        "keep": {
+          "type": "string",
+          "description": "Which scheduled checkpoints a run keeps: \"all\"; the keep_count \"latest\"; the keep_count best by \"likeness\" (its samples' faces) or by \"val_loss\"; or each new best, \"likeness_new_best\" / \"val_loss_new_best\". The final LoRA, the newest checkpoint and saves asked for by hand always stay.",
+          "default": "all",
+          "enum": [
+            "all",
+            "latest",
+            "likeness",
+            "val_loss",
+            "likeness_new_best",
+            "val_loss_new_best"
+          ]
+        },
+        "keep_count": {
+          "type": "integer",
+          "description": "How many checkpoints \"latest\", \"likeness\" and \"val_loss\" keep.",
+          "default": 3,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "slider": {
+      "type": "object",
+      "description": "Slider LoRAs.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "\"\" (a normal LoRA), \"pairs\" or \"text\".",
+          "default": "",
+          "enum": [
+            "",
+            "pairs",
+            "text"
+          ]
+        },
+        "pair_set": {
+          "type": "string",
+          "description": "pairs: the control set holding each picture's partner (_controls/<pair_set>/, the same names).",
+          "default": ""
+        },
+        "dataset_end": {
+          "type": "string",
+          "description": "pairs: which end the dataset's own pictures are.",
+          "default": "positive",
+          "enum": [
+            "positive",
+            "negative"
+          ]
+        },
+        "positive": {
+          "type": "string",
+          "description": "What +1 adds, e.g. \"a person, old, wrinkled skin, grey hair\".",
+          "default": ""
+        },
+        "negative": {
+          "type": "string",
+          "description": "What -1 adds, e.g. \"a person, young, smooth skin\".",
+          "default": ""
+        },
+        "neutral": {
+          "type": "string",
+          "description": "text: what the LoRA trains on, without either end, e.g. \"a person\".",
+          "default": ""
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "text: prompts the slider should leave alone (pulled to the base model at +1 and -1).",
+          "default": []
+        },
+        "guidance": {
+          "type": "number",
+          "description": "text: how far each end is pushed past the base model's own difference.",
+          "default": 3.0,
+          "exclusiveMinimum": 0,
+          "maximum": 20
+        },
+        "anchor_weight": {
+          "type": "number",
+          "description": "text: the anchors' weight.",
+          "default": 1.0,
+          "minimum": 0
+        },
+        "directions": {
+          "type": "string",
+          "description": "\"both\", or \"positive\" (only +1 is trained).",
+          "default": "both",
+          "enum": [
+            "both",
+            "positive"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "model",
+    "dataset"
+  ],
+  "$id": "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json"
+}

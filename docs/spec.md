@@ -5,7 +5,20 @@
 A run spec is the JSON a run is made from: what the run form, `zt train`, the API and exported settings
 files all speak. Every field is optional apart from `model` and `dataset.folder`; a missing one takes its
 default. A spec without `spec_version` is version 1 and is brought up to date as it's read; a field this
-version doesn't have is an error. The same rules as JSON Schema: `/zentrainer/api/spec/schema`.
+version doesn't have is an error.
+
+The same rules as JSON Schema: [spec.schema.json](spec.schema.json), or `/zentrainer/api/spec/schema` from a
+running ZenTrainer. Name it at the top of a spec file and editors (VS Code and others) complete and check
+it as you type:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json",
+  "spec_version": 2,
+  "model": {"kind": "checkpoint", "ckpt_name": "sdxl.safetensors"},
+  "dataset": {"folder": "my_dataset"}
+}
+```
 
 ## Top level
 

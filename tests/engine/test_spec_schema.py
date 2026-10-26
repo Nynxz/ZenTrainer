@@ -33,6 +33,17 @@ def test_the_reference_is_current():
     assert doc.read_text() == S.reference()
 
 
+def test_the_schema_file_is_current():
+    # regenerate: python -m zentrainer.spec --schema > docs/spec.schema.json (in engine/)
+    doc = Path(__file__).resolve().parents[2] / "docs" / "spec.schema.json"
+    assert doc.read_text() == S.schema_json()
+
+
+def test_a_spec_file_can_name_the_schema():
+    s = TrainSpec.from_dict({"$schema": S.SCHEMA_URL, "spec_version": 2, **BASE})
+    assert s.dataset.folder == "cats" and "$schema" not in s.to_dict()
+
+
 def test_the_defaults_pass_their_own_checks():
     s = TrainSpec.from_dict(BASE)
     assert s.memory.compile_blocks == "auto" and s.validation.noise_levels == 4
@@ -71,7 +82,7 @@ def test_loading_fills_in_and_validate_only_checks():
 def test_the_schema_has_every_field_with_its_rules():
     sch = S.schema()
     assert sch["properties"]["spec_version"]["const"] == S.SPEC_VERSION
-    names = {name for name, _ in _all_fields()}
+    names = {name for name, _ in _all_fields()} | {"$schema"}
     seen = set(sch["properties"])
     for sec, body in sch["properties"].items():
         if body.get("type") == "object" and "properties" in body:

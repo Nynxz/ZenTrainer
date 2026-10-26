@@ -652,6 +652,7 @@ def migrate(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(data, dict):
         raise SpecError("a spec is a JSON object")
     d = copy.deepcopy(data)
+    d.pop("$schema", None)  # an editor's pointer to docs/spec.schema.json: not a setting
     version = d.pop("spec_version", 1)
     if not isinstance(version, int) or version < 1:
         raise SpecError(f"spec_version is a whole number from 1, got {version!r}")
@@ -715,8 +716,19 @@ def schema() -> dict:
 
     out = section(TrainSpec)
     out["properties"]["spec_version"]["const"] = SPEC_VERSION
+    # a spec file can name this schema, so an editor checks and completes it as it's written
+    out["properties"] = {"$schema": {"type": "string", "description": "This schema's address, for editors: ignored."},
+                         **out["properties"]}
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": f"ZenTrainer run spec, version {SPEC_VERSION}",
             **out, "required": ["model", "dataset"]}
+
+
+SCHEMA_URL = "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json"
+
+
+def schema_json() -> str:
+    """docs/spec.schema.json, which spec files can name ("$schema": SCHEMA_URL)."""
+    return json.dumps({**schema(), "$id": SCHEMA_URL}, indent=2) + "\n"
 
 
 def reference() -> str:
@@ -737,7 +749,12 @@ def reference() -> str:
              "A run spec is the JSON a run is made from: what the run form, `zt train`, the API and exported settings",
              "files all speak. Every field is optional apart from `model` and `dataset.folder`; a missing one takes its",
              "default. A spec without `spec_version` is version 1 and is brought up to date as it's read; a field this",
-             "version doesn't have is an error. The same rules as JSON Schema: `/zentrainer/api/spec/schema`.", ""]
+             "version doesn't have is an error.", "",
+             "The same rules as JSON Schema: [spec.schema.json](spec.schema.json), or `/zentrainer/api/spec/schema` from a",
+             "running ZenTrainer. Name it at the top of a spec file and editors (VS Code and others) complete and check",
+             "it as you type:", "", "```json", "{", f'  "$schema": "{SCHEMA_URL}",',
+             f'  "spec_version": {SPEC_VERSION},', '  "model": {"kind": "checkpoint", "ckpt_name": "sdxl.safetensors"},',
+             '  "dataset": {"folder": "my_dataset"}', "}", "```", ""]
     top = get_type_hints(TrainSpec)
     lines += ["## Top level", "", "| Field | Default | Allowed | What it does |", "|---|---|---|---|"]
     sections = []
@@ -812,4 +829,4 @@ def locked_changes(old: dict, new: dict) -> list[str]:
 if __name__ == "__main__":
     import sys
 
-    sys.stdout.write(json.dumps(schema(), indent=2) + "\n" if "--schema" in sys.argv else reference())
+    sys.stdout.write(schema_json() if "--schema" in sys.argv else reference())
