@@ -1,4 +1,6 @@
 import vue from '@vitejs/plugin-vue'
+import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 
@@ -6,9 +8,30 @@ import { defineConfig } from 'vite'
 // In prod, ComfyUI serves web/dist itself at /zentrainer/ (see engine/zentrainer/routes.py).
 const comfy = process.env.COMFY_URL ?? 'http://127.0.0.1:8188'
 
+// What this build is, for Settings > Versions: web/dist isn't in git, so a tab can be an older
+// build than the engine it talks to. No git (a downloaded copy): just the version.
+const here = fileURLToPath(new URL('.', import.meta.url))
+const git = (args: string) => {
+  try {
+    return execSync(`git ${args}`, { cwd: here, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    return ''
+  }
+}
+const engineInit = readFileSync(new URL('../engine/zentrainer/__init__.py', import.meta.url), 'utf8')
+const build = {
+  version: /__version__ = "([^"]+)"/.exec(engineInit)?.[1] ?? '',
+  commit: git('rev-parse HEAD'),
+  describe: git('describe --tags --always'),
+  // only the web app's own files count: an engine edit doesn't change this build
+  dirty: !!git('status --porcelain --untracked-files=no -- .'),
+  built: Date.now(),
+}
+
 export default defineConfig({
   base: '/zentrainer/',
   plugins: [vue()],
+  define: { __ZT_BUILD__: JSON.stringify(build) },
   // zenkit-ui is linked from the ZenKit checkout, which has its own vue: one copy only
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) }, dedupe: ['vue'] },
   build: { target: 'es2022' },

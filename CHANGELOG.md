@@ -15,6 +15,16 @@ and Manager show.
   programs use: ROCm only reported ZenTrainer's own memory there, so the fit could plan with VRAM
   that was already taken. The memory chart shows the whole card too.
 
+### Settings
+- **Versions, at the top of Settings:** the ZenTrainer version running (release, commits since,
+  commit), the web app's build and ComfyUI's, and whether there's an update: how many new
+  commits, what they are, and what to run (`zt update`). It also says when a newer version is on
+  disk but not loaded yet (restart), when the page is an older build than its source (rebuild),
+  and when local changes or a checkout's own commits would stop `zt update`. **Copy versions**
+  puts all of it in one block to paste when asking for help. The sidebar marks a ZenTrainer
+  update as it already did ComfyUI's.
+- The page is reordered: versions, appearance, training, faces, then storage folders.
+
 ### Cloud
 - **Train on a rented GPU:** a container image (`docker/`) for RunPod and other cloud GPUs, or any
   machine with Docker. The app sits behind a password, ComfyUI is never reachable from outside,
