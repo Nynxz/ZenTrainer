@@ -63,3 +63,11 @@ def test_each_problem_is_named_with_what_it_likely_meant(comfy):
 
 def test_a_vae_comfyui_makes_itself_is_fine(comfy):
     assert preflight.problems(spec(model={"vae_name": "pixel_space"})) == []
+
+
+def test_a_list_an_older_comfyui_keeps_differently_is_skipped_not_refused(comfy, monkeypatch):
+    # a node pack runs in the user's own ComfyUI: one without these must still queue runs
+    monkeypatch.delattr(sys.modules["comfy.samplers"], "SCHEDULER_HANDLERS")
+    monkeypatch.setattr(sys.modules["nodes"], "VAELoader", types.SimpleNamespace(vae_list=lambda: ["flux2-vae.safetensors"]))
+    assert preflight.problems(spec(samples={"scheduler": "karras"}, model={"vae_name": "pixel_space"})) == []
+    assert preflight.problems(spec(model={"unet_name": "flux2/kelin.safetensors"}))[0].startswith("model.unet_name: no diffusion")
