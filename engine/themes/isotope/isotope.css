@@ -1,0 +1,53 @@
+/* Isotope: titles in condensed caps, labels in mono, lime selection. Titles are every page's h1
+   (a run's, a dataset's, Simple mode's headline too) and what the app marks .zt-title (the
+   ZenTrainer name, dialog titles, a recipe's name). */
+
+/* one tight corner everywhere: the app's scale (radius -4, -2, +0, +4px) suits 8px and up; from
+   4px it would put square inputs beside 8px cards */
+:root {
+  --r-sm: 3px;
+  --r-md: 4px;
+  --r-lg: 4px;
+  --r-xl: 4px;
+}
+
+h1,
+.crumb,
+.zt-title,
+.zm-title {
+  font-family: 'Isotope Display', 'Big Shoulders Display', var(--font-sans);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* condensed caps read small: a page's title a size up, the rest a little */
+.page-head h1,
+.page-head .crumb {
+  font-size: 28px;
+  letter-spacing: 0.01em;
+}
+.zt-title,
+.zm-title {
+  font-size: 1.18em;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+/* ZenKit panels inside ComfyUI */
+.zenkit-panel-title {
+  font-family: 'Isotope Display', 'Big Shoulders Display', var(--font-sans) !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.02em !important;
+  text-transform: uppercase !important;
+}
+
+::selection {
+  background: #d7ff3b;
+  color: #0b0b0c;
+}
