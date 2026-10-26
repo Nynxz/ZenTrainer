@@ -429,6 +429,12 @@ def register(server) -> None:
                 name = state.store().meta(run_id)["name"]
             except (FileNotFoundError, ValueError):
                 return
+            # the worker starts with the app, before ComfyUI listens (and learns its address and
+            # port): a run waiting at startup waits for that rather than failing to reach it
+            for _ in range(600):
+                if getattr(server, "port", None) is not None and hasattr(server, "address"):
+                    break
+                await asyncio.sleep(0.1)
             await _queue_session(server, run_id, name, common._client_id)
         async def swapped(run_id: str):
             # stopped by "swap to": back in the queue after the run it made room for, to resume from

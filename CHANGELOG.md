@@ -111,9 +111,11 @@ and Manager show.
   jumped about while a run blended into a new resolution (its steps come at both sizes then).
   They're now an average over the last 50 or so steps, leaving out compiles, so they read as the
   run's actual pace. The chart's line is smoother on runs trained before this too.
-- **Fixed: a run resumed right after it stopped could hang the queue:** listed twice, as running
-  and as waiting, with nothing training. The queue let go of a run only once it saw it end, and a
-  quick Resume (or retry) put it back first. Going back in line now lets go of it.
+- **Fixed: the queue could hang with runs waiting their turn and nothing training,** a run shown
+  twice (running and waiting). Two ways in: a Resume or retry right after a stop put the run back
+  before the queue had let go of it, and a run waiting when ComfyUI started was sent before
+  ComfyUI listened, failed, and stayed the "running" one. Now going back in line lets go of it,
+  the queue waits for ComfyUI to listen, and a run that fails to reach it is tried again.
 - **Fixed: Train more on a run that starts lower went back down a resolution,** and blended up
   again: its stages are shares of the run, so a longer run put them later (VRAM dropping and
   climbing, the epoch see-sawing). Train more, and Edit & resume with more steps, now keep them

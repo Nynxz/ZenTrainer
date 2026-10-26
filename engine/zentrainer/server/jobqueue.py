@@ -157,7 +157,13 @@ async def worker(dispatch, swapped=None, parked=None, interval: float = 1.5) -> 
                 run_id = q.pop_next()
                 if run_id is not None:
                     q.current = run_id
-                    await dispatch(run_id)
+                    try:
+                        await dispatch(run_id)
+                    except Exception:
+                        # it never reached ComfyUI: back at the front, to try again, rather than held
+                        # as the current run for good (nothing would ever start)
+                        q.insert(run_id, 0)
+                        raise
         except Exception:
             logging.exception("[ZenTrainer] queue worker")
         await asyncio.sleep(interval)
