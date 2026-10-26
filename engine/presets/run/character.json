@@ -1,5 +1,0 @@
-{"name": "Character / likeness", "description": "A person or character from ~15-40 images: rank 16, cosine, light caption dropout.",
- "data": {"network": {"rank": 16, "alpha": null, "targets": "attn_mlp"},
-          "optim": {"learning_rate": 0.0001, "steps": 1500, "lr_scheduler": "cosine", "warmup_steps": 50},
-          "dataset": {"caption_dropout": 0.05}, "output": {"save_every": 250},
-          "samples": {"every": 250, "baseline": true}, "validation": {"every": 100}}}

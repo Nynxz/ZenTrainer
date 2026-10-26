@@ -129,9 +129,9 @@ and calls ComfyUI **as a library** for everything else.
   in; AdamW/Lion 8-bit, Prodigy, schedule-free AdamW and CAME when their packages are
   installed (`scripts/zt extras optimizers`). Schedule-free switches to its eval
   weights for sampling, validation and saving.
-- **Presets** (`presets.py`): partial specs that layer ("Character" + "Flow-model
-  tweaks"), and sample-prompt sets; built-ins in `engine/presets/`, the user's under
-  `<user>/zentrainer/presets/`.
+- **Presets** (`presets.py`): partial specs the user saves that layer, and sample-prompt
+  sets, under `<user>/zentrainer/presets/`. The run form's ready-made starting points are
+  Simple mode's recipes (`web/src/lib/recipes.ts`), applied from its "Apply a recipe" dialog.
 - **Timing**: `train_time` counts optimizer steps only; `it_s` is per step, so sampling
   and validation don't read as slowdowns.
 

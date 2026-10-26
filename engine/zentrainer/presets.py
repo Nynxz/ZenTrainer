@@ -1,11 +1,11 @@
 """Presets: reusable bits of a run, by kind.
 
-    run      a partial TrainSpec merged onto the form (presets layer: "Character"
-             then "Flow-model tweaks")
+    run      a partial TrainSpec merged onto the form (they layer: one, then another on top)
     prompts  a sample-prompt set: {prompts, negative, ...any SampleSpec fields}
 
-Built-ins ship in engine/presets/<kind>/; the user's live in
-<user>/zentrainer/presets/<kind>/ and win on an id clash.
+The user's live in <user>/zentrainer/presets/<kind>/. Built-ins would ship in
+engine/presets/<kind>/ and lose to the user's on an id clash; none ship now (the run form's
+starting points are the recipes, web/src/lib/recipes.ts).
 """
 
 from __future__ import annotations

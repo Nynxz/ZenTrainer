@@ -45,9 +45,11 @@ downloading off its Comfy-Org Hugging Face repo. The family's turbo build is off
 previews, with the sampler settings ComfyUI's own template uses. The **Models** page lists
 every family, what you have of it, and the rest.
 
-Start from a preset (Character, Style, Flow-model tweaks, Quick test) or one of your own, and the
-form warns you about what usually goes wrong: no trigger word, sample prompts that never use it, a
-learning rate the optimizer won't like, too few epochs.
+Start from a recipe (**Recipes**, top right): ours for each model (a character, a style), or one
+you saved from a run that went well with **Save as recipe**. Each shows what it would change before
+it's applied, and keeps your run's name, dataset, trigger word and captions. The form warns you
+about what usually goes wrong: no trigger word, sample prompts that never use it, a learning rate
+the optimizer won't like, too few epochs.
 
 - **Trigger word** added to every caption, and `[trigger]` in captions and prompts
 - **Optimizers**: AdamW, Prodigy, Lion, Adafactor, CAME, schedule-free, 8-bit and more, each with a suggested learning rate

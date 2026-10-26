@@ -11,7 +11,7 @@ import { useRouter } from 'vue-router'
 import { EngineError, defaultSpec, engine, thumbUrl, type DatasetFaces, type DatasetInfo, type DatasetItem } from '@/api/engine'
 import { captionJobs, startCaptionSync } from '@/stores/captions'
 import { downloadFor, finished, fmtBytes, startDownloadSync } from '@/stores/downloads'
-import { RECIPES, buildSpec, plan, recipe as findRecipe, stepsFor, triggerFrom, type Plan, type Recipe } from '@/lib/recipes'
+import { RECIPES, buildSpec, plan, recipe as findRecipe, triggerFrom, type Plan, type Recipe } from '@/lib/recipes'
 import { settings } from '@/stores/settings'
 
 const props = defineProps<{ id?: string }>()
@@ -197,7 +197,7 @@ watch(
   { immediate: true },
 )
 const downloadBytes = computed(() => (p.value?.downloads ?? []).reduce((n, d) => n + (d.size ?? 0), 0) + (p.value?.adapter?.size ?? 0))
-const steps = computed(() => (r.value ? stepsFor(r.value, Math.max(count.value, r.value.photos.min)) : 0))
+const steps = computed(() => r.value?.steps ?? 0)
 
 // ---- training: downloads, then captions, then the run ---------------------------------------
 type Phase = 'idle' | 'downloading' | 'captioning' | 'starting'
@@ -305,7 +305,6 @@ async function train() {
       name: name.value.trim(),
       trigger: trigger.value,
       dataset: dsName.value,
-      photos: count.value,
       captions: items.value.map((i) => i.caption),
       masks: items.value.filter((i) => i.mask).length,
     })

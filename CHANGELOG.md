@@ -49,6 +49,33 @@ and Manager show.
   [docs/api.md](docs/api.md) (the HTTP API the app and `zt` use: runs, the queue, live events, with
   a Python example).
 
+### Run form and look
+- **Recipes on New run** (top right): Simple mode's recipes for each model, and your own, without
+  switching to Simple mode. Each shows what it would do to the run before it's applied: its model
+  files (and what they'd download), its length, adapter, learning rate and resolution, and every
+  setting it changes. The run's name, dataset, trigger word and captions stay, and Undo puts the
+  rest back. A search narrows the list; on a phone it's the whole screen, list then recipe.
+- **Save as recipe** (the ⋯ menu, beside Start, or a finished run's ⋯ menu, for one that went
+  well): these settings and the model, as one of yours. It says when one of yours has the same
+  name (it replaces it) or exactly these settings already.
+- **No built-in presets:** Character, Style, Flow-model tweaks and Quick test are gone (the
+  recipes do their job). Presets you saved show as your recipes. Export, Copy and Import moved
+  into the ⋯ menu.
+- **A recipe trains one length**, the one it was checked at (MOSS Image 1,750 steps; the drafts
+  2,000), not one worked out from the photo count, with a checkpoint and samples every 250 steps:
+  pick the best, or Train more. A set of over 150 pictures is told it may want more. Simple mode
+  too.
+- **MOSS Image's recipe checkpoints every block:** it kept the last four's activations for speed,
+  VRAM a small card may not have. What it learns is the same.
+- **Isotope**, a new theme: ink black, an isotope-lime accent, titles in condensed caps (every
+  page's, the ZenTrainer name, dialogs') and one tight corner on everything. Its fonts ship inside
+  it, so it works offline.
+- **The version beside the ZenTrainer name** in the sidebar; hover for the build and whether
+  there's an update.
+- **New here?** New run mentions Simple mode until you close the note or a run finishes.
+- Recipe covers are their own colour and icon (not ComfyUI's template pictures, for now), and
+  the N key no longer opens New run.
+
 ### AMD
 - **AMD GPUs on Windows and Linux:** `zt setup` finds a Radeon or Instinct card from its display
   driver alone and installs PyTorch's ROCm build from AMD's wheel index, with only that GPU's
