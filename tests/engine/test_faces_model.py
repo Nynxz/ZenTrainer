@@ -12,9 +12,10 @@ from zentrainer import paths
 from zentrainer.analysis import faces as analysis, files
 from zentrainer.datasets import faces
 
-# sha256 of each published file's sorted "key shape" lines (huggingface.co/nynxz/Zentrainer at faces.REVISION)
+# sha256 of each published file's sorted "key shape" lines (huggingface.co/nynxz/Zentrainer at faces.REVISIONS)
 PUBLISHED = {"det_10g": ("scrfd", 119, "2a87549dcef38998"), "w600k_r50": ("r50", 237, "9a46d739d6acd1ab"),
-             "glintr100": ("r100", 462, "ddd3074a93c13c9d")}
+             "glintr100": ("r100", 462, "ddd3074a93c13c9d"), "yunet_2023mar": ("yunet", 106, "754a6a421051bd5d"),
+             "auraface_r100": ("r100", 462, "ddd3074a93c13c9d")}  # AuraFace is the same IResNet-100
 
 
 @pytest.fixture
@@ -54,7 +55,10 @@ def test_a_model_is_downloaded_once_its_detector_and_recognition_files_are_there
     assert not analysis.downloaded("buffalo_l")
     (d / "w600k_r50.safetensors").write_bytes(b"x")
     assert analysis.downloaded("buffalo_l") and not analysis.downloaded("antelopev2")
-    assert {m["id"]: m["downloaded"] for m in paths.describe()["face_models"]} == {"buffalo_l": True, "antelopev2": False}
+    (d / "auraface_r100.safetensors").write_bytes(b"x")
+    assert not analysis.downloaded("auraface")  # its own detector, not InsightFace's
+    (d / "yunet_2023mar.safetensors").write_bytes(b"x")
+    assert {m["id"]: m["downloaded"] for m in paths.describe()["face_models"]} == {"buffalo_l": True, "antelopev2": False, "auraface": True}
 
 
 @pytest.mark.parametrize("file", PUBLISHED)
@@ -62,9 +66,10 @@ def test_the_networks_fit_the_published_files(file):
     pytest.importorskip("torch")
     from zentrainer.analysis.nets.iresnet import IResNet
     from zentrainer.analysis.nets.scrfd import SCRFD
+    from zentrainer.analysis.nets.yunet import YuNet
 
     kind, n, sig = PUBLISHED[file]
-    net = SCRFD() if kind == "scrfd" else IResNet(kind)
+    net = SCRFD() if kind == "scrfd" else YuNet() if kind == "yunet" else IResNet(kind)
     sd = {k: v for k, v in net.state_dict().items() if not k.endswith("num_batches_tracked")}
     lines = "\n".join(f"{k} {tuple(v.shape)}" for k, v in sorted(sd.items()))
     assert len(sd) == n and hashlib.sha256(lines.encode()).hexdigest()[:16] == sig
@@ -82,6 +87,41 @@ def test_the_networks_run_at_the_sizes_the_pipeline_feeds_them():
             cells = 2 * (analysis.DET_SIZE // stride) ** 2  # two anchors a cell
             assert s.shape == (cells, 1) and b.shape == (cells, 4) and k.shape == (cells, 10)
         assert IResNet("r50").eval()(torch.zeros(2, 3, 112, 112)).shape == (2, 512)
+        from zentrainer.analysis.nets.yunet import YuNet
+
+        for (c, o, b, k), stride in zip(YuNet().eval()(torch.zeros(1, 3, analysis.DET_SIZE, analysis.DET_SIZE)), analysis.STRIDES):
+            cells = (analysis.DET_SIZE // stride) ** 2  # one prediction a cell
+            assert c.shape == o.shape == (1, cells, 1) and b.shape == (1, cells, 4) and k.shape == (1, cells, 10)
+
+
+def test_yunet_decodes_as_opencv_does():
+    """A face predicted in one cell: its box from the cell corner (centre offset, log size) and its
+    keypoints from the corner, both in strides, back in the picture's pixels; the score is the root
+    of class times objectness, and overlapping weaker boxes go."""
+    torch = pytest.importorskip("torch")
+    cells = [(analysis.DET_SIZE // s) ** 2 for s in analysis.STRIDES]
+    logit = lambda p: float(np.log(p / (1 - p)))  # noqa: E731
+
+    def det(_x):
+        outs = []
+        for n, stride in zip(cells, analysis.STRIDES):
+            c, o = torch.full((1, n, 1), -20.0), torch.full((1, n, 1), -20.0)
+            b, k = torch.zeros(1, n, 4), torch.zeros(1, n, 10)
+            if stride == 16:  # row 3, col 5 of a 40-wide grid
+                i = 3 * (analysis.DET_SIZE // 16) + 5
+                c[0, i], o[0, i] = logit(0.81), logit(0.81)  # score 0.81
+                b[0, i] = torch.tensor([0.5, 0.5, np.log(4.0), np.log(5.0)])  # centre (88, 56), 64 x 80: x 56-120, y 16-96
+                k[0, i] = torch.tensor([0.0, 0.0, 1, 0, 0.5, 1, 0, 2, 1, 2])
+                j = i + 1  # a weaker twin one cell right: suppressed
+                c[0, j], o[0, j] = logit(0.7), logit(0.7)
+                b[0, j] = torch.tensor([-0.5, 0.5, np.log(4.0), np.log(5.0)])
+            outs.append((c, o, b, k))
+        return outs
+
+    rgb = np.zeros((analysis.DET_SIZE * 2, analysis.DET_SIZE * 2, 3), np.uint8)  # letterboxed at half size
+    dets, kps = analysis._detect_yunet(det, rgb)
+    assert dets.shape == (1, 5) and np.allclose(dets[0], [112, 32, 240, 192, 0.81], atol=1e-3)
+    assert np.allclose(kps[0], np.array([[5, 3], [6, 3], [5.5, 4], [5, 5], [6, 5]]) * 16 * 2)
 
 
 def test_the_alignment_finds_the_similarity_that_maps_the_keypoints():

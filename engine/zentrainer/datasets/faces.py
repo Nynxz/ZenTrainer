@@ -7,9 +7,10 @@
 - Likeness: how much a sample's face looks like the dataset's, per sample and checkpoint, so the
   best checkpoint of a character LoRA is a number instead of a guess (Fizgig's likeness scoring).
 
-The recognition model is a setting (face_model): buffalo_l's ArcFace R50, or antelopev2's larger
-R100, which tells similar faces apart better and is slower on the CPU. Scores from the two don't
-compare, so caches are per model and each likeness row says which one scored it.
+The recognition model is a setting (face_model): buffalo_l's ArcFace R50, antelopev2's larger
+R100, which tells similar faces apart better and is slower on the CPU, or AuraFace with YuNet for
+commercial use (InsightFace's are non-commercial). Scores from different models don't compare, so
+caches are per model and each likeness row says which one scored it.
 """
 
 from __future__ import annotations

@@ -46,6 +46,13 @@ and Manager show.
   any more; delete them if nothing else needs them. While a dataset's faces are checked, its page
   shows how far along it is (and the face model's download, the first time), beside the Check
   faces switch and in Health.
+- **A face model for commercial use:** Settings → Faces → Commercial (AuraFace) runs face reports
+  and likeness on fal's AuraFace (Apache 2.0) with OpenCV's YuNet detector (MIT), instead of
+  InsightFace's models, which are non-commercial. AuraFace-v1 ships InsightFace's own detector
+  beside it, so ZenTrainer pairs it with YuNet: nothing InsightFace's runs. It's a little less
+  accurate (LFW 99.56%, against 99.83% for the other two), and its scores sit lower (one person
+  around 0.6 rather than 0.7), so compare them only with each other. A 131 MB download the
+  first time.
 
 ### Runs
 - **Steadier speed and ETA:** the loss chart's speed line, and the it/s and time left on a run,
