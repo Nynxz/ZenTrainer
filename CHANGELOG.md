@@ -111,6 +111,17 @@ and Manager show.
   jumped about while a run blended into a new resolution (its steps come at both sizes then).
   They're now an average over the last 50 or so steps, leaving out compiles, so they read as the
   run's actual pace. The chart's line is smoother on runs trained before this too.
+- **Fixed: Train more on a run that starts lower went back down a resolution,** and blended up
+  again: its stages are shares of the run, so a longer run put them later (VRAM dropping and
+  climbing, the epoch see-sawing). Train more, and Edit & resume with more steps, now keep them
+  on the steps they were on: a run that reached its own resolution stays there.
+- **Fixed: a run's epoch and peak VRAM jumped about** while a resolution change blends. Each
+  resolution kept its own epoch count and a step takes either, so the epoch flipped between
+  them; a resume restored only one count (into the wrong resolution) and started the lower one's
+  shuffle over. The epoch now follows the step (passes through the run's own batches), a resume
+  reshuffles every resolution from its step, and Peak VRAM is the most a step has used so far
+  rather than the last step's. An open run page reads the run afresh when it starts again,
+  instead of holding on its old last step.
 - **Likeness as a share of your photos:** a run's likeness also shows as a percentage of how alike
   the dataset's own photos are to each other (its median in the face report), on the chart, the
   stats, the checkpoints and the recommended checkpoint. A LoRA that caught the face perfectly

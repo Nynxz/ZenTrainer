@@ -929,6 +929,16 @@ class Batches:
         self._queue = batches
         self.epoch += 1
 
+    @property
+    def per_epoch(self) -> int:
+        """Batches in one pass through the dataset (repeats included): each bucket in whole batches."""
+        return sum(-(-len(idx) // self.batch_size) for idx in self.ds.buckets.values())
+
+    def reseed(self, seed: int) -> None:
+        """A fresh shuffle order from `seed` (a resume: from its step on), starting a new pass."""
+        self.rng.seed(seed)
+        self._queue = []
+
     def __next__(self) -> list[int]:
         if not self._queue:
             self._refill()

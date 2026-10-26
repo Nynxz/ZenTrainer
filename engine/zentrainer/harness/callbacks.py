@@ -75,7 +75,7 @@ class Metrics(Callback):
             "loss": t.last_loss,
             "lr": optim.current_lr(t.optimizer),
             "grad_norm": t.last_grad_norm,
-            "epoch": t.batches.epoch,
+            "epoch": t.epoch_at(t.step),
             "elapsed": round(now - self._t0, 3),
             "train_time": round(t.train_seconds, 3),
             "step_time": round(dt, 4),

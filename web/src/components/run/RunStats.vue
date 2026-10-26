@@ -7,7 +7,7 @@ import { gb } from '@/stores/system'
 import { SHARE_TIP, likeShare } from '@/lib/likeness'
 import { dur, fmtLr, useRunContext } from './context'
 
-const { detail, last, wall, likeLast, likeFirst, likeCeil } = useRunContext()
+const { detail, last, vramPeak, wall, likeLast, likeFirst, likeCeil } = useRunContext()
 
 const valLast = computed(() => detail.value?.validation.at(-1))
 const valFirst = computed(() => detail.value?.validation[0])
@@ -47,7 +47,7 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
         { k: 'Total', v: dur(wall.value), tip: 'From start to now, with loading, sampling and validation' }, // start to now, loading and sampling included
         { k: 'Speed', v: `${l?.it_s?.toFixed(2) ?? '–'} it/s`, tip: 'Training steps per second, lately. The first steps are slower (caching, compiling)' },
         { k: 'Epoch', v: String(l?.epoch ?? '–'), tip: 'Passes through the dataset so far, repeats included' },
-        ...(l?.vram_peak ? [{ k: 'Peak VRAM', v: `${gb(l.vram_peak)} GB`, tip: 'The most GPU memory a training step has used. Sampling can use more, briefly' }] : []),
+        ...(vramPeak.value ? [{ k: 'Peak VRAM', v: `${gb(vramPeak.value)} GB`, tip: 'The most GPU memory a training step has used. Sampling can use more, briefly' }] : []),
         ...(l?.phases
           ? [
               { k: 'Forward / back', v: `${l.phases.forward.toFixed(1)} / ${l.phases.backward.toFixed(1)} s`, tip: 'Seconds per step running the model forward, and back for the gradients: nearly all of a step' },

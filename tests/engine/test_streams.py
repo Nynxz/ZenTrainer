@@ -863,6 +863,86 @@ def test_resolution_stages_blend_into_the_next():
     assert [res_at(s) for s in range(600, 800)] == [res_at(s) for s in range(600, 800)]  # a resume picks the same
 
 
+def test_the_epoch_follows_the_step_not_the_stage_a_step_took():
+    """Each resolution stage has its own batches, and while a change blends a step takes either: the
+    epoch a step reports comes from the step in the run's own batches, so it never jumps back."""
+    import types
+
+    from zentrainer.harness import data
+    from zentrainer.harness import trainer as tr
+
+    def batches(sizes, bs=2, seed=0):
+        ds = types.SimpleNamespace(buckets={k: list(range(n)) for k, n in sizes.items()})
+        return data.Batches(ds, bs, seed)
+
+    run_own = batches({(1024, 1024): 7, (832, 1216): 4})  # 4 + 2 batches a pass
+    low = batches({(768, 768): 11})
+    assert run_own.per_epoch == 6 and low.per_epoch == 6
+    t = tr.Trainer.__new__(tr.Trainer)
+    t._final_stage = (1024, None, run_own)
+    t._stages = [(0.6, 768, None, low)]
+    t.batches = low  # the stage this step took: it doesn't change the count
+    epochs = [t.epoch_at(s) for s in range(1, 40)]
+    assert epochs == sorted(epochs) and epochs[:7] == [1, 1, 1, 1, 1, 1, 2] and t.epoch_at(0) == 0
+
+    # one resolution: the same numbers Batches' own refills gave
+    t2 = tr.Trainer.__new__(tr.Trainer)
+    t2.batches = only = batches({(1024, 1024): 5}, bs=2)
+    seen = []
+    for _ in range(12):
+        next(only)
+        seen.append(only.epoch)
+    assert [t2.epoch_at(s) for s in range(1, 13)] == seen
+
+    # a resume reshuffles every stage from its step, not just the run's own
+    t.spec = types.SimpleNamespace(seed=3)
+    t.step = 500
+    t.batches = run_own
+    def order():
+        t._reseed_batches()
+        return [next(run_own) for _ in range(6)], [next(low) for _ in range(6)]
+
+    at_500 = order()
+    assert order() == at_500  # the same step: the same order
+    t.step = 900
+    own_900, low_900 = order()
+    assert own_900 != at_500[0] and low_900 != at_500[1]  # the lower stage too, not replaying its start
+
+
+def test_training_on_keeps_a_run_at_its_own_resolution():
+    """Train more (or Edit & resume with more steps): the stages are shares of the run, so a longer
+    run would drop back to the lower resolution and blend again. Scaled to the new total, a run
+    that reached its own resolution stays there, and the stages fall on the same steps."""
+    from zentrainer.harness import trainer as tr
+    from zentrainer.runs.extend import keep_stage_steps
+    from zentrainer.spec import TrainSpec
+
+    spec = TrainSpec.from_dict({"model": {"kind": "checkpoint", "ckpt_name": "x.safetensors"},
+                                "dataset": {"folder": "d", "resolution": 1024, "stages": [{"resolution": 768, "until": 0.6}],
+                                            "stage_blend": 0.2},
+                                "optim": {"steps": 2000}})
+    t = tr.Trainer.__new__(tr.Trainer)
+    t._final_stage = (1024, "ds1024", "b1024")
+
+    def res_at(sp, step):
+        t.spec, t.step = sp, step
+        t._stages = [(float(st["until"]), int(st["resolution"]), "ds768", "b768") for st in sp.dataset.stages]
+        return t._stage()[0]
+
+    before = [res_at(spec, st) for st in range(0, 2000)]
+    longer = TrainSpec.from_dict(spec.to_dict())
+    longer.optim.steps = 4000
+    assert {res_at(longer, st) for st in range(2000, 4000)} != {1024}  # the bug: back to 768 for a while
+    keep_stage_steps(longer, 2000)
+    longer.validate()
+    assert {res_at(longer, st) for st in range(2000, 4000)} == {1024}
+    assert [res_at(longer, st) for st in range(0, 2000)] == before  # the steps it trained: the same plan
+    shorter = TrainSpec.from_dict(spec.to_dict())
+    shorter.optim.steps = 1500
+    keep_stage_steps(shorter, 2000)  # fewer steps only moves a run on: left as it was
+    assert shorter.dataset.stages == spec.dataset.stages and shorter.dataset.stage_blend == spec.dataset.stage_blend
+
+
 def test_resolution_stages_are_checked():
     from zentrainer.spec import SpecError, TrainSpec
 
