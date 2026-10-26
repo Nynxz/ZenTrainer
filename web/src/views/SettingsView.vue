@@ -363,7 +363,11 @@ async function pickFace(id: string) {
         <p v-if="faceModel" class="muted hint">
           {{ faceModel.note }}<template v-if="!faceModel.downloaded"> Not downloaded yet: it downloads at the next face check.</template>
         </p>
-        <p class="muted hint">InsightFace's models are for non-commercial research use only.</p>
+        <!-- the licence only under InsightFace's two; AuraFace's own note says it's for commercial use -->
+        <p v-if="faceModel && faceModel.id !== 'auraface'" class="muted hint">
+          InsightFace's models are for non-commercial research use only<template v-if="storage.face_models.some((m) => m.id === 'auraface')">:
+            for commercial work, use <button class="link" :disabled="savingFace" @click="pickFace('auraface')">Commercial (AuraFace)</button></template>.
+        </p>
         <p v-if="faceError" class="warn">{{ faceError }}</p>
       </div>
     </section>
