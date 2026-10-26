@@ -6,6 +6,7 @@ import { ZenButton, ZenEmpty, ZenToggleGroup } from '@nynxz/zenkit-ui'
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EngineError, engine, thumbUrl, type DatasetAnalysis } from '@/api/engine'
+import { remembered } from '@/lib/remembered'
 
 const props = defineProps<{ name: string }>()
 const route = useRoute()
@@ -48,7 +49,7 @@ const FLAG_INFO: Record<string, string> = {
   flat: 'Very little contrast.',
   bars: 'Flat bars along the edges (letterboxing or a frame).',
   greyscale: 'No colour, in a set that has colour.',
-  transparent: 'See-through parts: training drops transparency, so whatever colour sits under it shows.',
+  transparent: 'See-through parts: most models train on whatever colour sits under them (often black). Qwen Image 2.1 keeps the transparency.',
   compressed: 'Heavily compressed JPEG: its blocky artefacts can be learned.',
   'near-duplicate': 'A re-saved, resized, lightly edited or mirrored copy of another picture: it counts twice.',
 }
@@ -63,13 +64,22 @@ const maxBucket = computed(() => Math.max(1, ...(data.value?.buckets.rows.map((r
 const openBucket = ref<string | null>(null)
 const bucketKey = (size: [number, number]) => size.join('x')
 type Placed = { bucket: [number, number]; kept: number; size: [number, number] }
-/** where the crop cuts a picture, as insets (in %) for the box over its thumbnail */
-function cut(c: Placed) {
-  const ar = c.size[0] / c.size[1]
-  const br = c.bucket[0] / c.bucket[1]
-  const lost = (1 - c.kept) * 50
-  return ar > br ? { left: `${lost}%`, right: `${lost}%`, top: '0', bottom: '0' } : { top: `${lost}%`, bottom: `${lost}%`, left: '0', right: '0' }
+// What training does to a picture: covers the bucket and crops the overflow from the centre
+// (harness/data load_image). "As trained" frames each thumbnail in its bucket's shape, cropped the
+// same way; otherwise the whole picture shows with the parts the crop cuts off striped.
+const asTrained = remembered('zentrainer.analysis.asTrained', false)
+const wide = (c: Placed) => c.size[0] / c.size[1] > c.bucket[0] / c.bucket[1] // cut at the sides, else top and bottom
+/** the tile's shape: the bucket's as trained, else the picture's own */
+const frame = (c: Placed | undefined) => (c ? { aspectRatio: asTrained.value ? `${c.bucket[0]} / ${c.bucket[1]}` : `${c.size[0]} / ${c.size[1]}` } : {})
+/** the two bands the crop cuts off, as boxes over the whole picture */
+function bands(c: Placed) {
+  const lost = `${((1 - c.kept) / 2) * 100}%`
+  return wide(c)
+    ? [{ side: 'left', style: { left: '0', top: '0', bottom: '0', width: lost } }, { side: 'right', style: { right: '0', top: '0', bottom: '0', width: lost } }]
+    : [{ side: 'top', style: { top: '0', left: '0', right: '0', height: lost } }, { side: 'bottom', style: { bottom: '0', left: '0', right: '0', height: lost } }]
 }
+const whole = (c: Placed) => c.kept >= 0.995
+const cutLabel = (c: Placed) => (whole(c) ? 'the whole picture' : `cuts ${pct(1 - c.kept)} ${wide(c) ? 'left and right' : 'top and bottom'}`)
 const placed = (path: string) => data.value?.buckets.placed[path]
 
 // ---- distributions ---------------------------------------------------------------------------------
@@ -167,11 +177,17 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
       <section class="card col">
         <div class="head">
           <h2>Buckets</h2>
+          <ZenToggleGroup
+            :model-value="asTrained ? 'trained' : 'marked'"
+            :options="[{ value: 'marked', label: 'Cut parts marked' }, { value: 'trained', label: 'As trained' }]"
+            size="sm"
+            @update:model-value="asTrained = $event === 'trained'"
+          />
           <ZenToggleGroup v-model="resolution" :options="RESOLUTIONS.map((r) => ({ value: r, label: r }))" size="sm" />
         </div>
         <p class="muted small">
           Each picture trains at the bucket closest to its shape, about {{ data.buckets.resolution }}² pixels, cropped to fit.
-          Half the pictures keep at least {{ pct(data.buckets.kept_median) }} of themselves. Open a bucket to see each crop.
+          Half the pictures keep at least {{ pct(data.buckets.kept_median) }} of themselves. Open a bucket to see each crop: the striped parts are cut off, or switch to As trained for exactly what each step sees.
         </p>
         <div class="bars">
           <template v-for="r in data.buckets.rows" :key="bucketKey(r.size)">
@@ -182,13 +198,15 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
             </button>
             <div v-if="openBucket === bucketKey(r.size)" class="bucket-pics">
               <figure v-for="path in r.pictures.slice(0, 60)" :key="path" class="tile">
-                <div class="crop">
+                <div class="crop" :style="frame(placed(path))">
                   <img :src="thumb(path)" loading="lazy" :alt="path" />
-                  <span v-if="placed(path)" class="kept" :style="cut(placed(path)!)" />
+                  <template v-if="!asTrained && placed(path) && !whole(placed(path)!)">
+                    <span v-for="b in bands(placed(path)!)" :key="b.side" class="cut" :class="b.side" :style="b.style" />
+                  </template>
                 </div>
                 <figcaption>
                   <span class="ellipsis small mono" :title="path">{{ path }}</span>
-                  <span v-if="placed(path)" class="small" :class="{ warn: placed(path)!.kept < 0.85 }">keeps {{ pct(placed(path)!.kept) }}</span>
+                  <span v-if="placed(path)" class="small" :class="{ warn: placed(path)!.kept < 0.85 }">{{ cutLabel(placed(path)!) }}</span>
                 </figcaption>
               </figure>
               <p v-if="r.pictures.length > 60" class="muted small">and {{ r.pictures.length - 60 }} more</p>
@@ -203,13 +221,15 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
           <div class="eyebrow">Cropped the most</div>
           <div class="grid">
             <figure v-for="c in data.buckets.cropped.slice(0, 24)" :key="c.path" class="tile">
-              <div class="crop">
+              <div class="crop" :style="frame(c)">
                 <img :src="thumb(c.path)" loading="lazy" :alt="c.path" />
-                <span class="kept" :style="cut(c)" />
+                <template v-if="!asTrained">
+                  <span v-for="b in bands(c)" :key="b.side" class="cut" :class="b.side" :style="b.style" />
+                </template>
               </div>
               <figcaption>
                 <span class="ellipsis small mono" :title="c.path">{{ c.path }}</span>
-                <span class="small">keeps <b>{{ pct(c.kept) }}</b> · {{ c.bucket[0] }}×{{ c.bucket[1] }}</span>
+                <span class="small"><b>{{ cutLabel(c) }}</b> · {{ c.bucket[0] }}×{{ c.bucket[1] }}</span>
               </figcaption>
             </figure>
           </div>
@@ -384,18 +404,27 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   border-radius: var(--r-sm);
   overflow: hidden;
 }
+/* the tile takes the picture's shape (or its bucket's, as trained); the thumbnail fills it from the
+   centre, as training crops */
 .crop img {
+  width: 100%;
+  height: 100%;
   aspect-ratio: auto;
-  height: auto;
+  object-fit: cover;
   border-radius: 0;
 }
-/* the part the crop keeps: everything around it shaded */
-.kept {
+/* what the crop cuts off: striped in the warning colour, a dashed line where the kept part starts,
+   so even a sliver shows */
+.cut {
   position: absolute;
-  outline: 2px solid var(--zen-accent);
-  box-shadow: 0 0 0 999px color-mix(in srgb, black 55%, transparent);
   pointer-events: none;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--zen-warn) 70%, transparent) 0 3px,
+    color-mix(in srgb, black 45%, transparent) 3px 7px);
 }
+.cut.left { border-right: 2px dashed var(--zen-warn); }
+.cut.right { border-left: 2px dashed var(--zen-warn); }
+.cut.top { border-bottom: 2px dashed var(--zen-warn); }
+.cut.bottom { border-top: 2px dashed var(--zen-warn); }
 
 /* ---- bars --------------------------------------------------------------------------------------- */
 .bars {

@@ -63,6 +63,16 @@ def test_transparency_and_heavy_jpeg_compression_are_seen(tmp_path):
     assert "transparent" in flags[str(clear)] and "compressed" in flags[str(rough)]
 
 
+def test_a_cutout_is_judged_by_what_shows_not_the_black_under_its_transparency(tmp_path):
+    cutout = tmp_path / "cutout.png"
+    im = Image.new("RGBA", (200, 200), (0, 0, 0, 0))  # black under the see-through part, as most PNGs keep it
+    im.paste((230, 200, 160, 255), (50, 30, 150, 170))
+    im.paste((90, 60, 40, 255), (80, 60, 120, 140))  # some detail of its own: a plain one would be flat
+    im.save(cutout)
+    flags = stats.image_flags({str(cutout): stats._look(cutout)}, {})[str(cutout)]
+    assert "transparent" in flags and not {"dark", "bars", "flat"} & set(flags)
+
+
 def _scene(seed: int) -> Image.Image:
     """A picture with structure: random blocks of colour (a seed is a different picture)."""
     import random
