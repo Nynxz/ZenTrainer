@@ -158,6 +158,19 @@ def test_themes_later_source_wins_and_css_refs_inline(tmp_path):
     assert packs["maroon-volt"]["name"] == "Mine"
     assert packs["maroon-volt"]["css"] == ":root{--x:1}"
 
+    # the app's list leaves each pack's CSS out (Isotope's fonts are most of its size) and says it
+    # has some; the one pack's is fetched on its own, from the winning source
+    from zentrainer.server.themes import theme_css
+
+    listed = {p["id"]: p for p in list_themes([BUNDLED, user], css=False)}
+    assert "css" not in listed["maroon-volt"] and listed["maroon-volt"]["has_css"] is True
+    assert "css" not in listed["isotope"] and listed["isotope"]["has_css"] is True
+    assert "has_css" not in listed["nynxz"]  # tokens only
+    assert theme_css("maroon-volt", [BUNDLED, user]) == ":root{--x:1}"
+    iso = theme_css("isotope", [BUNDLED])
+    assert iso and "@font-face" in iso and "Isotope Display" in iso
+    assert theme_css("nynxz", [BUNDLED]) is None and theme_css("no-such-theme", [BUNDLED]) is None
+
 
 def test_targets_match_by_structure_across_families():
     from zentrainer.harness.network import matches

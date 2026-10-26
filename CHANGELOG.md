@@ -70,6 +70,9 @@ and Manager show.
 - **Isotope**, a new theme: ink black, an isotope-lime accent, titles in condensed caps (every
   page's, the ZenTrainer name, dialogs') and one tight corner on everything. Its fonts ship inside
   it, so it works offline.
+- **Themes load lighter:** the app fetches only the shown theme's extra CSS (Isotope's is mostly
+  its fonts, ~160 KB), not every theme's on every load, and the browser keeps both it and the
+  theme list between loads. A reload went from ~206 KB to under 1 KB.
 - **The version beside the ZenTrainer name** in the sidebar; hover for the build and whether
   there's an update.
 - **New here?** New run mentions Simple mode until you close the note or a run finishes.
