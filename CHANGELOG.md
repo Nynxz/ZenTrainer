@@ -32,6 +32,11 @@ and Manager show.
   RunPod is in docker/README.md; the image is `ghcr.io/nynxz/zentrainer`.
 
 ### Datasets
+- **Captioning leaves masked-out areas out** (Caption → Masked parts: Hidden, the default when a
+  dataset has masks): the captioning model sees what the mask hides as flat grey, cropped to what it
+  keeps, and is told not to describe it, so captions stop describing a background training ignores.
+  Videos and pictures without a mask caption as before. The captioner also turns phone photos the
+  way their EXIF says, as training already did.
 - **Faces need nothing installed:** face reports and likeness scores now run on ZenTrainer's own
   port of InsightFace's models, in plain PyTorch, so the faces extra is gone (no insightface,
   onnxruntime or OpenCV, and none of their clashes with other custom nodes). Scores are the same
