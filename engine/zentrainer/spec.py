@@ -323,6 +323,10 @@ class ValidationSpec:
     images: int = 4
     timesteps: int = 4
     seed: int = 1234
+    # A held-out dataset folder to measure on instead, prepared like the training one (edit inputs,
+    # masks, captions): loss on pictures the LoRA never trains on, so the curve says whether it
+    # generalises rather than how well it fits. "" = pictures from the training dataset
+    dataset: str = ""
 
 
 @dataclass
@@ -540,6 +544,11 @@ class TrainSpec:
             raise SpecError("output.save_every and samples.every must be >= 0 (0 = off)")
         if self.validation.every < 0 or self.validation.images < 1 or self.validation.timesteps < 1:
             raise SpecError("validation needs every >= 0, images >= 1 and timesteps >= 1")
+        if self.validation.dataset and self.validation.dataset == self.dataset.folder:
+            raise SpecError("validation.dataset is the training dataset: pick a held-out one, or leave it empty "
+                            "to measure on pictures from the training set")
+        if self.validation.dataset and self.slider.kind == "pairs":
+            raise SpecError("a held-out validation dataset isn't for image sliders: their loss is on the pairs")
         if not 0.0 <= self.dataset.unmasked_weight <= 1.0:
             raise SpecError("dataset.unmasked_weight must be between 0 and 1")
         d = self.dataset

@@ -174,7 +174,8 @@ export interface TrainSpec {
     slg_start: number
     slg_end: number
   }
-  validation: { every: number; images: number; timesteps: number; seed: number }
+  /** dataset: a held-out dataset folder to measure on ('' = pictures from the training set) */
+  validation: { every: number; images: number; timesteps: number; seed: number; dataset: string }
   /** where checkpoints go, which resume states are kept, and which scheduled checkpoints
    *  (keep: all, the keep_count latest, or the keep_count best by likeness or validation loss;
    *  engine harness/keep.py) */
@@ -309,7 +310,7 @@ export function defaultSpec(): TrainSpec {
       slg_start: 0.01,
       slg_end: 1,
     },
-    validation: { every: 100, images: 4, timesteps: 4, seed: 1234 },
+    validation: { every: 100, images: 4, timesteps: 4, seed: 1234, dataset: '' },
     output: { save_every: 250, lora_dir: null, keep_states: 'latest', save_dtype: 'bf16', keep: 'all', keep_count: 3 },
     slider: { kind: '', pair_set: '', dataset_end: 'positive', positive: '', negative: '', neutral: '', anchors: [], guidance: 3, anchor_weight: 1, directions: 'both' },
   }

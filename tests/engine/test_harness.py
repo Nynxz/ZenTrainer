@@ -794,3 +794,36 @@ def test_validation_runs_the_model_as_training_does_even_at_the_end(monkeypatch)
     t = types.SimpleNamespace(denoiser=types.SimpleNamespace(model_sampling=None), optimizer=None)
     v.evaluate(t)
     assert seen == [True] and mm.in_training is False  # on while it ran, as it was after
+
+
+def test_a_held_out_validation_set_is_measured_instead_of_the_training_set():
+    from zentrainer.harness import callbacks
+    from zentrainer.harness.trainer import Trainer
+
+    def sample(n):
+        return types.SimpleNamespace(latent=torch.zeros(4, n, n))
+
+    train = types.SimpleNamespace(samples=[sample(8)] * 3, name="train")
+    a, b = sample(6), sample(6)
+    held = types.SimpleNamespace(samples=[a, a, a, b], name="held")  # a "3_name" folder repeats a
+    spec = types.SimpleNamespace(validation=types.SimpleNamespace(every=10, images=8, timesteps=2, seed=1, dataset="held"))
+    t = types.SimpleNamespace(spec=spec, step=5, dataset=train, val_dataset=held, _conds={"train": 1}, _val_conds={},
+                              streams=types.SimpleNamespace(packed_shape=lambda s: s))
+    v = callbacks.Validation()
+    v.on_start(t)
+    assert sorted(i for i, _, _ in v._set) == [0, 3]  # each held-out picture once, none from training
+    assert all(n[0].shape == (4, 6, 6) for _, _, n in v._set)
+    with Trainer.held_out(t):  # what validation's pass reads
+        assert t.dataset is held and t._conds == {}  # its own prepared conds: caption numbers are per dataset
+        t._conds["held"] = 2
+    assert t.dataset is train and t._conds == {"train": 1} and t._val_conds == {"held": 2}
+    t.val_dataset = None
+    with Trainer.held_out(t):
+        assert t.dataset is train  # no held-out set: the training set, as always
+
+
+def test_the_validation_dataset_cant_be_the_training_one():
+    base = {"model": {"kind": "checkpoint", "ckpt_name": "m.safetensors"}, "dataset": {"folder": "cats"}}
+    TrainSpec.from_dict({**base, "validation": {"dataset": "cats_held_out"}})
+    with pytest.raises(SpecError, match="is the training dataset"):
+        TrainSpec.from_dict({**base, "validation": {"dataset": "cats"}})

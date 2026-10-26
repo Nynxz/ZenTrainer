@@ -8,6 +8,7 @@ the session, so a run holds ComfyUI's execution lane (and its GPU) while it trai
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import random
@@ -427,6 +428,18 @@ class Trainer:
                                   audio_vae=self.models.audio_vae, h3=self.h3)
         if s.slider.kind == "pairs":
             self._keep_pairs(self.dataset)
+        self.val_dataset = None  # validation.dataset, prepared as the training set is
+        if s.validation.every and s.validation.dataset:
+            from dataclasses import replace
+
+            self.val_dataset = data.build(
+                self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
+                self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
+                h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
+            if not self.val_dataset.samples:
+                raise ValueError(f"the validation dataset {s.validation.dataset} has no pictures")
+            logging.info("[ZenTrainer] validation on %s: %d pictures held out", s.validation.dataset,
+                         len(set(map(id, self.val_dataset.samples))))
         if s.slider.kind == "text":  # its prompts, encoded while the text encoder is here (and cached like captions)
             self._slider_text = self._encode_texts(self._slider_prompts())
             self._slider_conds: dict = {}
@@ -592,6 +605,7 @@ class Trainer:
         self.scaler = torch.amp.GradScaler() if self.train_dtype == torch.float16 else None
 
         self._conds: dict[tuple[int, tuple], dict] = {}  # (caption, shape) -> prepared cond
+        self._val_conds: dict[tuple[int, tuple], dict] = {}  # the same for the validation dataset (held_out)
         self.progress = comfy.utils.ProgressBar(s.optim.steps)
         if self.resume_from:
             self._restore(Path(self.resume_state or state_for({"path": self.resume_from}, self.run_id) or ""))
@@ -1212,6 +1226,20 @@ class Trainer:
         hw = x0.shape[-2:]
         w = torch.stack([m if m is not None else torch.ones(hw) for m in masks]).to(x0.device)
         return floor + (1.0 - floor) * w
+
+    @contextlib.contextmanager
+    def held_out(self):
+        """batch() and fixed_cond() on the validation dataset (validation.dataset), with its own
+        prepared conds: caption numbers are per dataset. Without one, the training set as always."""
+        if self.val_dataset is None:
+            yield
+            return
+        ds, conds = self.dataset, self._conds
+        self.dataset, self._conds = self.val_dataset, self._val_conds
+        try:
+            yield
+        finally:
+            self.dataset, self._conds = ds, conds
 
     def fixed_cond(self, i: int, x0: torch.Tensor, shapes: list | None = None) -> dict:
         """A sample's own caption, prepared; never dropped out (validation uses this)."""

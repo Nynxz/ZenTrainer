@@ -10,7 +10,12 @@ import { fmtBytes } from '@/stores/downloads'
 import { setSetting } from '@/stores/settings'
 import { items, useRunFormContext } from './form'
 
-const { spec, loraPlaces, choices, familyId, optimizers, dataset, opt, epochs, noise, resuming } = useRunFormContext()
+const { spec, loraPlaces, choices, familyId, optimizers, dataset, datasets, opt, epochs, noise, resuming } = useRunFormContext()
+// validation on a held-out dataset: any but the one training
+const heldOutItems = computed(() => [
+  { value: '', label: 'From the training set' },
+  ...datasets.value.filter((d) => d.folder !== spec.dataset.folder).map((d) => ({ value: d.folder, label: d.folder })),
+])
 
 const advanced = reactive({ training: false })
 // ---- where checkpoints go: one of ComfyUI's loras folders ---------------------------------
@@ -315,6 +320,12 @@ const patterns = computed({
         <ZenField label="Loss" stack><ZenCombo v-model="spec.objective.loss" :items="items(['mse', 'l1', 'huber', 'smooth_l1'])" :searchable="false" :sorted="false" /></ZenField>
         <ZenField label="Validation every" stack tip="Fixed-noise loss for a smooth curve; 0 = off">
           <ZenNumber v-model="spec.validation.every" :min="0" :step="50" :precision="0" />
+        </ZenField>
+        <ZenField v-if="spec.validation.every" label="Validate on" stack tip="Where the validation pictures come from. A held-out dataset (pictures, or edit pairs, the LoRA never trains on, laid out like the training one) shows whether it generalises; from the training set, how well it fits">
+          <ZenCombo v-model="spec.validation.dataset" :items="heldOutItems" :sorted="false" />
+        </ZenField>
+        <ZenField v-if="spec.validation.every" label="Validation pictures" stack :tip="spec.validation.dataset ? 'How many of the held-out pictures to measure (each at several noise levels): more is a steadier curve and a longer pass' : 'How many training pictures to measure, each at several noise levels'">
+          <ZenNumber v-model="spec.validation.images" :min="1" :max="64" :step="1" :precision="0" />
         </ZenField>
       </div>
     </div>

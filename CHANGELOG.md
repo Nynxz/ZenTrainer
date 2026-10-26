@@ -109,6 +109,12 @@ and Manager show.
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Validation on a held-out dataset** (Advanced training → Validate on, or `validation.dataset`):
+  the validation loss is measured on another dataset folder, prepared like the training one (edit
+  pairs and their inputs, masks, captions), instead of on training pictures. The curve then shows
+  whether the LoRA generalises to pictures it never trained on, not just how well it fits, and
+  keeping checkpoints by validation loss keeps the ones that do best on them. Validation pictures
+  sets how many it measures; the chart labels the curve held-out.
 - **Fixed: continuing from a LoRA used this run's alpha instead of the file's,** so a LoRA whose
   alpha differs from the new run's rank (rank 16 at alpha 16 continued in a rank-4 run, say)
   trained at a fraction of its strength, and a DoRA lost its scale. It now continues exactly as

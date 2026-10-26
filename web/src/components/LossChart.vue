@@ -215,7 +215,7 @@ const fmt = (v: number) => (v === 0 || Math.abs(v) >= 0.01 ? v.toFixed(4) : v.to
     <figcaption>
       <span class="legend">
         <button class="key" :class="{ off: !shows('ema') }" title="Show or hide" @click="toggle('ema')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-ema" /></svg> Training (smoothed)</button>
-        <button v-if="val.length" class="key" :class="{ off: !shows('val') }" title="Show or hide" @click="toggle('val')"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" class="k-val" /><circle cx="9" cy="4" r="3" class="k-val-dot" /></svg> Validation (fixed set)</button>
+        <button v-if="val.length" class="key" :class="{ off: !shows('val') }" title="Show or hide" @click="toggle('val')"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" class="k-val" /><circle cx="9" cy="4" r="3" class="k-val-dot" /></svg> {{ val[val.length - 1]?.held_out ? 'Validation (held-out set)' : 'Validation (fixed set)' }}</button>
         <button v-if="like.length" class="key" :class="{ off: !shows('like') }" title="Show or hide" @click="toggle('like')"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" class="k-like" /><circle cx="9" cy="4" r="3" class="k-like-dot" /></svg> Likeness</button>
         <button v-if="lrShown" class="key muted" :class="{ off: !shows('lr') }" title="Show or hide" @click="toggle('lr')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-lr" /></svg> Learning rate (right axis)</button>
         <button v-if="hasSpeed" class="key muted" :class="{ off: !shows('speed') }" title="Show or hide: training speed, its own scale from 0 (values on hover)" @click="toggle('speed')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-speed" /></svg> Speed</button>
@@ -277,7 +277,7 @@ const fmt = (v: number) => (v === 0 || Math.abs(v) >= 0.01 ? v.toFixed(4) : v.to
         <div>loss <b class="mono">{{ fmt(hovered.p.loss) }}</b></div>
         <div>smoothed <b class="mono">{{ fmt(hovered.s) }}</b></div>
         <div v-if="valAt(hovered.p.step)">
-          validation <b class="mono">{{ fmt(valAt(hovered.p.step)!.val_loss) }}</b>
+          {{ valAt(hovered.p.step)!.held_out ? 'held-out' : 'validation' }} <b class="mono">{{ fmt(valAt(hovered.p.step)!.val_loss) }}</b>
           <span class="muted">@{{ valAt(hovered.p.step)!.step }}</span>
         </div>
         <div v-if="likeAt(hovered.p.step)">

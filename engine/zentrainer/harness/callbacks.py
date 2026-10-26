@@ -591,12 +591,17 @@ class Validation(Callback):
         import random
 
         rng = random.Random(v.seed)
-        pool = list(range(len(t.dataset.samples)))
+        held = getattr(t, "val_dataset", None)  # validation.dataset: pictures training never sees
+        ds = held or t.dataset
+        pool = list(range(len(ds.samples)))
+        if held is not None:  # each picture once: a kohya "N_name" folder repeats them
+            first: dict[int, int] = {}
+            pool = [first.setdefault(id(sm), i) for i, sm in enumerate(ds.samples) if id(sm) not in first]
         picks = rng.sample(pool, min(v.images, len(pool)))
         gen = torch.Generator().manual_seed(v.seed)
         percents = [1.0 - (k + 0.5) / v.timesteps for k in range(v.timesteps)]  # spread over the schedule
         for i in picks:
-            shape = t.streams.packed_shape(tuple(t.dataset.samples[i].latent.shape))
+            shape = t.streams.packed_shape(tuple(ds.samples[i].latent.shape))
             noises = [torch.randn(shape, generator=gen) for _ in percents]
             self._set.append((i, percents, noises))
         if t.step == 0:
@@ -632,7 +637,7 @@ class Validation(Callback):
         return self._report(t, losses, per_t)
 
     def _run(self, t, ms, losses, per_t) -> None:
-        with torch.no_grad():
+        with torch.no_grad(), t.held_out():
             for i, percents, noises in self._set:
                 x0, weight, shapes = t.batch([i])
                 cond = t.fixed_cond(i, x0, shapes)
@@ -647,7 +652,7 @@ class Validation(Callback):
 
     def _report(self, t, losses, per_t) -> float:
         val = sum(losses) / len(losses)
-        row = {"run_id": t.run_id, "step": t.step, "val_loss": val,
+        row = {"run_id": t.run_id, "step": t.step, "val_loss": val, "held_out": bool(t.spec.validation.dataset),
                "by_noise": {str(k): sum(v) / len(v) for k, v in sorted(per_t.items())}}
         t.emit(events.VALIDATION, row)
         if t.store:
