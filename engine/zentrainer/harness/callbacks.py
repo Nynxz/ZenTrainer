@@ -591,12 +591,17 @@ class Validation(Callback):
         import random
 
         rng = random.Random(v.seed)
-        pool = list(range(len(t.dataset.samples)))
+        held = getattr(t, "val_dataset", None)  # validation.dataset: pictures training never sees
+        ds = held or t.dataset
+        pool = list(range(len(ds.samples)))
+        if held is not None:  # each picture once: a kohya "N_name" folder repeats them
+            first: dict[int, int] = {}
+            pool = [first.setdefault(id(sm), i) for i, sm in enumerate(ds.samples) if id(sm) not in first]
         picks = rng.sample(pool, min(v.images, len(pool)))
         gen = torch.Generator().manual_seed(v.seed)
-        percents = [1.0 - (k + 0.5) / v.timesteps for k in range(v.timesteps)]  # spread over the schedule
+        percents = [1.0 - (k + 0.5) / v.noise_levels for k in range(v.noise_levels)]  # spread over the schedule
         for i in picks:
-            shape = t.streams.packed_shape(tuple(t.dataset.samples[i].latent.shape))
+            shape = t.streams.packed_shape(tuple(ds.samples[i].latent.shape))
             noises = [torch.randn(shape, generator=gen) for _ in percents]
             self._set.append((i, percents, noises))
         if t.step == 0:
@@ -632,7 +637,7 @@ class Validation(Callback):
         return self._report(t, losses, per_t)
 
     def _run(self, t, ms, losses, per_t) -> None:
-        with torch.no_grad():
+        with torch.no_grad(), t.held_out():
             for i, percents, noises in self._set:
                 x0, weight, shapes = t.batch([i])
                 cond = t.fixed_cond(i, x0, shapes)
@@ -647,7 +652,7 @@ class Validation(Callback):
 
     def _report(self, t, losses, per_t) -> float:
         val = sum(losses) / len(losses)
-        row = {"run_id": t.run_id, "step": t.step, "val_loss": val,
+        row = {"run_id": t.run_id, "step": t.step, "val_loss": val, "held_out": bool(t.spec.validation.dataset),
                "by_noise": {str(k): sum(v) / len(v) for k, v in sorted(per_t.items())}}
         t.emit(events.VALIDATION, row)
         if t.store:
@@ -658,7 +663,7 @@ class Validation(Callback):
 def _scores_saves(t, rule: str) -> bool:
     """A scheduled save this step whose score output.keep ranks it by: samples (likeness) or
     validation have to land on it too, whatever their own interval."""
-    every = t.spec.save_every
+    every = t.spec.output.save_every
     keep = t.spec.output.keep.removesuffix("_new_best")  # "likeness_new_best" scores saves as "likeness" does
     return keep == rule and bool(every) and t.step % every == 0 and t.step < t.spec.optim.steps
 
@@ -669,7 +674,7 @@ class Keep(Callback):
     first."""
 
     def on_step(self, t):
-        if t.spec.save_every and t.step % t.spec.save_every == 0:
+        if t.spec.output.save_every and t.step % t.spec.output.save_every == 0:
             gone = self._prune(t)
             if gone:  # said on the run page; the run's status is the trainer's to set
                 t.emit(events.STATUS, {"run_id": t.run_id, "status": "training", "step": t.step,
@@ -746,7 +751,7 @@ def _special(t, it):
       sample's size and length; the negative stays plain.
     - grounded edits: the encoder sees the picture with the prompt and with the negative."""
     d = t.spec.dataset
-    if not it.control or not (d.edit or (getattr(t, "h3", False) and d.keyframes)):
+    if not it.control or not (d.edit or (getattr(t, "h3", False) and d.video_keyframes)):
         return None
     path = _control_path(t, it.control)
     base = f"{path}|{path.stat().st_mtime_ns}"

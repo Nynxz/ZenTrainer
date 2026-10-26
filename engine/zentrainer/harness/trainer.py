@@ -8,6 +8,7 @@ the session, so a run holds ComfyUI's execution lane (and its GPU) while it trai
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import random
@@ -69,8 +70,8 @@ def _oom_advice(spec: TrainSpec, step: int) -> str:
     tips = []
     if not m.gradient_checkpointing:
         tips.append("turn on gradient checkpointing")
-    elif m.checkpoint_skip:
-        tips.append(f"keep fewer blocks un-checkpointed ({m.checkpoint_skip} -> 0)")
+    elif m.grad_checkpoint_skip:
+        tips.append(f"keep fewer blocks un-checkpointed ({m.grad_checkpoint_skip} -> 0)")
     if not m.offloading:
         tips.append("turn on weight offloading")
     if d.resolution > 768:
@@ -220,7 +221,7 @@ class Trainer:
         self.emit = emit
         self.control = control or control_mod.Control()
         self.callbacks = callbacks if callbacks is not None else [
-            Metrics(), Checkpoints(spec.save_every), Samples(spec.samples.every), Validation(), Keep()]
+            Metrics(), Checkpoints(spec.output.save_every), Samples(spec.samples.every), Validation(), Keep()]
         self.step = 0
         self.train_seconds = 0.0  # time spent in optimizer steps only (no sampling/validation/saves/pauses)
         self.last_step_seconds: float | None = None
@@ -257,8 +258,8 @@ class Trainer:
                 # compiled first, so checkpointing wraps the compiled forward
                 with compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, self.spec.memory.gradient_checkpointing,
-                                               self.spec.memory.checkpoint_depth, self.spec.memory.offloading,
-                                               self.spec.memory.checkpoint_skip) as ckpt:
+                                               self.spec.memory.grad_checkpoint_depth, self.spec.memory.offloading,
+                                               self.spec.memory.grad_checkpoint_skip) as ckpt:
                     self._input_grad = ckpt.input_grad
                     self.enter_training()
                     try:
@@ -387,7 +388,7 @@ class Trainer:
         compat.apply(qk_rope=s.memory.fused_qk_rope is not False)  # ComfyUI model fixes for training (see compat/)
         from .kernels import int8_backward
 
-        int8_backward.enable("w8a8" if s.memory.w8a8_backward else "fused" if s.memory.fused_int8_backward else "")
+        int8_backward.enable("" if s.memory.int8_backward == "bf16" else s.memory.int8_backward)
         lora_root(s.output.lora_dir)  # a bad save folder fails now, not at the first save
         torch.manual_seed(s.seed)
         random.seed(s.seed)
@@ -420,13 +421,25 @@ class Trainer:
         from .data.edit import is_h3
 
         self.h3 = is_h3(patcher.model)
-        if s.dataset.keyframes and not self.h3:
+        if s.dataset.video_keyframes and not self.h3:
             raise ValueError("keyframes (image-to-video training) are for MiniMax H3's fl2va model")
         self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root, cache,
                                   encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
                                   audio_vae=self.models.audio_vae, h3=self.h3)
         if s.slider.kind == "pairs":
             self._keep_pairs(self.dataset)
+        self.val_dataset = None  # validation.dataset, prepared as the training set is
+        if s.validation.every and s.validation.dataset:
+            from dataclasses import replace
+
+            self.val_dataset = data.build(
+                self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
+                self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
+                h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
+            if not self.val_dataset.samples:
+                raise ValueError(f"the validation dataset {s.validation.dataset} has no pictures")
+            logging.info("[ZenTrainer] validation on %s: %d pictures held out", s.validation.dataset,
+                         len(set(map(id, self.val_dataset.samples))))
         if s.slider.kind == "text":  # its prompts, encoded while the text encoder is here (and cached like captions)
             self._slider_text = self._encode_texts(self._slider_prompts())
             self._slider_conds: dict = {}
@@ -526,7 +539,7 @@ class Trainer:
                 patcher.patches_uuid = uuid.uuid4()  # the next load re-applies the per-layer flags
             else:
                 patcher.set_model_compute_dtype(self.train_dtype)
-        mm.training_fp8_bwd = s.memory.quantized_backward
+        mm.training_fp8_bwd = s.memory.fp8_backward
 
         init = None
         if self.resume_from:
@@ -585,13 +598,14 @@ class Trainer:
         self._shift = s.objective.shift
         if self._shift and not is_flow(self.denoiser.model_sampling):
             raise ValueError(f"objective.shift is for flow-matching models; {type(self.denoiser.model_sampling).__name__} isn't one. Set it to 0.")
-        self._schedule = (scheduler_sigmas(self.denoiser.model_sampling, s.objective.scheduler, s.objective.scheduler_steps)
+        self._schedule = (scheduler_sigmas(self.denoiser.model_sampling, s.objective.timestep_scheduler, s.objective.timestep_scheduler_steps)
                           if s.objective.timesteps == "scheduler" else None)
         if s.objective.weighting == "flex" and not is_flow(self.denoiser.model_sampling):
             raise ValueError(f"objective.weighting is for flow-matching models; {type(self.denoiser.model_sampling).__name__} isn't one. Turn it off.")
         self.scaler = torch.amp.GradScaler() if self.train_dtype == torch.float16 else None
 
         self._conds: dict[tuple[int, tuple], dict] = {}  # (caption, shape) -> prepared cond
+        self._val_conds: dict[tuple[int, tuple], dict] = {}  # the same for the validation dataset (held_out)
         self.progress = comfy.utils.ProgressBar(s.optim.steps)
         if self.resume_from:
             self._restore(Path(self.resume_state or state_for({"path": self.resume_from}, self.run_id) or ""))
@@ -684,9 +698,9 @@ class Trainer:
         that VRAM holds weights instead, and is worth as much: measured on Krea 2 int8 at 1024 px,
         16 GB card, keeping 6 blocks cost 2 GB of weights on the card for no faster steps."""
         m = self.spec.memory
-        if m.offloading and m.gradient_checkpointing and m.checkpoint_skip > 0:
-            logging.info("[ZenTrainer] keep last blocks %d -> 0: with weights offloaded, that VRAM holds weights instead", m.checkpoint_skip)
-            m.checkpoint_skip = 0
+        if m.offloading and m.gradient_checkpointing and m.grad_checkpoint_skip > 0:
+            logging.info("[ZenTrainer] keep last blocks %d -> 0: with weights offloaded, that VRAM holds weights instead", m.grad_checkpoint_skip)
+            m.grad_checkpoint_skip = 0
 
     def enter_training(self) -> None:
         """Load for training: everything else out of VRAM, model in train mode."""
@@ -1212,6 +1226,20 @@ class Trainer:
         hw = x0.shape[-2:]
         w = torch.stack([m if m is not None else torch.ones(hw) for m in masks]).to(x0.device)
         return floor + (1.0 - floor) * w
+
+    @contextlib.contextmanager
+    def held_out(self):
+        """batch() and fixed_cond() on the validation dataset (validation.dataset), with its own
+        prepared conds: caption numbers are per dataset. Without one, the training set as always."""
+        if self.val_dataset is None:
+            yield
+            return
+        ds, conds = self.dataset, self._conds
+        self.dataset, self._conds = self.val_dataset, self._val_conds
+        try:
+            yield
+        finally:
+            self.dataset, self._conds = ds, conds
 
     def fixed_cond(self, i: int, x0: torch.Tensor, shapes: list | None = None) -> dict:
         """A sample's own caption, prepared; never dropped out (validation uses this)."""

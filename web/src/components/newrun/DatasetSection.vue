@@ -198,15 +198,15 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
       </ZenField>
       <ZenField label="Image to video" stack tip="MiniMax H3 fl2va: each clip is conditioned on its own first frame (or first and last), as the model is at inference when you give it a start image. Trains the LoRA for image-to-video; samples use their input picture as the first frame">
         <ZenCombo
-          :model-value="spec.dataset.keyframes ?? ''"
+          :model-value="spec.dataset.video_keyframes ?? ''"
           :items="items(['', 'first', 'first_last'], { '': 'Off: text to video', first: 'First frame', first_last: 'First and last frame' })"
           :searchable="false"
           :sorted="false"
-          @update:model-value="spec.dataset.keyframes = String($event)"
+          @update:model-value="spec.dataset.video_keyframes = String($event)"
         />
       </ZenField>
       <ZenField label="Clip stills" stack tip="Each clip also trains its sharpest frame as a photo, with the clip's caption. Stills run whole (never TREAD-routed) and anchor the LoRA's detail; Fizgig turns this on for H3">
-        <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.clip_stills" @update:model-value="spec.dataset.clip_stills = $event" /><span class="sw-state">{{ spec.dataset.clip_stills ? 'One per clip' : 'Off' }}</span></div>
+        <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.video_stills" @update:model-value="spec.dataset.video_stills = $event" /><span class="sw-state">{{ spec.dataset.video_stills ? 'One per clip' : 'Off' }}</span></div>
       </ZenField>
       <ZenField label="Train on sound" stack tip="Joint audio-video models (MiniMax H3): each clip's soundtrack joins the loss, so motion and cuts can learn the beat. Needs the model's audio VAE">
         <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.video_audio" @update:model-value="spec.dataset.video_audio = $event" /><span class="sw-state">{{ spec.dataset.video_audio ? 'On' : 'Off' }}</span></div>

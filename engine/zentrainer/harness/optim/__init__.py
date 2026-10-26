@@ -240,9 +240,9 @@ def _schedule(spec: OptimSpec) -> Callable[[int], float]:
 
     def decay(i: int) -> float:
         p = min(1.0, (i - warm) / max(1, total - warm))
-        if spec.scheduler == "linear":
+        if spec.lr_scheduler == "linear":
             return 1.0 - p
-        if spec.scheduler == "cosine":
+        if spec.lr_scheduler == "cosine":
             return 0.5 * (1.0 + math.cos(math.pi * p))
         return 1.0
 

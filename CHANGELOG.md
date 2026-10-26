@@ -5,6 +5,40 @@ and Manager show.
 
 ## Unreleased
 
+### Run settings (spec version 2)
+- **Specs have a version now** (`spec_version: 2`), and older ones are brought up to date as
+  they're read: stored runs, presets, model profiles, exported settings files, and specs sent to
+  the API or `zt train`. Nothing you have stops working: all of a run's settings carry over, and a
+  setting this version doesn't have (one that was tried and removed) is left out with a note
+  instead of stopping the run. That fixes runs that couldn't resume, be edited or be duplicated
+  ("unknown OptimSpec field(s): anchor_decay"). A spec written by hand still errors on a field
+  this version has never had, so typos are caught.
+- **Renamed, for anyone scripting runs** (the old names still work in older specs, which are
+  converted; a spec that says `spec_version: 2` uses the new ones):
+  - `save_every` → `output.save_every`, beside the other saving settings
+  - `optim.scheduler` → `optim.lr_scheduler`, and `objective.scheduler` / `scheduler_steps` →
+    `objective.timestep_scheduler` / `timestep_scheduler_steps`: two different schedules that
+    were both called `scheduler`
+  - `memory.w8a8_backward` + `memory.fused_int8_backward` → `memory.int8_backward`: `"w8a8"`
+    (the default), `"fused"` or `"bf16"`, the one choice the two switches made between. On the
+    form: Memory → int8 backward
+  - `memory.quantized_backward` → `memory.fp8_backward` (what it is: for fp8 models)
+  - `dataset.keyframes` → `dataset.video_keyframes`, `dataset.clip_stills` → `dataset.video_stills`
+  - `validation.timesteps` → `validation.noise_levels` (a count; `objective.timesteps` is the distribution)
+  - `memory.checkpoint_depth` / `checkpoint_skip` → `memory.grad_checkpoint_depth` / `grad_checkpoint_skip`
+    (gradient checkpointing, not the saved checkpoints)
+  - `memory.compile_blocks` and `memory.fused_qk_rope` take `"auto"` (the default) instead of `null`
+- A spec from a newer ZenTrainer than this one is refused with a note to update, instead of
+  training with settings it doesn't understand.
+- **Every setting is checked when a run is submitted:** its type (`"steps": "1000"` or `"rank": true` is
+  refused), its choices (the optimizer, attention backend and dtypes included, which took any text
+  before and failed only once training started) and its range, each error naming the field. The same
+  rules are published: **[docs/spec.md](docs/spec.md)** lists every field with its default, what it
+  takes and what it does, and [docs/spec.schema.json](docs/spec.schema.json) (also served at
+  `GET /zentrainer/api/spec/schema`) is the JSON Schema. Both are generated from the spec itself, so
+  they can't drift from it. A spec file can name the schema (`"$schema": "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json"`,
+  as the examples do) and editors such as VS Code complete and check it as you type.
+
 ### AMD
 - **AMD GPUs on Windows and Linux:** `zt setup` finds a Radeon or Instinct card from its display
   driver alone and installs PyTorch's ROCm build from AMD's wheel index, with only that GPU's
@@ -109,6 +143,12 @@ and Manager show.
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Validation on a held-out dataset** (Advanced training → Validate on, or `validation.dataset`):
+  the validation loss is measured on another dataset folder, prepared like the training one (edit
+  pairs and their inputs, masks, captions), instead of on training pictures. The curve then shows
+  whether the LoRA generalises to pictures it never trained on, not just how well it fits, and
+  keeping checkpoints by validation loss keeps the ones that do best on them. Validation pictures
+  sets how many it measures; the chart labels the curve held-out.
 - **Fixed: continuing from a LoRA used this run's alpha instead of the file's,** so a LoRA whose
   alpha differs from the new run's rank (rank 16 at alpha 16 continued in a rank-4 run, say)
   trained at a fraction of its strength, and a DoRA lost its scale. It now continues exactly as
@@ -166,6 +206,9 @@ and Manager show.
 - **Fixed: a run's last validation point was computed differently from the rest:** it ran after
   training mode was off, through ComfyUI's sampling code (fused kernels, caches), so the last point
   on the validation curve wasn't quite comparable. It's measured as the others are now.
+- **Fixed: Memory → int8 forward and int8 backward (W8A8) showed On while the run had them off**
+  when the spec held `null` for them (an int8 model then trained on the slower bf16 path). `null`
+  now means the default, on, as the form showed.
 - **Transparency on Qwen Image 2.1:** its VAE has an alpha channel, but training gave it every
   picture as RGB, so it saw transparent PNGs as fully opaque (whatever colour sat under the
   transparent parts showing). Targets and edit inputs now keep their alpha for a four-channel VAE,

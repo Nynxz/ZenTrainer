@@ -40,7 +40,7 @@ function nextName(name: string): string {
 }
 
 // ---- optimizer defaults: picking one sets its usual LR (and schedule), unless you'd changed it
-const OPT_DEFAULTS: Record<string, { lr: number; scheduler?: TrainSpec['optim']['scheduler'] }> = {
+const OPT_DEFAULTS: Record<string, { lr: number; scheduler?: TrainSpec['optim']['lr_scheduler'] }> = {
   Automagic: { lr: 1e-6, scheduler: 'constant' }, // a start: it tunes each weight's LR itself
   // v3 moves its LR only on a consistent trend, which noisy small-batch gradients rarely show: from 1e-6
   // it barely climbs (measured on Krea 2, batch 1: 1.0e-6 -> 1.3e-6 in 280 steps). Start near a normal
@@ -285,7 +285,7 @@ export function useRunForm() {
       const was = optDefault(old)
       const next = optDefault(id)
       if (Math.abs(spec.optim.learning_rate - was.lr) < was.lr * 1e-6) spec.optim.learning_rate = next.lr
-      if (next.scheduler) spec.optim.scheduler = next.scheduler
+      if (next.scheduler) spec.optim.lr_scheduler = next.scheduler
     },
   )
 

@@ -30,7 +30,7 @@ const ckSize = computed(() => {
 const saveLine = computed(() => {
   const n = ckRows.value.length
   const next = nextSave.value
-  const plan = detail.value?.spec.save_every ? `every ${detail.value.spec.save_every}` : 'final only'
+  const plan = detail.value?.spec.output.save_every ? `every ${detail.value.spec.output.save_every}` : 'final only'
   if (running.value && next) return `${n ? `${n} · ` : ''}next ${next.step} · ${next.in}`
   return [n ? `${n} · ${plan}` : plan, ckSize.value].filter(Boolean).join(' · ')
 })

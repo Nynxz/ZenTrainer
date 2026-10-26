@@ -85,7 +85,7 @@ export const RECIPES: Recipe[] = [
       // Not validated with the stage yet (the 0.53 likeness above was 1024 throughout)
       dataset: { resolution: 1024, stages: [{ resolution: 768, until: 0.6 }], stage_blend: 0.2 },
       network: { rank: 16 },
-      optim: { optimizer: 'Automagic3', learning_rate: 1e-4, scheduler: 'constant' },
+      optim: { optimizer: 'Automagic3', learning_rate: 1e-4, lr_scheduler: 'constant' },
       objective: { timesteps: 'uniform', shift: 0 },
       samples: { steps: 8, cfg: 1, sampler: 'euler', scheduler: 'simple', model_name: 'krea2_turbo_int8_convrot.safetensors' },
     },
@@ -110,7 +110,7 @@ export const RECIPES: Recipe[] = [
     spec: {
       dataset: { resolution: 1024 },
       network: { rank: 32 },
-      optim: { optimizer: 'AdamW', learning_rate: 1e-4, scheduler: 'constant' },
+      optim: { optimizer: 'AdamW', learning_rate: 1e-4, lr_scheduler: 'constant' },
       objective: { timesteps: 'uniform', shift: 0 },
       samples: { steps: 8, cfg: 1, sampler: 'euler', scheduler: 'simple', model_name: 'krea2_turbo_int8_convrot.safetensors' },
     },
@@ -139,9 +139,9 @@ export const RECIPES: Recipe[] = [
       dataset: { resolution: 1024, stages: [{ resolution: 768, until: 0.6 }], stage_blend: 0.2 },
       network: { algorithm: 'LoKr', rank: 4, targets: 'mlp', blocks: '24-41' },
       // Automagic v3 stalls on MOSS without a floor under its rate
-      optim: { optimizer: 'Automagic3', learning_rate: 5e-4, scheduler: 'constant', ema: 0.98, lr_floor: 0.5 },
+      optim: { optimizer: 'Automagic3', learning_rate: 5e-4, lr_scheduler: 'constant', ema: 0.98, lr_floor: 0.5 },
       objective: { timesteps: 'logit_normal', shift: 0, bias: 'high_noise', spread: true },
-      memory: { checkpoint_skip: 4 },
+      memory: { grad_checkpoint_skip: 4 },
       // previews on the trained Base model, as the likeness above was measured
       samples: { steps: 25, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple', slg_mode: 'uncond', slg_layers: [22], slg_start: 0 },
     },
@@ -170,9 +170,9 @@ export const RECIPES: Recipe[] = [
     spec: {
       dataset: { resolution: 1024, stages: [{ resolution: 768, until: 0.6 }], stage_blend: 0.2 },
       network: { algorithm: 'LoRA', rank: 16, targets: 'attn_mlp' },
-      optim: { optimizer: 'AdamW', learning_rate: 3e-5, scheduler: 'constant', warmup_steps: 50, weight_decay: 0, batch_size: 1, grad_accumulation_steps: 1 },
+      optim: { optimizer: 'AdamW', learning_rate: 3e-5, lr_scheduler: 'constant', warmup_steps: 50, weight_decay: 0, batch_size: 1, grad_accumulation_steps: 1 },
       objective: { timesteps: 'uniform', shift: 0 },
-      memory: { int8_forward: true, w8a8_backward: true, compile_blocks: true },
+      memory: { int8_forward: true, int8_backward: 'w8a8', compile_blocks: true },
       samples: { steps: 30, cfg: 5, sampler: 'euler', scheduler: 'simple', negative: '' },
     },
     samples: ['[trigger] in soft window light, a close up photo', '[trigger] outdoors on a sunny afternoon, candid photo, shallow depth of field'],
@@ -198,7 +198,7 @@ export const RECIPES: Recipe[] = [
     spec: {
       dataset: { resolution: 1024 },
       network: { rank: 16, blocks: '20-49', training_adapter: 'training_adapters/minimax_h3_image_training_adapter.safetensors' },
-      optim: { optimizer: 'AdamW', learning_rate: 1e-4, scheduler: 'constant', batch_size: 1 },
+      optim: { optimizer: 'AdamW', learning_rate: 1e-4, lr_scheduler: 'constant', batch_size: 1 },
       objective: { timesteps: 'logit_normal', shift: 3 },
       memory: { offloading: true },
       samples: { steps: 30, cfg: 1, sampler: 'res_multistep', scheduler: 'simple' },
@@ -313,8 +313,8 @@ export function buildSpec(
   spec.dataset.masked_loss = (o.masks ?? 0) > 0
   spec.optim.steps = stepsFor(r, o.photos)
   // about 8 checkpoints, each with samples, to pick the best from
-  spec.save_every = Math.max(100, Math.round(spec.optim.steps / 8 / 50) * 50)
-  spec.samples.every = spec.save_every
+  spec.output.save_every = Math.max(100, Math.round(spec.optim.steps / 8 / 50) * 50)
+  spec.samples.every = spec.output.save_every
   // the recipe's first prompt (somewhere new), plus two of the dataset's own captions: the
   // closest check that it learned what's in the photos
   spec.samples.prompts = [r.samples[0]!, ...captionPrompts(o.captions ?? [], o.trigger, r.kind)].slice(0, 3)

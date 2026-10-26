@@ -24,7 +24,7 @@ const now = computed(() => bands(nowDraws.value))
 const scheduled = computed(() => props.objective.timesteps === 'scheduler')
 const series = computed((): NoiseSeries[] => [
   scheduled.value
-    ? { label: `This run: ${props.objective.scheduler ?? 'simple'}'s ${props.objective.scheduler_steps ?? 20} steps (ticks)`, hist: histogram(nowDraws.value, 48, 6), levels: levels(nowDraws.value), kind: 'area' }
+    ? { label: `This run: ${props.objective.timestep_scheduler ?? 'simple'}'s ${props.objective.timestep_scheduler_steps ?? 20} steps (ticks)`, hist: histogram(nowDraws.value, 48, 6), levels: levels(nowDraws.value), kind: 'area' }
     : { label: 'This run', hist: histogram(nowDraws.value), kind: 'area' },
   { label: props.profile.model ? `${props.profile.model}'s own schedule` : "The model's own schedule", hist: histogram(ownDraws.value), kind: 'line' },
 ])

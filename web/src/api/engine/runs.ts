@@ -145,6 +145,8 @@ export interface ValidationRow {
   step: number
   val_loss: number
   by_noise: Record<string, number>
+  /** measured on a held-out dataset (validation.dataset), not on training pictures */
+  held_out?: boolean
 }
 
 export type Command = 'pause' | 'resume' | 'stop' | 'save' | 'sample' | 'set_lr'

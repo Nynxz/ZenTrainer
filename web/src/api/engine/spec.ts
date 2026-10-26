@@ -1,9 +1,11 @@
+import type { SpecFields } from "./spec.fields"
 // Run specs: the TrainSpec the New run page builds, its defaults, presets. Mirrors engine/zentrainer/spec.py; keep them in step.
 
 export interface TrainSpec {
+  /** the spec's layout (engine spec.SPEC_VERSION): the engine brings older ones up to date */
+  spec_version: number
   name: string
   seed: number
-  save_every: number
   model: {
     kind: 'checkpoint' | 'split'
     ckpt_name?: string | null
@@ -38,8 +40,10 @@ export interface TrainSpec {
     edit_grounded?: boolean
     /** each picture's latents in a file of its own, read as training uses them: datasets bigger than RAM */
     disk_cache?: boolean
-    keyframes?: string
-    clip_stills?: boolean
+    /** MiniMax H3 image-to-video: each clip conditioned on its first (and last) frame */
+    video_keyframes?: string
+    /** each clip also trains its sharpest frame as a photo */
+    video_stills?: boolean
     unmasked_weight: number
     /** videos: longest clip (snapped to the VAE), fps (0 = source), which windows, how many, size */
     video_frames: number
@@ -78,7 +82,8 @@ export interface TrainSpec {
     optimizer: string
     learning_rate: number
     weight_decay: number
-    scheduler: 'constant' | 'linear' | 'cosine'
+    /** the learning rate over the run */
+    lr_scheduler: 'constant' | 'linear' | 'cosine'
     warmup_steps: number
     max_grad_norm: number
     steps: number
@@ -95,8 +100,8 @@ export interface TrainSpec {
     target: 'native' | 'x0'
     timesteps: 'uniform' | 'logit_normal' | 'scheduler'
     /** timesteps "scheduler": which of ComfyUI's, and at how many steps */
-    scheduler?: string
-    scheduler_steps?: number
+    timestep_scheduler?: string
+    timestep_scheduler_steps?: number
     logit_mean: number
     logit_std: number
     /** logit-normal: share of steps drawn uniformly instead */
@@ -116,29 +121,32 @@ export interface TrainSpec {
   memory: {
     training_dtype: 'bf16' | 'fp16' | 'fp32'
     gradient_checkpointing: boolean
-    checkpoint_depth: number
+    grad_checkpoint_depth: number
     /** the last N blocks keep their activations: faster, more VRAM */
-    checkpoint_skip: number
+    grad_checkpoint_skip: number
     /** TREAD: share of a video clip's tokens routed around the middle blocks (0 = off) */
     tread?: number
-    /** fused Triton backward for int8 ConvRot layers */
-    fused_int8_backward?: boolean
-    /** int8 ConvRot bases: the input gradients on int8 tensor cores (engine default on) */
-    w8a8_backward?: boolean
-    /** torch.compile the main blocks; unset/null = auto (long runs, with Triton) */
-    compile_blocks?: boolean | null
-    /** Krea 2 / MOSS: the q/k norms and rope as one op that trains (experimental, engine default off) */
-    /** the fused q/k norm + rope op; unset/null = auto (on while the blocks run uncompiled) */
-    fused_qk_rope?: boolean | null
+    /** int8 ConvRot bases' backward: "w8a8" on int8 tensor cores (engine default), "fused" Triton at
+     *  full precision, "bf16" the weight rebuilt (slowest) */
+    int8_backward?: 'w8a8' | 'fused' | 'bf16'
+    /** torch.compile the main blocks; 'auto' (the default) = long runs, with Triton */
+    compile_blocks?: boolean | 'auto'
+    /** the fused q/k norm + rope op; 'auto' (the default) = on while the blocks run uncompiled */
+    fused_qk_rope?: boolean | 'auto'
     /** int8 bases: frozen layers run the int8 kernel forward (engine default on) */
     int8_forward?: boolean
     tread_steps?: number
     offloading: boolean
-    quantized_backward: boolean
+    /** with offloading: VRAM kept free for activations and the LoRA (GB); 0 = auto */
+    vram_headroom?: number
+    /** fp8 bases: the backward's matmuls in fp8 too */
+    fp8_backward: boolean
     bypass_mode: boolean
     attention: string
   }
   samples: {
+    /** score each sample's face against the dataset's */
+    likeness?: boolean
     every: number
     /** a prompt, or a sample with its own size/length/seed */
     prompts: (string | SamplePrompt)[]
@@ -170,11 +178,14 @@ export interface TrainSpec {
     slg_start: number
     slg_end: number
   }
-  validation: { every: number; images: number; timesteps: number; seed: number }
+  /** dataset: a held-out dataset folder to measure on ('' = pictures from the training set) */
+  validation: { every: number; images: number; noise_levels: number; seed: number; dataset: string }
   /** where checkpoints go, which resume states are kept, and which scheduled checkpoints
    *  (keep: all, the keep_count latest, or the keep_count best by likeness or validation loss;
    *  engine harness/keep.py) */
   output: {
+    /** a checkpoint every this many steps; 0 = only the final LoRA */
+    save_every: number
     lora_dir: string | null
     keep_states: 'latest' | 'all' | 'none'
     save_dtype: 'bf16' | 'fp16' | 'fp32'
@@ -225,9 +236,9 @@ export const promptText = (p: string | SamplePrompt) => (typeof p === 'string' ?
 
 export function defaultSpec(): TrainSpec {
   return {
+    spec_version: 2,
     name: 'my-lora',
     seed: 0,
-    save_every: 250,
     model: { kind: 'checkpoint', ckpt_name: null, unet_weight_dtype: 'default' },
     dataset: {
       folder: '',
@@ -262,7 +273,7 @@ export function defaultSpec(): TrainSpec {
       optimizer: 'AdamW',
       learning_rate: 1e-4,
       weight_decay: 0,
-      scheduler: 'constant',
+      lr_scheduler: 'constant',
       warmup_steps: 0,
       max_grad_norm: 1,
       steps: 1000,
@@ -273,15 +284,15 @@ export function defaultSpec(): TrainSpec {
     memory: {
       training_dtype: 'bf16',
       gradient_checkpointing: true,
-      checkpoint_depth: 1,
-      checkpoint_skip: 0,
+      grad_checkpoint_depth: 1,
+      grad_checkpoint_skip: 0,
       offloading: false,
-      quantized_backward: false,
+      fp8_backward: false,
       bypass_mode: false,
       attention: 'pytorch',
     },
     samples: {
-      every: 250, // with each save (save_every's default): each checkpoint gets samples, and a likeness
+      every: 250, // with each save (output.save_every's default): each checkpoint gets samples, and a likeness
       prompts: [],
       negative: '',
       width: 1024,
@@ -303,8 +314,19 @@ export function defaultSpec(): TrainSpec {
       slg_start: 0.01,
       slg_end: 1,
     },
-    validation: { every: 100, images: 4, timesteps: 4, seed: 1234 },
-    output: { lora_dir: null, keep_states: 'latest', save_dtype: 'bf16', keep: 'all', keep_count: 3 },
+    validation: { every: 100, images: 4, noise_levels: 4, seed: 1234, dataset: '' },
+    output: { save_every: 250, lora_dir: null, keep_states: 'latest', save_dtype: 'bf16', keep: 'all', keep_count: 3 },
     slider: { kind: '', pair_set: '', dataset_end: 'positive', positive: '', negative: '', neutral: '', anchors: [], guidance: 3, anchor_weight: 1, directions: 'both' },
   }
 }
+
+// ---- kept in step with the engine's spec -----------------------------------------------------
+// Each section here must have exactly the engine's fields (spec.fields.ts is generated from
+// engine/zentrainer/spec.py): a field added or renamed there fails the type check until it's here.
+type Diff<A, B> = Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>
+type Section<T> = T extends readonly unknown[] ? never : T extends object ? T : never
+/** "section.field" for every field one side has and the other hasn't (never: in step) */
+export type SpecDrift =
+  | { [K in keyof SpecFields]: Section<SpecFields[K]> extends never ? never : `${K & string}.${Diff<Required<TrainSpec[K & keyof TrainSpec]>, SpecFields[K]> & string}` }[keyof SpecFields]
+  | (Diff<TrainSpec, SpecFields> & string)
+export const SPEC_IN_STEP: [SpecDrift] extends [never] ? true : { drift: SpecDrift } = true

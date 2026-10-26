@@ -1,4 +1,4 @@
-"""A faster backward for ComfyUI's int8 ConvRot layers while training (memory.fused_int8_backward).
+"""A faster backward for ComfyUI's int8 ConvRot layers while training (memory.int8_backward).
 
 ComfyUI's QuantLinearFunc keeps the int8 forward fast but, in backward, dequantizes the whole
 weight to bf16 for every frozen layer on every step just to get the input gradient. For a ConvRot
@@ -9,9 +9,9 @@ over groups of input columns), so
 
 Two ways to take the first product:
 
-- "fused" (memory.fused_int8_backward): a Triton kernel (kernels/w8a16_backward.py) that never
+- "fused" (memory.int8_backward "fused"): a Triton kernel (kernels/w8a16_backward.py) that never
   builds the bf16 weight. Still 16-bit math: saves memory, not time.
-- "w8a8" (memory.w8a8_backward): the gradient quantized to int8 per row too, and the product on
+- "w8a8" (memory.int8_backward "w8a8", the default): the gradient quantized to int8 per row too, and the product on
   int8 tensor cores (torch._int_mm), as OneTrainer does. Measured on H3's shapes at clip size
   (RTX 5090): 6.0 ms for the four GEMMs against 16.8 in bf16. cuBLAS wants the weight
   column-major for that, so each call takes a transposed copy (int8: a quarter of a bf16 one).

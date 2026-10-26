@@ -36,8 +36,16 @@ def _load(path: Path, builtin: bool) -> dict | None:
         return None
     if not isinstance(d, dict) or not isinstance(d.get("data"), dict):
         return None
+    data = d["data"]
+    if path.parent.name == "run":  # settings saved by an older version: in this one's layout
+        from .spec import SpecError, migrate
+
+        try:
+            data = migrate(data)[0]
+        except SpecError:
+            return None
     return {"id": path.stem, "name": d.get("name", path.stem), "description": d.get("description", ""),
-            "data": d["data"], "builtin": builtin}
+            "data": data, "builtin": builtin}
 
 
 def list_presets(kind: str, user_root: Path) -> list[dict]:

@@ -101,7 +101,11 @@ class RunStore:
         return json.loads((self.dir(run_id) / "run.json").read_text())
 
     def spec(self, run_id: str) -> dict[str, Any]:
-        return json.loads((self.dir(run_id) / "spec.json").read_text())
+        """The run's spec in this version's layout (spec.migrate): renamed fields carried over,
+        ones this version no longer has left out, so an older run still loads, resumes and copies."""
+        from ..spec import migrate
+
+        return migrate(json.loads((self.dir(run_id) / "spec.json").read_text()))[0]
 
     def list(self) -> list[dict[str, Any]]:
         out = []

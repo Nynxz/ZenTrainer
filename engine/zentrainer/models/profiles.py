@@ -20,7 +20,7 @@ import json
 import logging
 from pathlib import Path
 
-from ..spec import SampleSpec, TrainSpec
+from ..spec import SampleSpec, migrate
 
 log = logging.getLogger("zentrainer")
 ROOT = Path(__file__).resolve().parents[2] / "profiles"
@@ -37,9 +37,9 @@ def _check(name: str, p: dict) -> None:
     sample_fields = set(SampleSpec.__dataclass_fields__)
     if unknown := set(p.get("samples", {})) - sample_fields:
         raise ValueError(f"{name}: unknown samples field(s) {sorted(unknown)}")
-    train_fields = set(TrainSpec.__dataclass_fields__)
-    if unknown := set(p.get("train", {})) - train_fields:
-        raise ValueError(f"{name}: unknown train section(s) {sorted(unknown)}")
+    _, dropped = migrate(p.get("train", {}))
+    if dropped:
+        raise ValueError(f"{name}: unknown train field(s) {dropped}")
 
 
 def load(root: Path = ROOT) -> dict[str, dict]:

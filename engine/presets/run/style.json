@@ -1,5 +1,5 @@
 {"name": "Style", "description": "An art style from a varied set: rank 32, longer schedule, more caption dropout.",
  "data": {"network": {"rank": 32, "alpha": null, "targets": "attn_mlp"},
-          "optim": {"learning_rate": 0.0001, "steps": 2500, "scheduler": "cosine", "warmup_steps": 100},
-          "dataset": {"caption_dropout": 0.1}, "save_every": 500,
+          "optim": {"learning_rate": 0.0001, "steps": 2500, "lr_scheduler": "cosine", "warmup_steps": 100},
+          "dataset": {"caption_dropout": 0.1}, "output": {"save_every": 500},
           "samples": {"every": 500, "baseline": true}, "validation": {"every": 250}}}

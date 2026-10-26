@@ -1,12 +1,14 @@
 {
+  "$schema": "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json",
+  "spec_version": 2,
   "name": "sdxl-quick",
   "seed": 0,
-  "save_every": 250,
   "model": { "kind": "checkpoint", "ckpt_name": "YOUR_SDXL_CHECKPOINT.safetensors" },
   "dataset": { "folder": "YOUR_DATASET_FOLDER", "resolution": 1024 },
   "network": { "algorithm": "LoRA", "rank": 16, "targets": "attn_mlp" },
-  "optim": { "steps": 500, "learning_rate": 0.0001, "scheduler": "cosine", "warmup_steps": 25 },
+  "optim": { "steps": 500, "learning_rate": 0.0001, "lr_scheduler": "cosine", "warmup_steps": 25 },
   "memory": { "training_dtype": "bf16", "gradient_checkpointing": true },
+  "output": { "save_every": 250 },
   "samples": {
     "every": 100,
     "prompts": ["YOUR_TRIGGER, a portrait", "YOUR_TRIGGER, a landscape"],
