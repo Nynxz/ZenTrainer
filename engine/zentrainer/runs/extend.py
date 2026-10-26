@@ -29,3 +29,16 @@ def keep_final(store, run_id: str, ckpt: dict, lora_dir: str | None) -> dict:
     store.rewrite(run_id, "checkpoints", [row if c.get("path") == ckpt["path"] else c
                                           for c in store.read(run_id, "checkpoints")])
     return row
+
+
+def keep_stage_steps(spec, old_steps: int) -> None:
+    """A run that has trained, given more steps (Train more, or Edit & resume): its lower-resolution
+    stages and their blend are shares of the run, so a longer run would put them later, and one
+    already at its own resolution would drop back down and blend again (VRAM down and up, the epoch
+    see-sawing). Scaled to the new total, they fall on the same steps as before."""
+    new = spec.optim.steps
+    if new <= old_steps or not spec.dataset.stages:
+        return
+    k = old_steps / new
+    spec.dataset.stages = [{**st, "until": round(float(st["until"]) * k, 6)} for st in spec.dataset.stages]
+    spec.dataset.stage_blend = round(spec.dataset.stage_blend * k, 6)

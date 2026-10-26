@@ -125,10 +125,14 @@ def register(server) -> None:
             return _bad("; ".join(found), problems=found)
         if resume_edit:
             # through the dataclass so fields added since it was saved compare at their defaults
-            changed = locked_changes(TrainSpec.from_dict(store.spec(run_id)).to_dict(), spec.to_dict())
+            before = TrainSpec.from_dict(store.spec(run_id))
+            changed = locked_changes(before.to_dict(), spec.to_dict())
             if changed:
                 return _bad("these can't change once a run has trained (its LoRA and optimizer state were "
                             f"made with them; Duplicate starts over): {', '.join(changed)}", 409, locked=changed)
+            from ...runs.extend import keep_stage_steps
+
+            keep_stage_steps(spec, before.optim.steps)  # longer: its stages stay on the steps they were on
         store.set_spec(run_id, spec.to_dict())
         if retry:
             for stream in ("samples", "validation"):
@@ -207,12 +211,14 @@ def register(server) -> None:
         if steps <= ckpt["step"]:
             return _bad(f"steps is the new total: more than the {ckpt['step']} it has trained")
         spec = TrainSpec.from_dict(store.spec(run_id))
-        spec.optim.steps = steps
+        from ...runs.extend import keep_final, keep_stage_steps
+
+        old_steps, spec.optim.steps = spec.optim.steps, steps
+        keep_stage_steps(spec, old_steps)  # it finished at its own resolution: it goes on there
         try:
             spec.validate()
         except SpecError as e:
             return _bad(str(e))
-        from ...runs.extend import keep_final
 
         ckpt = keep_final(store, run_id, ckpt, spec.output.lora_dir)
         store.set_spec(run_id, spec.to_dict())
@@ -423,6 +429,12 @@ def register(server) -> None:
                 name = state.store().meta(run_id)["name"]
             except (FileNotFoundError, ValueError):
                 return
+            # the worker starts with the app, before ComfyUI listens (and learns its address and
+            # port): a run waiting at startup waits for that rather than failing to reach it
+            for _ in range(600):
+                if getattr(server, "port", None) is not None and hasattr(server, "address"):
+                    break
+                await asyncio.sleep(0.1)
             await _queue_session(server, run_id, name, common._client_id)
         async def swapped(run_id: str):
             # stopped by "swap to": back in the queue after the run it made room for, to resume from

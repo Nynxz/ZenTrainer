@@ -646,9 +646,8 @@ class Trainer:
         if self.ema is not None and state.get("ema"):
             self.ema.load_state_dict(state["ema"])
         self.generator.set_state(state["rng"])
-        self.batches.epoch = int(state.get("batches_epoch", 0))
         self.train_seconds = float(state.get("train_seconds", 0.0))
-        self.batches.rng.seed(self.spec.seed + self.step)  # fresh shuffle order from here
+        self._reseed_batches()
         self.progress.update_absolute(self.step)
         self._status("loading", message=f"resumed from step {self.step}")
 
@@ -828,6 +827,21 @@ class Trainer:
             for cb in self.callbacks:
                 cb.on_step(self)
         return "done"
+
+    def _reseed_batches(self) -> None:
+        """A resume's shuffle: every resolution's batches from this step on (each stage kept its own
+        order: reseeding only the run's own left a lower stage replaying its start)."""
+        self.batches.reseed(self.spec.seed + self.step)
+        for _, res, _, b in getattr(self, "_stages", []):
+            b.reseed(self.spec.seed + res + self.step)
+
+    def epoch_at(self, step: int) -> int:
+        """The pass through the dataset step `step` (1 = the first) is in, in the run's own resolution's
+        batches: from the step, so it only goes up. Each resolution stage keeps its own batches, and
+        while a change blends a step takes either: their own counts would jump between the two."""
+        final = getattr(self, "_final_stage", None)
+        per = (final[2] if final else self.batches).per_epoch
+        return (step - 1) // max(1, per) + 1 if step > 0 else 0
 
     def _stage(self):
         """(resolution, dataset, batches) for this step: the stage the run is in, or while a change
@@ -1418,7 +1432,7 @@ class Trainer:
             tmp_state = state.with_name(f".{state.name}.part")
             torch.save({
                 "step": self.step, "optimizer": self.optimizer.state_dict(), "scheduler": self.scheduler.state_dict(),
-                "rng": self.generator.get_state(), "batches_epoch": self.batches.epoch,
+                "rng": self.generator.get_state(),
                 "train_seconds": self.train_seconds,
                 **({"balance": self.objective.balance.state_dict()} if self.objective.balance is not None else {}),
                 **({"live": {k: v.cpu() for k, v in live.items()}} if live is not None else {}),

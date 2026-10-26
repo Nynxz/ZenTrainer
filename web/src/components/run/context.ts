@@ -92,6 +92,9 @@ export function useRun(id: Ref<string>) {
             preview: p.preview ?? (p.index === sampling.value?.index ? sampling.value?.preview : undefined),
           }
       } else if (m.type === EVENTS.status) {
+        // a run starting again (resumed, retried) cut its history back to where it goes on from:
+        // the rows past it would hold the page on its old last step, so read it afresh
+        if (m.data.status === 'loading' && !d.live) void load()
         d.run.status = m.data.status as RunStatus
         d.run.message = (m.data.message as string | null) ?? undefined
         d.live = ACTIVE.includes(d.run.status)
@@ -106,6 +109,9 @@ export function useRun(id: Ref<string>) {
 
   // ---- progress -----------------------------------------------------------------------------
   const last = computed(() => detail.value?.metrics.at(-1))
+  // the most a training step has used so far: each row holds its own step's, which moves with the
+  // bucket's size and, while a resolution change blends, between the two
+  const vramPeak = computed(() => (detail.value?.metrics ?? []).reduce((m, r) => Math.max(m, r.vram_peak ?? 0), 0))
   const total = computed(() => detail.value?.spec.optim.steps ?? 0)
   const step = computed(() => last.value?.step ?? 0)
   const progress = computed(() => (total.value ? step.value / total.value : 0))
@@ -264,7 +270,7 @@ export function useRun(id: Ref<string>) {
 
   return {
     id, detail, error, busy, lrInput, sampling, now, load,
-    last, total, step, progress, status, running, ckRows, sampleCkpt, sampleBusy, newestCkpt, sampleFinished,
+    last, vramPeak, total, step, progress, status, running, ckRows, sampleCkpt, sampleBusy, newestCkpt, sampleFinished,
     wall, marks, nextSave, nextSample,
     likeSteps, likeLast, likeFirst, likeCeil, ckptVal, likeAt,
     queuedTries, queueTry, queueFinishedTries,

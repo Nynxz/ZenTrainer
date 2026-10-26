@@ -282,6 +282,74 @@ def test_a_parked_run_holds_the_queue_until_it_is_resumed(tmp_path, monkeypatch)
     assert dispatched == ["b"]
 
 
+def test_a_run_resumed_right_after_it_stops_starts_again(tmp_path, monkeypatch):
+    # Resume (or a retry) can requeue the current run before the worker has seen it end: its status
+    # is "queued" again, not stopped. The worker used to wait on it for good, showing it twice
+    import asyncio
+
+    from zentrainer.harness import control
+    from zentrainer.server import jobqueue
+
+    class Store:
+        def meta(self, run_id):
+            return {"status": "queued"}
+
+    q = jobqueue.Queue(tmp_path / "queue.json")
+    q.current = "a"  # dispatched; it stopped, and was resumed before the worker looked
+    q.insert("a", 0)
+    monkeypatch.setattr(jobqueue, "get", lambda: q)
+    monkeypatch.setattr(jobqueue.state, "store", lambda: Store())
+    monkeypatch.setattr(control, "get", lambda run_id: None)
+    monkeypatch.setattr(control, "active", lambda: False)
+    dispatched = []
+
+    async def dispatch(run_id):
+        dispatched.append(run_id)
+
+    async def run(seconds):
+        task = asyncio.ensure_future(jobqueue.worker(dispatch, None, None, interval=0.01))
+        await asyncio.sleep(seconds)
+        task.cancel()
+
+    asyncio.run(run(0.1))
+    assert dispatched == ["a"] and q.snapshot()["order"] == []
+
+
+def test_a_run_that_fails_to_reach_comfyui_is_tried_again(tmp_path, monkeypatch):
+    # e.g. a run waiting when ComfyUI starts, sent before it listens: it used to stay the current
+    # run for good, out of the order, and nothing else started
+    import asyncio
+
+    from zentrainer.harness import control
+    from zentrainer.server import jobqueue
+
+    class Store:
+        def meta(self, run_id):
+            return {"status": "queued"}
+
+    q = jobqueue.Queue(tmp_path / "queue.json")
+    q.add("a")
+    q.add("b")
+    monkeypatch.setattr(jobqueue, "get", lambda: q)
+    monkeypatch.setattr(jobqueue.state, "store", lambda: Store())
+    monkeypatch.setattr(control, "get", lambda run_id: None)
+    monkeypatch.setattr(control, "active", lambda: q.current in tried[1:])  # sent: it runs
+    tried = []
+
+    async def dispatch(run_id):
+        tried.append(run_id)
+        if len(tried) == 1:
+            raise ConnectionError("not listening yet")
+
+    async def run(seconds):
+        task = asyncio.ensure_future(jobqueue.worker(dispatch, None, None, interval=0.01))
+        await asyncio.sleep(seconds)
+        task.cancel()
+
+    asyncio.run(run(0.1))
+    assert tried[:2] == ["a", "a"] and q.current == "a" and q.snapshot()["order"] == ["b"]
+
+
 def test_parking_only_when_another_comfyui_prompt_waits(monkeypatch):
     import sys
     import types

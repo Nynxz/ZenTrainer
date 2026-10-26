@@ -10,3 +10,4 @@ comfyui/
 cli/.venv/
 # the node pack itself has no dependencies to lock (cli/ has its own uv.lock)
 /uv.lock
+.mypy_cache/
