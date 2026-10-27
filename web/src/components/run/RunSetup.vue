@@ -28,7 +28,7 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
     /int8/i.test(model) ? { w8a8: 'W8A8', fused: 'fused int8', bf16: '' }[m.int8_backward ?? 'w8a8'] : '',
     m.compile_blocks === true ? 'compile' : (m.compile_blocks ?? 'auto') === 'auto' ? 'compile auto' : '',
     m.fused_qk_rope === true ? 'fused q/k rope' : '',
-    m.gradient_checkpointing ? (m.grad_checkpoint_skip ? `checkpoint · keep ${m.grad_checkpoint_skip}` : 'checkpoint') : '',
+    m.gradient_checkpointing ? (m.grad_checkpoint_skip === 'auto' ? 'checkpoint · keep auto' : m.grad_checkpoint_skip ? `checkpoint · keep ${m.grad_checkpoint_skip}` : 'checkpoint') : '',
     m.tread ? `TREAD ${Math.round(m.tread * 100)}%` : '',
   ].filter(Boolean)
   const opt = sp.optim
