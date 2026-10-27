@@ -54,17 +54,21 @@ def _load(device: torch.device) -> dict | None:
 
 
 def supported(grad_2d: torch.Tensor, q: torch.Tensor, group: int) -> bool:
-    """Whether these kernels take this gradient (M, out) and int8 weight (out, in). Alignment by
-    storage offset (allocations are 256-byte aligned), not data_ptr(): compiled blocks trace the
-    backward with fake tensors, which have none, and the failed check put the dequantized bf16
-    path into the compiled graph."""
+    """Whether these kernels take this gradient (M, out) and int8 weight (out, in). Compiled
+    blocks trace the backward with fake tensors, which have no address (a failed data_ptr() check
+    put the dequantized bf16 path into the compiled graph) and whose storage offset dynamo can't
+    trace: there the alignment is left to the op, which falls back when a real tensor isn't."""
     m, n = grad_2d.shape
     k = q.shape[1]
     return (grad_2d.is_cuda and grad_2d.dtype == torch.bfloat16 and q.dtype == torch.int8 and q.is_contiguous()
-            and grad_2d.stride(1) == 1 and grad_2d.stride(0) % 8 == 0 and grad_2d.storage_offset() % 8 == 0
-            and q.storage_offset() % 16 == 0
+            and grad_2d.stride(1) == 1 and grad_2d.stride(0) % 8 == 0
+            and (torch.compiler.is_compiling() or _aligned(grad_2d, q))
             and m > 0 and n % 64 == 0 and k % 256 == 0 and group in (0, 256)
             and _load(grad_2d.device) is not None)
+
+
+def _aligned(grad_2d: torch.Tensor, q: torch.Tensor) -> bool:
+    return grad_2d.data_ptr() % 16 == 0 and q.data_ptr() % 16 == 0
 
 
 @torch.library.custom_op("zentrainer::w8a8_input_grad", mutates_args=())
@@ -76,6 +80,11 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
     ks = _load(grad_2d.device)
     m, n = grad_2d.shape
     k = q.shape[1]
+    if ks is None or not _aligned(grad_2d, q):  # decided while tracing: the real tensors don't suit
+        from .int8_backward import _w8a8_input_grad
+
+        g = _w8a8_input_grad(grad_2d, q, scale, 256 if rotate else 0)
+        return g if residual is None else g + residual.to(g.dtype)
     scale = scale.reshape(-1).float().contiguous()
     gq = torch.empty((m, n), device=grad_2d.device, dtype=torch.int8)
     steps = torch.empty((m,), device=grad_2d.device, dtype=torch.float32)
