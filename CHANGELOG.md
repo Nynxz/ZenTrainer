@@ -249,6 +249,12 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Faster steps when the card has room: Keep last blocks is now Auto.** Gradient checkpointing
+  recomputes every block in the backward; with the model all on the card, ZenTrainer now measures
+  what a block keeps over the first steps and leaves as many blocks un-checkpointed as the free
+  VRAM holds (the biggest first), checkpointing some again if a step runs out. On an RTX 5090 at
+  1024 px: MOSS 0.69 → 0.50 s a step (40 of 44 blocks kept), Krea 2 1.12 → 1.08. With offloading
+  that VRAM holds weights instead, so none are kept; a number in the setting is kept as before.
 - **Validation on a held-out dataset** (Advanced training → Validate on, or `validation.dataset`):
   the validation loss is measured on another dataset folder, prepared like the training one (edit
   pairs and their inputs, masks, captions), instead of on training pictures. The curve then shows
