@@ -330,7 +330,7 @@ class Samples(Callback):
         path = _prompt_cache(t, prompts + ([stamp] if any(stamp) else []), negative)
         if path is not None and path.is_file():
             try:
-                cached = torch.load(path, weights_only=False)
+                cached = torch.load(path, weights_only=True)
                 negs = cached.get("negatives") or [None] * len(prompts)
                 return [(c, n if n is not None else cached["negative"]) for c, n in zip(cached["prompts"], negs)]
             except Exception:

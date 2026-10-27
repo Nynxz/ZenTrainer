@@ -10,6 +10,7 @@ SAM3 is ComfyUI's own (comfy_extras/nodes_sam3.py), loaded as a checkpoint
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import threading
 import time
@@ -102,6 +103,8 @@ def get(job_id: str) -> SegmentJob | None:
 
 
 def _out(job_id: str) -> Path:
+    if not re.fullmatch(r"seg-[0-9a-f]{8}", job_id):  # a job's id, never a path (see the route)
+        raise ValueError(f"bad segment job id {job_id!r}")
     import folder_paths
 
     d = Path(folder_paths.get_user_directory()) / "zentrainer" / "segment"

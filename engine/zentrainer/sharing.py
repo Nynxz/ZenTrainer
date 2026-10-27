@@ -24,6 +24,7 @@ VERSION = 1
 # this install's own: never exported, chosen again on import
 LOCAL = {
     "dataset.folder": "the dataset",
+    "validation.dataset": "the dataset validation holds out",
     "output.lora_dir": "where LoRAs are saved",
     "network.init_from": "a LoRA to continue from",
 }

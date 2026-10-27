@@ -14,7 +14,7 @@ from aiohttp import web
 from ... import __version__, paths, state
 from .. import system
 from ...harness import control
-from .common import WEB_DIST, _bad, _capabilities, _code_stale, _comfy_version, _exec_self, _web_state, _zt_version, comfy_too_old
+from .common import WEB_DIST, _bad, _capabilities, _not_local, is_local, _code_stale, _comfy_version, _exec_self, _web_state, _zt_version, comfy_too_old
 
 
 def register(server) -> None:
@@ -134,6 +134,9 @@ def register(server) -> None:
         body = await request.json()
         if not isinstance(body, dict):
             return _bad("expected an object")
+        # where ZenTrainer reads, writes and deletes: from this machine only (the rest from anywhere)
+        if ("folder" in body or "datasets" in body) and not is_local(request):
+            return _not_local("the ZenTrainer and datasets folders can be changed")
         try:
             await asyncio.to_thread(paths.save_settings, body)
         except paths.SettingsError as e:
@@ -170,8 +173,11 @@ def register(server) -> None:
     building = asyncio.Lock()
 
     @routes.post("/zentrainer/api/web/build")
-    async def build_web(_request):
-        """Rebuild web/dist from the source on disk: after a pull, since dist isn't in git."""
+    async def build_web(request):
+        """Rebuild web/dist from the source on disk: after a pull, since dist isn't in git. This
+        machine only: pnpm install runs packages' install scripts."""
+        if not is_local(request):
+            return _not_local("rebuilding the web app is")
         pnpm = shutil.which("pnpm")
         if not pnpm:
             return _bad("pnpm isn't installed here: run `pnpm install && pnpm build` in web/", 501)
@@ -191,5 +197,7 @@ def register(server) -> None:
         body = await request.json() if request.can_read_body else {}
         if control.active() and not body.get("force"):
             return _bad("a run is training; stop it first (or pass force)", 409)
+        if control.active() and not is_local(request):
+            return _not_local("a restart that stops a training run is")
         asyncio.get_running_loop().call_later(0.5, _exec_self)
         return web.json_response({"ok": True})

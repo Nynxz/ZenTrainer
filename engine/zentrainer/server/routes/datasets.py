@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from pathlib import Path
@@ -11,7 +12,7 @@ import aiohttp
 from aiohttp import web
 
 from ...datasets import folders as datasets
-from .common import _bad, _ds, _loopback
+from .common import UPLOAD_MAX, _bad, _ds, _loopback, read_upload
 
 
 def register(server) -> None:
@@ -328,6 +329,10 @@ def register(server) -> None:
         from ...datasets import segment
 
         jid = request.match_info["job_id"]
+        # a job's own id only: aiohttp decodes %2F into the segment, so a path here ("/home/x",
+        # "../../x") would otherwise name a .png anywhere on disk
+        if not re.fullmatch(r"seg-[0-9a-f]{8}(\.png)?", jid):
+            return _bad("no such job", 404)
         if jid.endswith(".png"):
             p = segment.result(jid[:-4])
             return web.FileResponse(p, headers={"Cache-Control": "no-store"}) if p else _bad("no mask yet", 404)
@@ -392,6 +397,10 @@ def register(server) -> None:
         name, rel = request.match_info["name"], request.query.get("path", "")
         return await _ds(lambda: datasets.delete(name, rel) or {"ok": True})
 
+    def _too_big(filename: str) -> str:
+        return (f"{filename!r} is over {UPLOAD_MAX // 1024**3} GB: copy it into the dataset's folder "
+                "instead (it shows up on the next refresh)")
+
     # ---- control sets: edit training's input pictures, a named layer per set ------------------
     @routes.post("/zentrainer/api/datasets/{name}/controls/{set}")
     async def control_set_create_or_upload(request):
@@ -404,7 +413,10 @@ def register(server) -> None:
         reader = await request.multipart()
         async for part in reader:
             if part.filename:
-                data = await part.read(decode=False)
+                data = await read_upload(part)
+                if data is None:
+                    errors.append(_too_big(part.filename))
+                    continue
                 try:
                     saved.append(await asyncio.to_thread(datasets.save_control, name, set_name, part.filename, bytes(data)))
                 except (datasets.DatasetError, FileNotFoundError) as e:
@@ -432,7 +444,10 @@ def register(server) -> None:
         reader = await request.multipart()
         async for part in reader:
             if part.filename:
-                data = await part.read(decode=False)
+                data = await read_upload(part)
+                if data is None:
+                    errors.append(_too_big(part.filename))
+                    continue
                 try:
                     saved.append(await asyncio.to_thread(datasets.save_upload, name, part.filename, bytes(data)))
                 except (datasets.DatasetError, FileNotFoundError) as e:

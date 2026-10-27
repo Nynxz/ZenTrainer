@@ -13,6 +13,7 @@ import shutil
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -45,6 +46,18 @@ class Download:
         d = asdict(self)
         d.pop("url")
         return d
+
+
+def _hf_request(url: str, headers: dict) -> urllib.request.Request:
+    """A download's request, its Hugging Face token only ever to Hugging Face itself and not on to
+    where it redirects (its CDN takes a signed URL, not the token): a template's file on another
+    host never sees it."""
+    headers = dict(headers)
+    token = headers.pop("Authorization", None)
+    req = urllib.request.Request(url, headers=headers)
+    if token and (urllib.parse.urlsplit(url).hostname or "") in ("huggingface.co", "www.huggingface.co"):
+        req.add_unredirected_header("Authorization", token)
+    return req
 
 
 def target_dir(folder: str) -> Path:
@@ -148,14 +161,14 @@ class Downloads:
             headers["Range"] = f"bytes={have}-"
         job.status = "downloading"
         events.emit(EVENT, job.public())
-        req = urllib.request.Request(job.url, headers=headers)
+        req = _hf_request(job.url, headers)
         try:
             resp = urllib.request.urlopen(req, timeout=30)
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
                 m = families.HF_URL.match(job.url)
                 where = f"https://huggingface.co/{m.group(1)}" if m else "the repo"
-                if headers.get("Authorization"):
+                if req.has_header("Authorization"):
                     raise PermissionError(f"{e.code}: accept the license at {where} with the account your HF_TOKEN belongs to") from e
                 raise PermissionError(f"{e.code}: gated repo: accept the license at {where}, then set HF_TOKEN and restart") from e
             raise

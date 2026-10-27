@@ -8,6 +8,8 @@ the session, so a run holds ComfyUI's execution lane (and its GPU) while it trai
 
 from __future__ import annotations
 
+import pickle
+
 import contextlib
 import logging
 import os
@@ -632,7 +634,13 @@ class Trainer:
     def _restore(self, state_path: Path) -> None:
         """Continue from a checkpoint: adapters were loaded from its LoRA file above;
         this brings back optimizer moments, the LR schedule position, step and RNG."""
-        state = torch.load(str(state_path), map_location="cpu", weights_only=False)  # our own file
+        # weights only: tensors, numbers and plain containers, which is all a state holds; a file
+        # that needs more (code to run on loading) isn't one of ours and isn't loaded
+        try:
+            state = torch.load(str(state_path), map_location="cpu", weights_only=True)
+        except pickle.UnpicklingError as e:
+            raise RuntimeError(f"{state_path.name} holds more than a training state (tensors, numbers, lists): "
+                               f"not loaded. Resume from another checkpoint, or Duplicate to start over ({e})") from None
         self.optimizer.load_state_dict(self._saved_optimizer_state(state["optimizer"]))
         self.scheduler.load_state_dict(state["scheduler"])
         self.step = int(state["step"])

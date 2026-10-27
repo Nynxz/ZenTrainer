@@ -15,7 +15,7 @@ from ...harness import control
 from ...harness.keep import faces_missing
 from ...spec import SpecError, TrainSpec, locked_changes, slugify
 from . import common
-from .common import RETRYABLE, _bad, _dequeue, _keep_later, _migrate_states, _queue_session, _remember_client
+from .common import RETRYABLE, _bad, _dequeue, _keep_later, _migrate_states, _not_local, _queue_session, _remember_client, is_local
 
 
 def register(server) -> None:
@@ -81,6 +81,8 @@ def register(server) -> None:
             return _bad(str(e))
         if (why := faces_missing(spec)) is not None:
             return _bad(why)
+        if (refused := await _outside(request, spec.to_dict())) is not None:
+            return refused
         if found := preflight.problems(spec):  # what only this install can tell
             return _bad("; ".join(found), problems=found)
 
@@ -121,6 +123,8 @@ def register(server) -> None:
             return _bad(str(e))
         if (why := faces_missing(spec)) is not None:
             return _bad(why)
+        if (refused := await _outside(request, spec.to_dict())) is not None:
+            return refused
         if not resume_edit and (found := preflight.problems(spec)):  # a resume keeps its files (they're locked)
             return _bad("; ".join(found), problems=found)
         if resume_edit:
@@ -189,6 +193,8 @@ def register(server) -> None:
         control = prompt.get("control") if isinstance(prompt, dict) else None
         if not control:
             return _bad("that sample has no input picture", 404)
+        if (refused := await _outside(request, {"dataset": spec["dataset"], "samples": {"prompts": [prompt]}})) is not None:
+            return refused  # a picture outside ZenTrainer's folders: shown only at this machine
         src = await asyncio.to_thread(paths.sample_input, spec["dataset"]["folder"], control)
         if src is None:
             return _bad(f"{control!r} isn't in the dataset, ComfyUI's input, or at that path", 404)
@@ -201,6 +207,15 @@ def register(server) -> None:
             return _bad(f"{src.name} can't be read as a picture: {e}")
         # the page asks with the input in the URL, so a changed input is a new URL
         return web.FileResponse(thumb, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    async def _outside(request, spec: dict, tries: list | None = None):
+        """403 for paths outside ZenTrainer's folders from anyone not at this machine; None if fine."""
+        if is_local(request):
+            return None
+        from ... import paths
+
+        found = await asyncio.to_thread(paths.outside_folders, spec, tries)
+        return _not_local(f"paths outside ZenTrainer's folders ({'; '.join(found)}) are taken") if found else None
 
     @routes.get("/zentrainer/api/runs/{run_id}/download")
     async def download_checkpoint(request):
@@ -281,6 +296,8 @@ def register(server) -> None:
         tries = [t for t in body.get("tries") or [] if isinstance(t, dict) and str(t.get("prompt", "")).strip()]
         if not run_prompts and not tries:
             return _bad("nothing to sample", 400)
+        if (refused := await _outside(request, store.spec(run_id), tries)) is not None:
+            return refused
         if run_prompts:  # a re-sample replaces the run's samples (and their likeness) at that step
             for stream in ("samples", "likeness"):
                 rows = store.read(run_id, stream)
@@ -307,8 +324,12 @@ def register(server) -> None:
                     return web.json_response({"ok": True})
                 return await _dequeue(server, run_id)
             return _bad("run is not training", 409)
+        args = body.get("args") or {}
+        if body.get("command") == "sample" and isinstance(args, dict) and args.get("control"):
+            if (refused := await _outside(request, state.store().spec(run_id), [args])) is not None:
+                return refused
         try:
-            ctl.send(body.get("command", ""), **(body.get("args") or {}))
+            ctl.send(body.get("command", ""), **args)
         except (ValueError, TypeError) as e:
             return _bad(str(e))
         if body.get("command") == "sample":  # acknowledge now; it renders at the next step boundary
