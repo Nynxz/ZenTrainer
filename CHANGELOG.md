@@ -438,6 +438,14 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   Automagic v3, a 768 px start and int8 weights where available. On 37 photos it reached 87% of
   the dataset's own likeness at 1750 steps, against about 93% for every layer, at 0.2 s a step
   instead of 0.53 and a 170 MB file instead of 620 MB. Samples preview on the trained Base model.
+- **Checkpointed blocks keep attention's output** (Memory → Checkpoints keep: Attention, the
+  default), so the backward runs only the rest of each block again, not attention, the costliest
+  part to recompute. About 50 MB a block at 1024 px. With a card's VRAM nearly used (about 23 GB
+  free, Keep last blocks on Auto): Krea 2 1.02 → 0.94 s a step, MOSS 0.51 → 0.49; with nothing
+  kept un-checkpointed, Krea 2 6% and MOSS 15% faster. The same losses. Not with offloading yet.
+- **Fixed: compiled blocks ran an int8 layer's training path outside the compiled graph,** split
+  at every layer, because of the counters behind the profile command's path list. They now
+  compile whole.
 
 ## 0.3.0 (2026-10-25)
 
