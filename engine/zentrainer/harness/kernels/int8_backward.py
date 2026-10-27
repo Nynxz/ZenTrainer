@@ -253,14 +253,15 @@ class _LoRAInt8(torch.autograd.Function):
             if out is None:  # the layer can't take the residual: as the bypass does it
                 _count("lora + int8: unfused")
                 out = original(x2) + h  # the layer's own forward (no grad here)
-        ctx.save_for_backward(x2, z, a, b)
+        ctx.save_for_backward(x, z, a, b)  # x itself: a view of it saved breaks compiled blocks' tracing
         ctx.m, ctx.scale, ctx.in_shape, ctx.dtypes = m, scale, x.shape, (down.dtype, up.dtype)
         return out.reshape(*x.shape[:-1], out.shape[-1])
 
     @staticmethod
     @torch.autograd.function.once_differentiable
     def backward(ctx, grad_out):
-        x2, z, a, b = ctx.saved_tensors
+        x, z, a, b = ctx.saved_tensors
+        x2 = x.detach().reshape(-1, x.shape[-1])
         g = grad_out.reshape(-1, grad_out.shape[-1]).to(x2.dtype)
         gz = g @ b  # (M, rank): the gradient at the LoRA's middle, its scale in b
         d_up = (g.t() @ z) * ctx.scale
