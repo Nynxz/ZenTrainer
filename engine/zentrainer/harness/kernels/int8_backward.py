@@ -303,10 +303,10 @@ class LoRABeside(torch.nn.Module):
         self.__dict__["layer"] = layer  # not a submodule: its weights aren't the adapter's
         self._alpha = float(lora.alpha)  # read once: a Parameter on the GPU would sync every call
 
-    def _share(self) -> None:
-        for a in self._BYPASS_ATTRS:
-            if hasattr(self, a):
-                setattr(self.lora, a, getattr(self, a))
+    def _share(self) -> None:  # as network._pass_on (MOSS's fp32 qkv input takes this path)
+        from ..network import _pass_on
+
+        _pass_on(self, self.lora, self._BYPASS_ATTRS)
 
     def h(self, x, base_out):
         self._share()

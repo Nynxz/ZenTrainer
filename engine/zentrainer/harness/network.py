@@ -129,6 +129,14 @@ class _BiasDiff(torch.nn.Module):
     __call__ = forward
 
 
+def _pass_on(src, dst, attrs) -> None:
+    """Bypass's layer info from the adapter it holds to the ones inside, only what changed: a write
+    on every call is a side effect compiled, checkpointed blocks can't trace (they run eager)."""
+    for a in attrs:
+        if hasattr(src, a) and getattr(dst, a, None) is not getattr(src, a):
+            setattr(dst, a, getattr(src, a))
+
+
 class _Assisted(torch.nn.Module):
     """A layer's trainable adapter (or none) plus a frozen training adapter that's only on
     while training (`switch.on`): e.g. a de-distillation adapter for a guidance-distilled
@@ -164,9 +172,7 @@ class _Assisted(torch.nn.Module):
     def _share(self) -> None:  # bypass sets layer info on the adapter it holds: pass it on
         for child in (self.trained, self.assist, self.preview, self.base):
             if child is not None:
-                for a in self._BYPASS_ATTRS:
-                    if hasattr(self, a):
-                        setattr(child, a, getattr(self, a))
+                _pass_on(self, child, self._BYPASS_ATTRS)
 
     def h(self, x, base_out):
         self._share()
@@ -222,9 +228,7 @@ class _Sliced(torch.nn.Module):
     def h(self, x, base_out):
         out = torch.zeros_like(base_out)
         for off, size, a in self.parts:
-            for k in self._BYPASS_ATTRS:
-                if hasattr(self, k):
-                    setattr(a, k, getattr(self, k))
+            _pass_on(self, a, self._BYPASS_ATTRS)
             out[..., off:off + size] = a.h(x, base_out[..., off:off + size])
         return out
 
