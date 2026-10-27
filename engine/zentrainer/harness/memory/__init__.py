@@ -36,6 +36,39 @@ def block_lists(model, depth: int = 1) -> list:
     return found
 
 
+_SAVE_OPS = ("_scaled_dot_product_flash_attention", "_scaled_dot_product_efficient_attention",
+             "_scaled_dot_product_cudnn_attention")
+
+
+def _sac_context():
+    """Selective checkpointing (prototype, ZENTRAINER_SAC): attention's outputs saved, the rest
+    recomputed."""
+    import torch
+    from torch.utils.checkpoint import CheckpointPolicy, create_selective_checkpoint_contexts
+
+    save = {getattr(torch.ops.aten, n).default for n in _SAVE_OPS if hasattr(torch.ops.aten, n)}
+
+    def policy(ctx, op, *args, **kwargs):
+        return CheckpointPolicy.MUST_SAVE if op in save else CheckpointPolicy.PREFER_RECOMPUTE
+
+    return create_selective_checkpoint_contexts(policy)
+
+
+def _sac_patch(m, mode: str) -> None:
+    import torch
+
+    org = m.forward
+    inner = getattr(org, "_torchdynamo_orig_callable", None) if mode == "attn-inside" else None
+
+    def ck(fn):
+        def run(*args, **kwargs):
+            return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False, context_fn=_sac_context, **kwargs)
+        return run
+
+    m.org_forward = org
+    m.forward = torch.compile(ck(inner), dynamic=True) if inner is not None else ck(org)
+
+
 @contextmanager
 def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloading: bool, skip: int = 0) -> Iterator[int]:
     """Recompute each block's activations in backward instead of keeping them. Yields
@@ -54,6 +87,20 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
         yield types.SimpleNamespace(blocks=0, input_grad=False, all=[], kept=0, keep=lambda n: 0)
         return
     from comfy_extras.nodes_train import patch, unpatch
+
+    import os
+
+    sac = os.environ.get("ZENTRAINER_SAC", "")
+    if sac and not offloading:
+        comfy_patch = patch
+
+        def patch(m, offloading=False):  # noqa: F811
+            if m in every:
+                _sac_patch(m, sac)
+            else:
+                comfy_patch(m, offloading=offloading)
+
+        logging.info("[ZenTrainer] selective checkpointing (prototype): %s", sac)
 
     every = block_lists(diffusion_model, max(1, depth))
     if not every:  # no repeated blocks (unusual): fall back to the top-level children
