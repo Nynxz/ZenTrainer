@@ -87,7 +87,7 @@ DISK_FIELDS = ("latent", "mask", "refs", "cond", "cond_empty")
 
 @functools.lru_cache(maxsize=8)  # a step reads a sample's file several times; a few stay
 def _disk_load(file: str) -> dict:
-    return torch.load(file, weights_only=False)
+    return torch.load(file, weights_only=True)
 
 
 class DiskSample:
@@ -154,7 +154,7 @@ def _disk_samples(spec, items, variants, cap_index, sizes, vae, folder: Path, pr
         file = folder / f"{n:06d}.pt"
         if file.is_file():
             try:
-                kept = torch.load(file, weights_only=False, mmap=True)
+                kept = torch.load(file, weights_only=True, mmap=True)
             except Exception:  # noqa: BLE001 - unreadable: encode it again
                 kept = None
             if kept is not None:
@@ -573,7 +573,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
     texts = TextCache(cache_dir, encoder_id)
     if (path / "dataset.pt").is_file():
         try:
-            ds = _from_plain(torch.load(path / "dataset.pt", weights_only=False), texts, path)
+            ds = _from_plain(torch.load(path / "dataset.pt", weights_only=True), texts, path)
         except Exception as e:  # noqa: BLE001 - cut short or from an older build: rebuild it
             logging.warning("[ZenTrainer] dataset cache %s couldn't be read (%s); rebuilding it", key, e)
             shutil.rmtree(path, ignore_errors=True)
@@ -704,7 +704,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             cond = _to_cpu(encode_grounded(clip, text, pics))
             empty = _to_cpu(encode_grounded(clip, "", pics)) if spec.caption_dropout else None
             if disk:  # after every picture, as in RAM: the VAE and the text encoder each load once
-                fields = dict(torch.load(samples[i].file, weights_only=False))
+                fields = dict(torch.load(samples[i].file, weights_only=True))
                 _write_sample(Path(samples[i].file), {**fields, "cond": cond, "cond_empty": empty})
             else:
                 samples[i].cond, samples[i].cond_empty = cond, empty
@@ -764,7 +764,7 @@ class TextCache:
         if not f.is_file():
             return None
         try:
-            cond = torch.load(f, weights_only=False)
+            cond = torch.load(f, weights_only=True)
         except Exception as e:  # noqa: BLE001 - cut short: encode it again
             logging.warning("[ZenTrainer] text cache %s couldn't be read (%s); encoding it again", f.name, e)
             return None

@@ -128,6 +128,38 @@ def sample_input(dataset: str, control: str) -> Path | None:
     return None
 
 
+def _within(p: Path, roots: list[Path]) -> bool:
+    p = Path(os.path.abspath(p))
+    return any(p == Path(os.path.abspath(r)) or Path(os.path.abspath(r)) in p.parents for r in roots)
+
+
+def outside_folders(spec: dict, tries: list | None = None) -> list[str]:
+    """The paths a run's settings (and test samples' `tries`) name outside ZenTrainer's folders:
+    its datasets, a dataset folder in them, ComfyUI's input. Training reads those from anywhere
+    (a folder or picture on another drive), so the routes take them only from this machine."""
+    import folder_paths
+
+    roots = dataset_roots()
+    inp = Path(folder_paths.get_input_directory())
+    out = []
+    ds = spec.get("dataset") or {}
+    for field, name in (("dataset.folder", ds.get("folder")), ("validation.dataset", (spec.get("validation") or {}).get("dataset"))):
+        if name and not _within(find_dataset(str(name)), roots):
+            out.append(f"{field} {name!r}")
+    folder = find_dataset(str(ds.get("folder") or ""))
+    prompts = (spec.get("samples") or {}).get("prompts") or []
+    for i, p in enumerate([*prompts, *(tries or [])]):
+        c = p.get("control") if isinstance(p, dict) else None
+        if not c:
+            continue
+        found = sample_input(str(ds.get("folder") or ""), str(c))
+        # missing: judge the path it names (a relative one is the dataset's, unless it climbs out)
+        where = found if found is not None else (Path(str(c)) if os.path.isabs(str(c)) else folder / str(c))
+        if not _within(where, [folder, inp, *roots]):
+            out.append(f"{'a test sample' if i >= len(prompts) else f'sample {i + 1}'}'s input {str(c)!r}")
+    return out
+
+
 def legacy_output_root() -> Path:
     """output/zentrainer in ComfyUI's output dir: where results went before a folder was set."""
     import folder_paths
@@ -162,6 +194,18 @@ def ensure() -> None:
 
 # ---- the setting ----------------------------------------------------------------------------------
 
+def _too_broad(p: Path) -> str | None:
+    """Why a folder is too broad to hand to ZenTrainer (whose dataset and file routes then read,
+    write and delete in it): a drive or the filesystem's root, a home folder, or above one."""
+    rp = Path(os.path.abspath(p))
+    if rp == Path(rp.anchor):
+        return f"{rp} is a whole drive"
+    home = Path(os.path.abspath(Path.home()))
+    if rp == home or rp in home.parents:
+        return f"{rp} is {'your home folder' if rp == home else 'above your home folder'}"
+    return None
+
+
 def validate_folder(raw: str) -> str:
     """The folder as it will be saved ("" for ComfyUI's folders); SettingsError if it can't work."""
     import folder_paths
@@ -172,6 +216,8 @@ def validate_folder(raw: str) -> str:
     p = Path(os.path.normpath(os.path.expanduser(raw)))
     if not p.is_absolute():
         raise SettingsError("the ZenTrainer folder must be an absolute path")
+    if why := _too_broad(p):
+        raise SettingsError(f"{why}: pick a folder of its own for ZenTrainer, e.g. {Path.home() / 'ZenTrainer'}")
     if p.exists() and not p.is_dir():
         raise SettingsError(f"{p} exists and isn't a folder")
     rp = p.resolve()
@@ -208,6 +254,8 @@ def validate_datasets(raw: str) -> str:
             raise SettingsError("a relative datasets folder has to be inside ComfyUI's input folder, e.g. datasets")
     elif p.resolve() == inp:
         return ""  # ComfyUI's input itself: the default
+    if why := _too_broad(p):
+        raise SettingsError(f"{why}: pick a folder that holds your datasets, e.g. {Path.home() / 'datasets'}")
     if p.exists() and not p.is_dir():
         raise SettingsError(f"{p} exists and isn't a folder")
     try:
@@ -298,7 +346,16 @@ def resolve_view(kind: str, subfolder: str, filename: str) -> Path | None:
     if not filename or filename in (".", "..") or "/" in filename or "\\" in filename:
         raise ValueError(f"bad file name {filename!r}")
     sub = (subfolder or "").replace("\\", "/").strip("/")
+    # never a hidden folder or file (.ssh, .config, .env): nothing ZenTrainer shows lives in one
+    if filename.startswith(".") or any(part.startswith(".") for part in sub.split("/") if part):
+        raise ValueError(f"{'/'.join([sub, filename]).lstrip('/')!r} is hidden")
     if kind == "input":
+        from .harness.data import CONTROL_EXTS
+
+        # the datasets folder can be anywhere (a setting): only its pictures, clips, sounds and
+        # masks are served from it, not whatever else is beside them
+        if Path(filename).suffix.lower() not in CONTROL_EXTS:
+            raise ValueError(f"{filename!r} isn't a picture, video or sound")
         cands = [(r, sub) for r in dataset_roots()]
     elif kind == "output":
         cands = []

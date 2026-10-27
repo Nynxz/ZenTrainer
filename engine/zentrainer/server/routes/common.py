@@ -70,6 +70,67 @@ def _bad(message: str, status: int = 400, **extra) -> web.Response:
     return web.json_response({"error": message, **extra}, status=status)
 
 
+# An upload part read in chunks, up to a size: a whole part used to be read into memory with no
+# limit, so one request could fill RAM. Past the limit that file is refused, not the request.
+UPLOAD_MAX = 2 * 1024**3
+
+
+async def read_upload(part, limit: int = UPLOAD_MAX) -> bytes | None:
+    """A multipart part's bytes, or None (the part drained) when it's over `limit`."""
+    chunks, size = [], 0
+    while chunk := await part.read_chunk(1 << 20):
+        size += len(chunk)
+        if size > limit:
+            while await part.read_chunk(1 << 20):  # drain it, so the next part reads
+                pass
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+# Requests from this machine. The API has no login (like ComfyUI's), so what reaches past
+# ZenTrainer's own folders (a path anywhere on disk, where datasets live, a forced restart) is
+# taken only from someone at this machine, not from anyone on the network (--listen) or through a
+# tunnel. A tunnel or proxy connects from 127.0.0.1 itself, so a request carrying a proxy's
+# headers counts as remote; and the Host has to be this machine's too, so a page on another site
+# whose name has been pointed at 127.0.0.1 (DNS rebinding) doesn't pass for it.
+_PROXY_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP", "CF-Connecting-IP",
+                  "True-Client-IP", "X-Client-IP")
+_LOCAL_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
+
+
+def _is_loopback(host: str | None) -> bool:
+    import ipaddress
+
+    if not host:
+        return False
+    host = host.strip("[]").lower()
+    if host in _LOCAL_NAMES or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_local(request: web.Request) -> bool:
+    """The request is from someone at this machine (see above)."""
+    if any(h in request.headers for h in _PROXY_HEADERS):
+        return False
+    import urllib.parse
+
+    try:
+        name = urllib.parse.urlsplit("//" + request.headers.get("Host", "")).hostname  # localhost:8189, [::1]:8189
+    except ValueError:
+        return False
+    return _is_loopback(request.remote) and _is_loopback(name)
+
+
+def _not_local(what: str) -> web.Response:
+    return _bad(f"{what} only from this machine (not over the network or a tunnel): ZenTrainer has no "
+                "login, so this is kept to someone at the computer it runs on", 403)
+
+
 # The oldest ComfyUI ZenTrainer is tested with (comfy.lock pins newer). Installed as a node pack
 # into someone's ComfyUI, an older one would fail in odd places; this says so plainly instead.
 MIN_COMFY = (0, 41, 0)
@@ -146,6 +207,14 @@ async def _ds(fn) -> web.Response:
         return _bad("dataset not found", 404)
     except (datasets.DatasetError, KeyError) as e:
         return _bad(str(e))
+    except Exception as e:  # noqa: BLE001
+        # a picture that can't be opened, or too many pixels to (PIL's guard against a tiny file
+        # that decodes huge): a clear refusal rather than a 500
+        from PIL import Image, UnidentifiedImageError
+
+        if isinstance(e, (Image.DecompressionBombError, UnidentifiedImageError)):
+            return _bad(f"not a picture that can be read: {e}")
+        raise
 
 
 def _migrate_states() -> None:

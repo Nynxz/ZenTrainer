@@ -5,6 +5,28 @@ and Manager show.
 
 ## Unreleased
 
+### Security
+ZenTrainer's API has no login (as ComfyUI's hasn't), so what someone who can reach it could do
+was looked over, route by route. ComfyUI only listens on this machine unless it's started with
+`--listen` (or reached through a tunnel); these matter most then.
+- **Fixed: changing the datasets or ZenTrainer folder setting could open your files up.** Set to a
+  home folder, the dataset routes would then read, write and delete in it. Those settings now
+  change only from this machine, a whole drive or a home folder is refused, and the file viewer
+  serves only pictures, videos, sounds and masks from the datasets, never a hidden folder.
+- **Fixed: the segmentation result route could serve any .png on disk** from a path in its job id.
+- **Paths outside ZenTrainer's folders** in a run (a dataset folder, held-out validation, edit
+  sample inputs, test samples) are taken only from this machine: training reads them from
+  anywhere. A shared settings file now leaves out the validation dataset too.
+- **From this machine only:** a restart that stops a training run, and rebuilding the web app.
+  "This machine" means a request from it, to its own name, not through a proxy or tunnel (they
+  connect from 127.0.0.1 themselves), which also stops a site whose name points at 127.0.0.1.
+- **Training states and caches load in PyTorch's safe mode:** tensors and plain data only, never
+  code. They're ZenTrainer's own files, but nothing reads them in a way that could run code now.
+- **Uploads are read up to 2 GB a file** (a whole file used to be held in memory, unlimited);
+  a picture too big or broken to open is refused instead of failing.
+- **The Hugging Face token** goes only to huggingface.co, and not on to where a download is
+  redirected.
+
 ### Run settings (spec version 2)
 - **Specs have a version now** (`spec_version: 2`), and older ones are brought up to date as
   they're read: stored runs, presets, model profiles, exported settings files, and specs sent to
