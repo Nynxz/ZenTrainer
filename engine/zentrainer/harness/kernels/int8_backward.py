@@ -34,6 +34,8 @@ import torch
 
 import collections
 
+from ..network import _PassesOn
+
 _mode = ""  # "", "fused" or "w8a8"
 stats: collections.Counter = collections.Counter()  # which path each backward took (see profile)
 _patched = False
@@ -290,12 +292,10 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
     return out
 
 
-class LoRABeside(torch.nn.Module):
+class LoRABeside(_PassesOn, torch.nn.Module):
     """How a plain LoRA attaches (bypass) to a frozen int8 layer while training: as _LoRAInt8.
     Otherwise (sampling, no grad, a layer with weight functions, int8_forward off) the bypass's
     own way, f(x) + h(x). Owns no parameters of its own: the LoRA's stay where they're saved from."""
-
-    _BYPASS_ATTRS = ("multiplier", "is_conv", "conv_dim", "kernel_size", "in_channels", "out_channels", "kw_dict")
 
     def __init__(self, lora, layer):
         super().__init__()
@@ -303,13 +303,10 @@ class LoRABeside(torch.nn.Module):
         self.__dict__["layer"] = layer  # not a submodule: its weights aren't the adapter's
         self._alpha = float(lora.alpha)  # read once: a Parameter on the GPU would sync every call
 
-    def _share(self) -> None:  # as network._pass_on (MOSS's fp32 qkv input takes this path)
-        from ..network import _pass_on
-
-        _pass_on(self, self.lora, self._BYPASS_ATTRS)
+    def _inner(self) -> list:
+        return [self.lora]
 
     def h(self, x, base_out):
-        self._share()
         return self.lora.h(x, base_out)
 
     def g(self, y):
