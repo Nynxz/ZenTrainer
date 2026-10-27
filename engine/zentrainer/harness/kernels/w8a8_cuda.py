@@ -54,11 +54,15 @@ def _load(device: torch.device) -> dict | None:
 
 
 def supported(grad_2d: torch.Tensor, q: torch.Tensor, group: int) -> bool:
-    """Whether these kernels take this gradient (M, out) and int8 weight (out, in)."""
+    """Whether these kernels take this gradient (M, out) and int8 weight (out, in). Alignment by
+    storage offset (allocations are 256-byte aligned), not data_ptr(): compiled blocks trace the
+    backward with fake tensors, which have none, and the failed check put the dequantized bf16
+    path into the compiled graph."""
     m, n = grad_2d.shape
     k = q.shape[1]
     return (grad_2d.is_cuda and grad_2d.dtype == torch.bfloat16 and q.dtype == torch.int8 and q.is_contiguous()
-            and grad_2d.stride(1) == 1 and grad_2d.stride(0) % 8 == 0 and grad_2d.data_ptr() % 16 == 0
+            and grad_2d.stride(1) == 1 and grad_2d.stride(0) % 8 == 0 and grad_2d.storage_offset() % 8 == 0
+            and q.storage_offset() % 16 == 0
             and m > 0 and n % 64 == 0 and k % 256 == 0 and group in (0, 256)
             and _load(grad_2d.device) is not None)
 
