@@ -78,6 +78,7 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   buttons on the right (New dataset there), then the same sticky toolbar and view switch.
 - **A grad norm or loss that blew up reads short** (6.3e16, the whole number on hover) instead of
   running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
+- **Crop to the card works in the table view too:** off, its thumbnails show the whole picture.
 - **Mask editor on the dataset page:** a button beside Add files (and Masks with a selection) opens
   it on the first selected picture, or the first one.
 - **Auto-caption's Into set lists every set** under the field, one click each: the field's
