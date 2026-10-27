@@ -734,11 +734,7 @@ def _sample_text(t, prompt: str) -> str:
 
 
 def _control_path(t, control: str) -> Path:
-    import folder_paths
-
-    inp = Path(folder_paths.get_input_directory())
-    ds = paths.find_dataset(t.spec.dataset.folder)
-    path = next((p for p in (ds / control, inp / control, Path(control)) if p.is_file()), None)
+    path = paths.sample_input(t.spec.dataset.folder, control)
     if path is None:
         raise FileNotFoundError(f"sample control picture {control!r} not found (in the dataset folder or ComfyUI's input)")
     return path

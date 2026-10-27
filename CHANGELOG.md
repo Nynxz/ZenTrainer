@@ -50,6 +50,11 @@ and Manager show.
   a Python example).
 
 ### Run form and look
+- **Fixed: an edit sample's input picture didn't show when it was given as a full path** (one on
+  another drive, say): training found it, but the run page asked for a dataset named after the
+  path's first part ("bad dataset name"). A run now hands the page each
+  sample's input itself, found as training finds it. A picture the server can't read says so
+  instead of failing.
 - **Fixed: a run using a model file outside the catalog lost it when duplicated** (a Qwen Image
   2.1 run on `qwen3vl_8b_fp8_scaled`, say): it showed empty, "not in the catalog", and asked to
   download the catalog's. A file of yours that ComfyUI has is listed, tagged yours, and installed.

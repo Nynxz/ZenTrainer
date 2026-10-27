@@ -116,6 +116,18 @@ def find_dataset(name: str) -> Path:
     return datasets_root() / name
 
 
+def sample_input(dataset: str, control: str) -> Path | None:
+    """Where an edit sample's input picture is, as training finds it: in the run's dataset, in
+    ComfyUI's input folder, or the path as given (one on another drive, say). The first that's a
+    file; None when none is."""
+    import folder_paths
+
+    for p in (find_dataset(dataset) / control, Path(folder_paths.get_input_directory()) / control, Path(control)):
+        if p.is_file():
+            return p
+    return None
+
+
 def legacy_output_root() -> Path:
     """output/zentrainer in ComfyUI's output dir: where results went before a folder was set."""
     import folder_paths

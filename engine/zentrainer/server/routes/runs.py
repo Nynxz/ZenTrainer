@@ -170,6 +170,38 @@ def register(server) -> None:
         _remember_client(body.get("client_id"))
         return web.json_response({"run": store.meta(run_id)})
 
+    @routes.get("/zentrainer/api/runs/{run_id}/samples/{index}/input")
+    async def sample_input(request):
+        """A thumbnail of an edit sample's input picture (`?size=`, default 1024), found as training
+        finds it: in the run's dataset, ComfyUI's input, or the path as given (another drive's).
+        Only a picture the run's own settings name, so it reads no file the run doesn't."""
+        import folder_paths
+
+        from ... import paths
+        from ...datasets import folders
+        from ...harness.data import MEDIA_EXTS
+
+        try:
+            spec = state.store().spec(request.match_info["run_id"])
+            prompt = spec["samples"]["prompts"][int(request.match_info["index"])]
+        except (FileNotFoundError, ValueError, KeyError, IndexError, TypeError):
+            return _bad("no such run or sample", 404)
+        control = prompt.get("control") if isinstance(prompt, dict) else None
+        if not control:
+            return _bad("that sample has no input picture", 404)
+        src = await asyncio.to_thread(paths.sample_input, spec["dataset"]["folder"], control)
+        if src is None:
+            return _bad(f"{control!r} isn't in the dataset, ComfyUI's input, or at that path", 404)
+        if src.suffix.lower() not in MEDIA_EXTS:
+            return _bad(f"{src.name}: not a picture or video ZenTrainer reads ({', '.join(sorted(MEDIA_EXTS))})")
+        cache = Path(folder_paths.get_user_directory()) / "zentrainer" / "thumbs"
+        try:
+            thumb = await asyncio.to_thread(folders.thumbnail_of, src, int(request.query.get("size", 1024)), cache)
+        except (OSError, ValueError, folders.DatasetError) as e:  # a file Pillow can't read: say so, not a 500
+            return _bad(f"{src.name} can't be read as a picture: {e}")
+        # the page asks with the input in the URL, so a changed input is a new URL
+        return web.FileResponse(thumb, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
     @routes.get("/zentrainer/api/runs/{run_id}/download")
     async def download_checkpoint(request):
         """One of the run's saved LoRAs as a file to save (?lora=<its lora_name>; the final if left
