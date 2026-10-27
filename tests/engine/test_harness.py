@@ -1005,3 +1005,59 @@ def test_checkpoints_keep_attention_so_it_runs_once(monkeypatch, save, runs):
         got = torch.autograd.grad(net.blocks[1](net.blocks[0](x)).square().sum(), x)[0]
     assert torch.allclose(got, want)
     assert Count.n == 2 * runs  # two blocks: once each, or again in the backward
+
+
+def test_kept_attention_survives_two_forwards_in_one_autocast(monkeypatch):
+    """A micro-batch can run the model twice in one autocast region (a batch of two pictures, each
+    with its own conditioning). With autocast's cast cache on, the second forward skips casting a
+    trained fp32 weight that the recompute then casts, and a block keeping attention can't replay
+    it ("_to_copy ... not found in storage"); the trainer's autocast keeps no cache."""
+    import sys
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    from zentrainer.harness.memory import gradient_checkpointing
+    from zentrainer.harness.trainer import Trainer
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+
+    def patch(m, offloading=False):
+        org = m.forward
+        m.org_forward = org
+        m.forward = lambda *a, **k: torch.utils.checkpoint.checkpoint(org, *a, use_reentrant=False, **k)
+
+    def unpatch(m):
+        if "org_forward" in m.__dict__:
+            m.forward = m.__dict__.pop("org_forward")
+
+    mod.patch, mod.unpatch = patch, unpatch
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.qkv, self.out = nn.Linear(16, 48), nn.Linear(16, 16)  # fp32 and trained, like an adapter
+
+        def forward(self, x):
+            q, k, v = self.qkv(x).view(1, 6, 2, 3, 8).permute(3, 0, 2, 1, 4)
+            return x + self.out(F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(1, 6, 16))
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block(), Block()])
+
+    trainer = types.SimpleNamespace(device=torch.device("cpu"), train_dtype=torch.bfloat16)
+    torch.manual_seed(0)
+    net = Net()
+    x = torch.randn(1, 6, 16)
+    run = lambda t: net.blocks[1](net.blocks[0](t)).float().square().sum()  # noqa: E731
+    with Trainer._autocast(trainer):
+        want = torch.autograd.grad(run(x) + run(x + 1), list(net.parameters()))
+    with gradient_checkpointing(net, True, 1, False, save="attention"):
+        with Trainer._autocast(trainer):
+            loss = run(x) + run(x + 1)  # the second forward would hit the cache
+        got = torch.autograd.grad(loss, list(net.parameters()))
+    assert all(torch.allclose(g, w) for g, w in zip(got, want))
