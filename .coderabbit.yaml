@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit's reviews of pull requests: a second review beside our own. Comment
+# "@coderabbitai review" on a PR to ask for one by hand.
+reviews:
+  profile: chill  # fewer nitpicks ("assertive" for more)
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: true  # PRs here start as drafts
+  path_filters:
+    # generated from engine/zentrainer/spec.py
+    - "!docs/spec.md"
+    - "!docs/spec.schema.json"
+    - "!web/src/api/engine/spec.fields.ts"
+    # lock files
+    - "!cli/uv.lock"
+    - "!comfy.lock"
+    - "!web/pnpm-lock.yaml"
+  path_instructions:
+    - path: "engine/**/*.py"
+      instructions: >-
+        ZenTrainer trains inside ComfyUI and reaches into ComfyUI internals on purpose. Look for
+        correctness: dtype and device mix-ups, tensors kept alive between steps (VRAM), host syncs
+        in the training step, and fallbacks that fail instead of falling back.
+    - path: "engine/zentrainer/harness/kernels/**"
+      instructions: >-
+        Performance kernels (CUDA via NVRTC, Triton) with plain-PyTorch fallbacks. Check that
+        shape, dtype, stride and alignment guards match what each kernel assumes, and that the
+        launch arguments match the kernel's parameter types.
+    - path: "CHANGELOG.md"
+      instructions: >-
+        Entries are written for users. They must not name a user, their files, folders or setup.
+chat:
+  auto_reply: true
