@@ -6,6 +6,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { engine, thumbUrl, type DatasetInfo } from '@/api/engine'
 import CaptionRing from '@/components/CaptionRing.vue'
+import StickyBar from '@/components/StickyBar.vue'
 import TemplateCard from '@/components/TemplateCard.vue'
 
 const router = useRouter()
@@ -106,31 +107,32 @@ const ago = (t?: number) => {
 </script>
 
 <template>
-  <div class="page full">
-    <div class="page-head">
-      <div class="titles">
-        <h1>Datasets</h1>
-        <p v-if="datasets?.length" class="lede">{{ datasets.length }} in ComfyUI's input folder</p>
-      </div>
+  <div class="page full ds-page">
+    <header class="ds-head">
+      <h1>Datasets</h1>
+      <span v-if="datasets?.length" class="lede">{{ datasets.length }} in ComfyUI's input folder</span>
+      <span class="spacer" />
       <form v-if="creating" class="create" @submit.prevent="create">
-        <ZenInput v-model="newName" placeholder="dataset name" />
-        <ZenButton variant="primary" :disabled="!newName.trim()" @click="create">Create</ZenButton>
-        <ZenButton variant="ghost" @click="creating = false">Cancel</ZenButton>
+        <ZenInput v-model="newName" size="sm" placeholder="dataset name" />
+        <ZenButton size="sm" variant="primary" :disabled="!newName.trim()" @click="create">Create</ZenButton>
+        <ZenButton size="sm" variant="ghost" @click="creating = false">Cancel</ZenButton>
       </form>
-      <ZenButton v-else variant="primary" icon="mdi mdi-plus" @click="creating = true">New dataset</ZenButton>
-    </div>
+      <ZenButton v-else size="sm" variant="primary" icon="mdi mdi-plus" @click="creating = true">New dataset</ZenButton>
+    </header>
     <div v-if="error" class="card muted">Can't reach the engine: {{ error }}</div>
     <ZenEmpty v-else-if="datasets && !datasets.length" title="No datasets yet" icon="mdi mdi-image-multiple-outline">
       Put a folder of images and captions in ComfyUI's input directory.
     </ZenEmpty>
     <template v-else-if="datasets">
-      <div class="bar">
-        <div class="view-switch">
-          <button :class="{ on: view === 'cards' }" title="Cards" @click="view = 'cards'"><i class="mdi mdi-view-grid-outline" /></button>
-          <button :class="{ on: view === 'table' }" title="Table" @click="view = 'table'"><i class="mdi mdi-view-list-outline" /></button>
+      <StickyBar>
+        <div class="ds-toolbar card">
+          <div class="view-switch">
+            <button :class="{ on: view === 'cards' }" title="Cards" @click="view = 'cards'"><i class="mdi mdi-view-grid-outline" /></button>
+            <button :class="{ on: view === 'table' }" title="Table" @click="view = 'table'"><i class="mdi mdi-view-list-outline" /></button>
+          </div>
+          <div class="search"><ZenInput v-model="query" placeholder="Search datasets" size="sm" /></div>
         </div>
-        <div class="search"><ZenInput v-model="query" placeholder="Search datasets" size="sm" /></div>
-      </div>
+      </StickyBar>
 
       <!-- cards: one shape for every card -->
       <div v-if="view === 'cards'" class="grid">
@@ -205,14 +207,6 @@ const ago = (t?: number) => {
   display: flex;
   gap: 8px;
   align-items: center;
-}
-.bar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.search {
-  width: 260px;
 }
 .grid {
   display: grid;

@@ -346,43 +346,6 @@ onUnmounted(() => {
   color: var(--zen-accent);
 }
 /* ---- page layout: a slim header, one fixed toolbar, the pictures and a side panel ---- */
-.ds-page {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.ds-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-}
-.ds-head .crumb {
-  color: var(--zen-muted);
-  font-size: 14px;
-}
-.ds-head h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-}
-.ds-head .lede {
-  margin: 0 0 0 6px;
-  font-size: 13px;
-  color: var(--zen-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ds-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 46px;
-  padding: 0 8px;
-  flex-wrap: nowrap;
-  overflow: hidden;
-}
 /* everything gives way before anything is cut off: the side panel's button is always there */
 .ds-toolbar .zoom {
   flex: 0 1 150px;
@@ -402,10 +365,6 @@ onUnmounted(() => {
 .tb-field :deep(.zen-combo) {
   flex: 1;
   min-width: 0;
-}
-.ds-toolbar .search {
-  flex: 1 1 120px;
-  min-width: 70px;
 }
 .icon-btn {
   flex: none;
