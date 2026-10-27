@@ -125,7 +125,7 @@ const ago = (t?: number) => {
     </ZenEmpty>
     <template v-else-if="datasets">
       <div class="bar">
-        <div class="seg">
+        <div class="view-switch">
           <button :class="{ on: view === 'cards' }" title="Cards" @click="view = 'cards'"><i class="mdi mdi-view-grid-outline" /></button>
           <button :class="{ on: view === 'table' }" title="Table" @click="view = 'table'"><i class="mdi mdi-view-list-outline" /></button>
         </div>
@@ -213,27 +213,6 @@ const ago = (t?: number) => {
 }
 .search {
   width: 260px;
-}
-.seg {
-  display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
-  border-radius: var(--r-md);
-}
-.seg button {
-  border: none;
-  background: none;
-  color: var(--zen-muted);
-  width: 30px;
-  height: 26px;
-  border-radius: calc(var(--r-md) - 2px);
-  cursor: pointer;
-}
-.seg button.on {
-  background: var(--zen-selected-bg, var(--zen-surface-2));
-  color: var(--zen-selected-text, var(--zen-text));
-  box-shadow: inset 0 0 0 1px var(--zen-selected, var(--zen-accent));
 }
 .grid {
   display: grid;

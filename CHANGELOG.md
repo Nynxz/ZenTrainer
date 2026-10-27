@@ -72,7 +72,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   a Python example).
 
 ### Run form and look
-- **A run's rail folds:** click Time, Learning or Setup to fold it away (remembered in this browser).
+- **A run's rail reads like a dataset's side panel**, the same spacing and headers, and every card
+  in it (Time, Learning, Setup, In VRAM, Checkpoints) folds from its header, remembered in this
+  browser. A dataset's grid/table switch is the Datasets page's.
 - **A grad norm or loss that blew up reads short** (6.3e16, the whole number on hover) instead of
   running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
 - **Mask editor on the dataset page:** a button beside Add files (and Masks with a selection) opens

@@ -273,6 +273,23 @@ const modelFile = computed(() => {
 .rail {
   position: sticky;
   top: 16px;
+  gap: 10px;
+}
+/* the rail's cards read like a dataset's side panel: its padding, its headers, each one folding */
+.rail :deep(> .card) {
+  padding: 10px 12px;
+  border-radius: var(--r-lg, 12px);
+}
+.rail :deep(> .card > .sec-head) {
+  align-items: center;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.rail :deep(> .card > .sec-head .sec-title) {
+  font-weight: 600;
+}
+.rail :deep(> .card > .sec-head.folded) {
+  margin-bottom: 0;
 }
 @media (max-width: 1000px) {
   .layout {

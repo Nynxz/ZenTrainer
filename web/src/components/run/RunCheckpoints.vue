@@ -7,6 +7,7 @@ import { computed, ref } from 'vue'
 import { downloadUrl } from '@/api/engine/runs'
 import { likeShare } from '@/lib/likeness'
 import { fmtBytes } from '@/stores/downloads'
+import { isCollapsed, toggleCollapsed } from './collapse'
 import { ckKind, useRunContext } from './context'
 
 const { id, detail, total, running, ckRows, nextSave, likeAt, likeCeil, ckptVal, resumable, resumeFrom } = useRunContext()
@@ -58,48 +59,52 @@ async function copy(text: string) {
 
 <template>
   <section class="card">
-    <header class="sec-head">
+    <header class="sec-head fold" :class="{ folded: isCollapsed('Checkpoints') }" :title="isCollapsed('Checkpoints') ? 'Show' : 'Fold away'" @click="toggleCollapsed('Checkpoints')">
       <span class="sec-title"><ZenTip text="The LoRA saved along the way. Best: the highest likeness when faces are scored (a character), else the lowest validation loss. Hover a row to test it, train more from it, download it or copy its name">Checkpoints</ZenTip></span>
       <span class="sec-sub">{{ saveLine }}</span>
+      <span class="spacer" />
+      <i class="mdi fold-chev" :class="isCollapsed('Checkpoints') ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
     </header>
-    <div v-if="!ckRows.length" class="muted small">
-      {{ running ? `The first save lands at step ${nextSave?.step ?? total}.` : 'None saved.' }}
-    </div>
-    <div v-if="keepLine" class="muted small keep-line">
-      {{ keepLine }}<template v-if="pruned.length">
-        ·
-        <ZenTip :text="pruned.map((p) => `${p.step}: ${p.reason}`).join('\n')">{{ pruned.length }} removed</ZenTip>
-      </template>
-    </div>
-    <div class="ckpts">
-      <div
-        v-for="c in ckRows"
-        :key="c.path"
-        class="ckpt"
-        :class="{ best: c.step === bestStep }"
-        :title="c.size === null ? `File missing: ${c.path}` : c.path"
-        tabindex="-1"
-      >
-        <span class="ck-step mono" :class="{ gone: c.size === null }">{{ c.step }}</span>
-        <span v-if="c.final" class="chip">final</span>
-        <span v-else-if="ckKind(c)" class="chip muted" :title="`Saved when the run ${ckKind(c) === 'manual' ? 'was asked to' : ckKind(c)}`">{{ ckKind(c) }}</span>
-        <span v-if="c.step === bestStep" class="chip best-chip" :title="bestBy === 'likeness' ? 'Its samples look most like the dataset\'s faces' : 'Lowest validation loss of the saved checkpoints'">best</span>
-        <span class="spacer" />
-        <span class="ck-val mono">
-          <template v-if="likeAt(c.step) != null"><span :title="likeCeil ? `How much its samples' faces look like the dataset's (same person ≳ 0.5); ${likeShare(likeAt(c.step)!, likeCeil)} of how alike your photos are to each other (${likeCeil.toFixed(2)})` : 'How much its samples\' faces look like the dataset\'s (same person ≳ 0.5)'">♥ {{ likeAt(c.step)!.toFixed(2) }}<span v-if="likeCeil" class="share"> ({{ likeShare(likeAt(c.step)!, likeCeil) }})</span></span> · </template>
-          <span title="Validation loss">{{ ckptVal(c.step) != null ? ckptVal(c.step)!.toFixed(4) : '—' }}</span>
-        </span>
-        <span class="ck-acts">
-          <RouterLink class="ib" :to="`/apps/test-lora?run=${id}&lora=${encodeURIComponent(c.lora_name)}`" title="Test: try it in Test LoRA, on this run's model"><i class="mdi mdi-flask-outline" /></RouterLink>
-          <button v-if="resumable && !c.final && c.state" class="ib" title="Resume this run from here, optimizer state and all" @click="resumeFrom(c)"><i class="mdi mdi-play-outline" /></button>
-          <RouterLink v-else class="ib" :to="`/runs/new?from=${id}&init=${encodeURIComponent(c.lora_name)}`" title="Train more: a new run with these settings that starts from this LoRA"><i class="mdi mdi-fast-forward-outline" /></RouterLink>
-          <a v-if="c.size !== null" class="ib" :href="downloadUrl(id, c.lora_name)" download :title="`Download ${c.lora_name.split('/').pop()}`"><i class="mdi mdi-download-outline" /></a>
-          <button class="ib" :title="copied === c.lora_name ? 'Copied' : `Copy LoRA name: ${c.lora_name}`" @click="copy(c.lora_name)">
-            <i :class="copied === c.lora_name ? 'mdi mdi-check' : 'mdi mdi-content-copy'" />
-          </button>
-        </span>
+    <template v-if="!isCollapsed('Checkpoints')">
+      <div v-if="!ckRows.length" class="muted small">
+        {{ running ? `The first save lands at step ${nextSave?.step ?? total}.` : 'None saved.' }}
       </div>
-    </div>
+      <div v-if="keepLine" class="muted small keep-line">
+        {{ keepLine }}<template v-if="pruned.length">
+          ·
+          <ZenTip :text="pruned.map((p) => `${p.step}: ${p.reason}`).join('\n')">{{ pruned.length }} removed</ZenTip>
+        </template>
+      </div>
+      <div class="ckpts">
+        <div
+          v-for="c in ckRows"
+          :key="c.path"
+          class="ckpt"
+          :class="{ best: c.step === bestStep }"
+          :title="c.size === null ? `File missing: ${c.path}` : c.path"
+          tabindex="-1"
+        >
+          <span class="ck-step mono" :class="{ gone: c.size === null }">{{ c.step }}</span>
+          <span v-if="c.final" class="chip">final</span>
+          <span v-else-if="ckKind(c)" class="chip muted" :title="`Saved when the run ${ckKind(c) === 'manual' ? 'was asked to' : ckKind(c)}`">{{ ckKind(c) }}</span>
+          <span v-if="c.step === bestStep" class="chip best-chip" :title="bestBy === 'likeness' ? 'Its samples look most like the dataset\'s faces' : 'Lowest validation loss of the saved checkpoints'">best</span>
+          <span class="spacer" />
+          <span class="ck-val mono">
+            <template v-if="likeAt(c.step) != null"><span :title="likeCeil ? `How much its samples' faces look like the dataset's (same person ≳ 0.5); ${likeShare(likeAt(c.step)!, likeCeil)} of how alike your photos are to each other (${likeCeil.toFixed(2)})` : 'How much its samples\' faces look like the dataset\'s (same person ≳ 0.5)'">♥ {{ likeAt(c.step)!.toFixed(2) }}<span v-if="likeCeil" class="share"> ({{ likeShare(likeAt(c.step)!, likeCeil) }})</span></span> · </template>
+            <span title="Validation loss">{{ ckptVal(c.step) != null ? ckptVal(c.step)!.toFixed(4) : '—' }}</span>
+          </span>
+          <span class="ck-acts">
+            <RouterLink class="ib" :to="`/apps/test-lora?run=${id}&lora=${encodeURIComponent(c.lora_name)}`" title="Test: try it in Test LoRA, on this run's model"><i class="mdi mdi-flask-outline" /></RouterLink>
+            <button v-if="resumable && !c.final && c.state" class="ib" title="Resume this run from here, optimizer state and all" @click="resumeFrom(c)"><i class="mdi mdi-play-outline" /></button>
+            <RouterLink v-else class="ib" :to="`/runs/new?from=${id}&init=${encodeURIComponent(c.lora_name)}`" title="Train more: a new run with these settings that starts from this LoRA"><i class="mdi mdi-fast-forward-outline" /></RouterLink>
+            <a v-if="c.size !== null" class="ib" :href="downloadUrl(id, c.lora_name)" download :title="`Download ${c.lora_name.split('/').pop()}`"><i class="mdi mdi-download-outline" /></a>
+            <button class="ib" :title="copied === c.lora_name ? 'Copied' : `Copy LoRA name: ${c.lora_name}`" @click="copy(c.lora_name)">
+              <i :class="copied === c.lora_name ? 'mdi mdi-check' : 'mdi mdi-content-copy'" />
+            </button>
+          </span>
+        </div>
+      </div>
+    </template>
   </section>
 </template>
 

@@ -183,7 +183,7 @@ onUnmounted(() => {
     <!-- one fixed-height row: nothing in it appears, disappears or wraps -->
     <StickyBar>
     <div class="ds-toolbar card">
-      <div class="seg" role="tablist" aria-label="View">
+      <div class="view-switch" role="tablist" aria-label="View">
         <button :class="{ on: layout === 'grid' }" title="Grid" @click="view = 'grid'"><i class="mdi mdi-view-grid-outline" /></button>
         <button :class="{ on: layout === 'list' }" title="Table" @click="view = 'list'"><i class="mdi mdi-view-list-outline" /></button>
         <button v-if="controlSets.length" :class="{ on: layout === 'pairs' }" :title="`Edit pairs: “${activeControl}” inputs → result, with the instruction`" @click="(activeControl ||= controlSets[0] ?? ''), (view = 'pairs')"><i class="mdi mdi-swap-horizontal" /></button>
@@ -272,14 +272,6 @@ onUnmounted(() => {
   color: var(--zen-danger);
   border-color: var(--zen-danger);
 }
-.seg {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--r-lg);
-  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
-}
-.seg button,
 .chip-btn {
   border: none;
   background: none;
@@ -293,7 +285,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 5px;
 }
-.seg button.on,
 .chip-btn.on {
   background: var(--zen-selected-bg, var(--zen-surface-2));
   color: var(--zen-selected-text, var(--zen-text));
@@ -302,8 +293,7 @@ onUnmounted(() => {
 .chip-btn {
   border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
 }
-.chip-btn:hover,
-.seg button:hover {
+.chip-btn:hover {
   color: var(--zen-text);
 }
 .zoom {
