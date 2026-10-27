@@ -12,14 +12,15 @@ against the exact product, the Triton path's 2.35e-3.
 
 Compiled at first use with NVRTC, which PyTorch ships (torch.cuda._compile_kernel's machinery),
 so nothing needs building or a CUDA toolkit; about 1.5 s once per process. Needs an NVIDIA card
-of compute capability 8.0 or newer. Anything else, any shape it doesn't take, or a failure to
-compile: None, and the caller uses the Triton path. A custom op, so torch.compile doesn't trace
-into the launch.
+of compute capability 8.0 or newer. Anything else, any shape it doesn't take, a failure to
+compile, or ZENTRAINER_CUDA_KERNELS=0 in the environment (to compare): the caller uses the Triton
+path. A custom op, so torch.compile doesn't trace into the launch.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import torch
@@ -34,6 +35,9 @@ def _load(device: torch.device) -> dict | None:
     if idx in _kernels:
         return _kernels[idx]
     _kernels[idx] = None
+    if os.environ.get("ZENTRAINER_CUDA_KERNELS", "1") == "0":
+        logging.info("[ZenTrainer] int8 backward: CUDA kernels off (ZENTRAINER_CUDA_KERNELS=0)")
+        return None
     try:
         if torch.version.hip or torch.cuda.get_device_capability(idx) < (8, 0):
             return None
