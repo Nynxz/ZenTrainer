@@ -79,9 +79,11 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, grou
     return g.to(torch.bfloat16)
 
 
-def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor | None:
+def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int,
+                    residual: torch.Tensor | None = None) -> torch.Tensor | None:
     """grad_out @ dequantized ConvRot weight on int8 tensor cores: (grad_out * s) quantized per
-    row, times q, rescaled, then rotated. None when the shapes don't suit _int_mm."""
+    row, times q, rescaled, then rotated, plus `residual` (M, in) when given (in the CUDA kernel's
+    epilogue). None when the shapes don't suit _int_mm."""
     m, n = grad_2d.shape
     k = q.shape[1]
     if m <= 16 or n % 8 or k % 8:
@@ -91,7 +93,14 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
     if w8a8_cuda.supported(grad_2d, q, group):  # raw CUDA, the rotation inside (kernels/w8a8_cuda.py)
         _count("w8a8: cuda")
         seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
-        return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256)
+        return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256, residual)
+    g = _w8a8_input_grad(grad_2d, q, scale, group)
+    return g if residual is None else g + residual
+
+
+def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor:
+    m, n = grad_2d.shape
+    k = q.shape[1]
     try:
         from .w8a8_backward import TRITON_AVAILABLE, int8_matmul, quantize_rows
     except Exception:
@@ -193,28 +202,140 @@ class _Int8Linear(torch.autograd.Function):
     @staticmethod
     @torch.autograd.function.once_differentiable
     def backward(ctx, grad_out):
-        from comfy.ops import CastBiasWeightContext
-
-        m = ctx.m
-        g = grad_out.reshape(-1, grad_out.shape[-1])
-        with CastBiasWeightContext(m, grad_out, offloadable=True, compute_dtype=grad_out.dtype, want_requant=False) as (w, _b):
-            gi = None
-            if type(w).__name__ == "QuantizedTensor":
-                params = w._params
-                group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
-                if _mode == "w8a8" and g.is_cuda:
-                    try:
-                        gi = w8a8_input_grad(g, w._qdata, params.scale, group)
-                    except Exception:
-                        gi = None
-                _count("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized")
-                if gi is None:
-                    gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
-            else:
-                _count("int8 layer: plain weight")
-                gi = torch.mm(g, w.to(g.dtype))
+        gi = _layer_input_grad(ctx.m, grad_out.reshape(-1, grad_out.shape[-1]))
         ctx.m = None
         return gi.to(grad_out.dtype).reshape(ctx.in_shape), None, None
+
+
+def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
+    """A frozen int8 layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
+    from comfy.ops import CastBiasWeightContext
+
+    with CastBiasWeightContext(m, g, offloadable=True, compute_dtype=g.dtype, want_requant=False) as (w, _b):
+        gi = None
+        if type(w).__name__ == "QuantizedTensor":
+            params = w._params
+            group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
+            if _mode == "w8a8" and g.is_cuda:
+                try:
+                    gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
+                except Exception:
+                    gi = None
+            _count("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized")
+            if gi is not None:
+                return gi
+            gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
+        else:
+            _count("int8 layer: plain weight")
+            gi = torch.mm(g, w.to(g.dtype))
+    return gi if residual is None else gi + residual
+
+
+class _LoRAInt8(torch.autograd.Function):
+    """A frozen int8 layer and the LoRA beside it (bypass) as one op. Apart, the LoRA's output is
+    added to the layer's in a pass of its own, scaled in another, and in the backward its input
+    gradient is added to the layer's in a third, each over the whole activation (Krea 2 at 1024 px:
+    ~70 ms a step of 1.03 s). Here the LoRA's output is the int8 GEMM's residual (comfy_kitchen's
+    CUTLASS epilogue, as ComfyUI fuses a block's residual outside training), the scale is folded
+    into the up weight, and the backward computes the LoRA's input gradient first, as the residual
+    of the int8 input gradient (the CUDA kernel's epilogue). Same maths as base(x) + up(down(x)) *
+    scale under autocast: the LoRA's matmuls in the activation's dtype, its gradients returned in
+    its weights' own."""
+
+    @staticmethod
+    def forward(ctx, x, down, up, scale, m, original):
+        x2 = x.detach().reshape(-1, x.shape[-1])
+        a, b = down.detach().to(x.dtype), (up.detach() * scale).to(x.dtype)  # (rank, in), (out, rank)
+        with torch.no_grad():
+            z = x2 @ a.t()
+            h = z @ b.t()
+            out = _int8_forward(m, x2, h)
+            if out is None:  # the layer can't take the residual: as the bypass does it
+                _count("lora + int8: unfused")
+                out = original(x2) + h  # the layer's own forward (no grad here)
+        ctx.save_for_backward(x2, z, a, b)
+        ctx.m, ctx.scale, ctx.in_shape, ctx.dtypes = m, scale, x.shape, (down.dtype, up.dtype)
+        return out.reshape(*x.shape[:-1], out.shape[-1])
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_out):
+        x2, z, a, b = ctx.saved_tensors
+        g = grad_out.reshape(-1, grad_out.shape[-1]).to(x2.dtype)
+        gz = g @ b  # (M, rank): the gradient at the LoRA's middle, its scale in b
+        d_up = (g.t() @ z) * ctx.scale
+        d_down = gz.t() @ x2
+        gi = _layer_input_grad(ctx.m, g, gz @ a)
+        ctx.m = None
+        return (gi.to(grad_out.dtype).reshape(ctx.in_shape), d_down.to(ctx.dtypes[0]), d_up.to(ctx.dtypes[1]),
+                None, None, None)
+
+
+def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor | None:
+    """The int8 layer's forward with `residual` added in the GEMM's epilogue (ComfyUI's
+    QuantizedTensor.linear_input_act, which outside training it uses for a block's residual), or
+    None where the layer or this ComfyUI can't."""
+    from comfy.ops import CastBiasWeightContext
+
+    with CastBiasWeightContext(m, x2, offloadable=True, compute_dtype=x2.dtype, want_requant=True) as (w, bias):
+        fused = getattr(w, "linear_input_act", None) if type(w).__name__ == "QuantizedTensor" else None
+        if fused is None:
+            return None
+        ones = torch.ones(residual.shape[-1], device=x2.device, dtype=x2.dtype)
+        out = fused(x2, bias, residual=residual, residual_scale=ones)
+    if out is NotImplemented:
+        return None
+    _count("lora + int8: fused")
+    return out
+
+
+class LoRABeside(torch.nn.Module):
+    """How a plain LoRA attaches (bypass) to a frozen int8 layer while training: as _LoRAInt8.
+    Otherwise (sampling, no grad, a layer with weight functions, int8_forward off) the bypass's
+    own way, f(x) + h(x). Owns no parameters of its own: the LoRA's stay where they're saved from."""
+
+    _BYPASS_ATTRS = ("multiplier", "is_conv", "conv_dim", "kernel_size", "in_channels", "out_channels", "kw_dict")
+
+    def __init__(self, lora, layer):
+        super().__init__()
+        self.lora = lora
+        self.__dict__["layer"] = layer  # not a submodule: its weights aren't the adapter's
+        self._alpha = float(lora.alpha)  # read once: a Parameter on the GPU would sync every call
+
+    def _share(self) -> None:
+        for a in self._BYPASS_ATTRS:
+            if hasattr(self, a):
+                setattr(self.lora, a, getattr(self, a))
+
+    def h(self, x, base_out):
+        self._share()
+        return self.lora.h(x, base_out)
+
+    def g(self, y):
+        return y
+
+    def __call__(self, w):  # the weight-wrapper protocol, which bypass never uses
+        return self.lora(w)
+
+    def bypass_forward(self, org_forward, x, *args, **kwargs):
+        import comfy.model_management as mm
+
+        m = self.layer
+        if (args or kwargs or not (mm.in_training and torch.is_grad_enabled()) or not x.is_cuda
+                or x.dtype not in (torch.bfloat16, torch.float16) or getattr(m, "_full_precision_mm", False)
+                or len(m.weight_function) or len(m.bias_function)):
+            base = org_forward(x, *args, **kwargs)
+            return base + self.h(x, base)
+        scale = self._alpha / self.lora.rank * getattr(self, "multiplier", 1.0)
+        return _LoRAInt8.apply(x, self.lora.lora_down.weight, self.lora.lora_up.weight, scale, m, org_forward)
+
+
+def lora_beside(adapter, layer):
+    """The adapter to attach to `layer` in bypass: LoRABeside for a plain LoRA on an int8 layer."""
+    if (type(adapter).__name__ == "LoraDiff" and getattr(adapter, "lora_mid", None) is None
+            and _int8_layer(layer) and _mode):
+        return LoRABeside(adapter, layer)
+    return adapter
 
 
 _installed: list = []

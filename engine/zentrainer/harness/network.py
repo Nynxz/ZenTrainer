@@ -363,6 +363,10 @@ class Network:
                 attached = (_Assisted(adapter, frozen, self._switch, fast, preview_strength, under, base_strength)
                             if scalable or frozen is not None or fast is not None or under is not None else adapter)
                 if self._bypass is not None:
+                    if attached is adapter:  # a plain LoRA beside an int8 layer trains fused with it
+                        from .kernels.int8_backward import lora_beside
+
+                        attached = lora_beside(adapter, m)
                     self._bypass.add_adapter(key, attached, strength=1.0)
                 else:
                     patcher.add_weight_wrapper(key, _Pinned(attached))

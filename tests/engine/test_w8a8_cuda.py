@@ -58,6 +58,10 @@ def test_quantized_product_matches_the_exact_one_rotated(m, n, k):
     for rotate, want in ((True, rotated), (False, exact)):
         out = w8a8_cuda.input_grad(g, q, s, seed, rotate).double()
         assert ((out - want).norm() / want.norm()).item() < 3e-3  # one bf16 rounding (~1.7e-3)
+    r = torch.randn(m, k, device="cuda", dtype=torch.bfloat16) * want.std().item()  # the LoRA's, added in
+    out = w8a8_cuda.input_grad(g, q, s, seed, True, r).double()
+    want = rotated + r.double()
+    assert ((out - want).norm() / want.norm()).item() < 3e-3
 
 
 def test_shapes_it_does_not_take_go_elsewhere():
@@ -118,3 +122,24 @@ def test_what_it_does_not_take_goes_to_the_triton_path(monkeypatch):
     monkeypatch.setenv("ZENTRAINER_CUDA_KERNELS", "0")
     monkeypatch.setattr(w8a8_cuda, "_kernels", {})
     assert not w8a8_cuda.supported(g, q, 256)
+
+
+def test_lora_fused_with_an_int8_layer_has_the_bypass_gradients(monkeypatch):
+    # _LoRAInt8 = base(x) + up(down(x)) * scale, the base's int8 parts stood in for by a dense layer
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(0)
+    base = torch.randn(48, 32, dtype=torch.float64)
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: g @ base + residual)
+    x = torch.randn(2, 5, 32, dtype=torch.float64, requires_grad=True)
+    down = torch.randn(4, 32, dtype=torch.float64, requires_grad=True)
+    up = torch.randn(48, 4, dtype=torch.float64, requires_grad=True)
+    out = ib._LoRAInt8.apply(x, down, up, 0.75, None, None)
+    want = x @ base.t() + (x @ down.t()) @ up.t() * 0.75
+    assert torch.allclose(out, want)
+    g = torch.randn_like(want)
+    got = torch.autograd.grad(out, (x, down, up), g)
+    ref = torch.autograd.grad(want, (x, down, up), g)
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)

@@ -84,10 +84,11 @@ def _aligned(grad_2d: torch.Tensor, q: torch.Tensor) -> bool:
 
 @torch.library.custom_op("zentrainer::w8a8_input_grad", mutates_args=())
 def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed: torch.Tensor,
-               rotate: bool) -> torch.Tensor:
+               rotate: bool, residual: torch.Tensor | None = None) -> torch.Tensor:
     """bf16 (M, in): (quantized grad_2d * scale) @ q, rescaled, rotated by ConvRot's 256-wide
-    Hadamard when `rotate`. grad_2d (M, out) bf16, q (out, in) int8, scale (out,) the weight's per
-    row, seed a one-element int32 tensor on the device (the rounding noise's). See supported()."""
+    Hadamard when `rotate`, plus `residual` (M, in) when given. grad_2d (M, out) bf16, q (out, in)
+    int8, scale (out,) the weight's per row, seed a one-element int32 tensor on the device (the
+    rounding noise's). See supported()."""
     ks = _load(grad_2d.device)
     m, n = grad_2d.shape
     k = q.shape[1]
@@ -100,14 +101,18 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
     gq = torch.empty((m, n), device=grad_2d.device, dtype=torch.int8)
     steps = torch.empty((m,), device=grad_2d.device, dtype=torch.float32)
     out = torch.empty((m, k), device=grad_2d.device, dtype=torch.bfloat16)
+    res = residual is not None
+    if res:
+        residual = residual.to(torch.bfloat16).reshape(m, k).contiguous()
     stream = torch.cuda.current_stream(grad_2d.device)
     ks["zt_quantize_rows"](grid=(m, 1, 1), block=(256, 1, 1), args=[grad_2d, scale, gq, steps, seed, n, grad_2d.stride(0)],
                            stream=stream)
     ks["zt_w8a8_gemm_rot" if rotate else "zt_w8a8_gemm"](grid=((k // 256) * ((m + 127) // 128), 1, 1), block=(256, 1, 1),
-                                                         args=[gq, q, steps, out, m, n, k], shared_mem=SMEM, stream=stream)
+                                                         args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
+                                                         shared_mem=SMEM, stream=stream)
     return out
 
 
 @input_grad.register_fake
-def _(grad_2d, q, scale, seed, rotate):
+def _(grad_2d, q, scale, seed, rotate, residual=None):
     return grad_2d.new_empty((grad_2d.shape[0], q.shape[1]), dtype=torch.bfloat16)

@@ -3,11 +3,12 @@
 //   quantize_rows: gs = grad * s (s: the weight's per-output-row scale), each row's step =
 //                  max|gs| / 127, gq = floor(gs / step + U[0, 1)) (stochastic rounding), written
 //                  with each 16 columns in the order the GEMM's B fragments come out of ldmatrix
-//   gemm:          out = H((gq @ q) * step), int8 tensor cores (mma m16n8k32), int32 accumulation;
+//   gemm:          out = H((gq @ q) * step) (+ residual), int8 tensor cores (mma m16n8k32), int32 accumulation;
 //                  q is the weight as stored, (out, in) row-major: its reduction dim is strided, read
 //                  with ldmatrix.trans in 16-bit pairs and split into bytes with two prmt each.
 //                  H: ConvRot's rotation, the regular Hadamard H4 x H4 x H4 x H4 / 16 on each 256
-//                  output columns (a CTA's tile), as a fast transform in fp32; then bf16 once.
+//                  output columns (a CTA's tile), as a fast transform in fp32; then the residual
+//                  (the LoRA's input gradient beside it: no separate add) and bf16 once.
 //
 // Compiled at run time with NVRTC (kernels/w8a8_cuda.py): no compiler needed beside PyTorch's.
 // The 16-column order: ldmatrix.trans hands each lane two adjacent weight columns at reductions
@@ -123,11 +124,13 @@ extern "C" __global__ void __launch_bounds__(256) zt_quantize_rows(
     }
 }
 
-// out (M, K) bf16 = H((A @ B) * step): A (M, N) int8 from zt_quantize_rows, B (N, K) int8 row-major.
+// out (M, K) bf16 = H((A @ B) * step) + R: A (M, N) int8 from zt_quantize_rows, B (N, K) int8 row-major,
+// R (M, K) bf16 when has_res.
 // N % 64 == 0, K % 256 == 0. 256 threads: 2 x 4 warps of 64 x 64.
 template <bool ROTATE>
 __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, const signed char* __restrict__ B,
-                                          const float* __restrict__ steps, u16* __restrict__ out, int M, int N, int K) {
+                                          const float* __restrict__ steps, u16* __restrict__ out,
+                                          const u16* __restrict__ R, int has_res, int M, int N, int K) {
     extern __shared__ __align__(128) u8 smem[];
     u8* sA = smem;
     u8* sB = smem + STAGES * A_STAGE;
@@ -286,6 +289,13 @@ __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, con
 #pragma unroll
             for (int q = 0; q < 4; q++) {
                 const int gk = k0 + wn * 64 + q * 16 + tig * 4;
+                if (has_res) {
+                    const uint2 r = *reinterpret_cast<const uint2*>(R + (long long)gm * K + gk);
+                    v[i][q][h][0] += bf16_to_f((u16)(r.x & 0xffffu));
+                    v[i][q][h][1] += bf16_to_f((u16)(r.x >> 16));
+                    v[i][q][h][2] += bf16_to_f((u16)(r.y & 0xffffu));
+                    v[i][q][h][3] += bf16_to_f((u16)(r.y >> 16));
+                }
                 uint2 o;
                 o.x = (u32)f_to_bf16(v[i][q][h][0]) | ((u32)f_to_bf16(v[i][q][h][1]) << 16);
                 o.y = (u32)f_to_bf16(v[i][q][h][2]) | ((u32)f_to_bf16(v[i][q][h][3]) << 16);
@@ -295,6 +305,10 @@ __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, con
 }
 
 extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_rot(const signed char* A, const signed char* B,
-        const float* steps, u16* out, int M, int N, int K) { gemm_body<true>(A, B, steps, out, M, N, K); }
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
+    gemm_body<true>(A, B, steps, out, R, has_res, M, N, K);
+}
 extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm(const signed char* A, const signed char* B,
-        const float* steps, u16* out, int M, int N, int K) { gemm_body<false>(A, B, steps, out, M, N, K); }
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
+    gemm_body<false>(A, B, steps, out, R, has_res, M, N, K);
+}
