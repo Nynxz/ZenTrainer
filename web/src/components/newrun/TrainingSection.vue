@@ -18,6 +18,12 @@ const heldOutItems = computed(() => [
 ])
 
 const advanced = reactive({ training: false })
+// LoRA and LoKr: LoHa and OFT aren't ready (LoHa can't train on an int8 base). A run that already
+// uses one keeps it in the list, so its form doesn't show an empty field.
+const algorithms = computed(() => {
+  const ready = ['LoRA', 'LoKr']
+  return ready.includes(spec.network.algorithm) ? ready : [...ready, spec.network.algorithm]
+})
 // ---- where checkpoints go: one of ComfyUI's loras folders ---------------------------------
 const loraDir = computed({
   get: () => spec.output.lora_dir ?? loraPlaces.value.find((p) => p.default)?.path ?? '',
@@ -210,7 +216,7 @@ const patterns = computed({
         <ZenField label="Warmup steps" stack><ZenNumber v-model="spec.optim.warmup_steps" :min="0" :step="10" :precision="0" /></ZenField>
         <ZenField label="Batch size" stack><ZenNumber v-model="spec.optim.batch_size" :min="1" :step="1" :precision="0" /></ZenField>
         <ZenField label="Grad accumulation" stack><ZenNumber v-model="spec.optim.grad_accumulation_steps" :min="1" :step="1" :precision="0" /></ZenField>
-        <ZenField label="LoRA+" stack tip="The LoRA's up matrices learn this many times faster than the down ones: trains faster at the same stability. 4 is a safe start, the paper uses 16. Off for LoHa/LoKr/OFT">
+        <ZenField label="LoRA+" stack tip="The LoRA's up matrices learn this many times faster than the down ones: trains faster at the same stability. 4 is a safe start, the paper uses 16. Off for LoKr">
           <div class="sw-row">
             <ZenSwitch :model-value="(spec.optim.lora_plus ?? 0) > 1" @update:model-value="spec.optim.lora_plus = $event ? 4 : 0" />
             <ZenNumber v-if="(spec.optim.lora_plus ?? 0) > 1" :model-value="spec.optim.lora_plus ?? 4" :min="1.5" :max="32" :step="1" :precision="1" @update:model-value="spec.optim.lora_plus = $event" />
@@ -234,7 +240,7 @@ const patterns = computed({
     <div class="subgroup" :class="{ locked: resuming }">
       <div class="sub-title">Network</div>
       <div class="grid-2">
-        <ZenField label="Algorithm" stack><ZenCombo v-model="spec.network.algorithm" :items="items(['LoRA', 'LoHa', 'LoKr', 'OFT'])" :searchable="false" :sorted="false" /></ZenField>
+        <ZenField label="Algorithm" stack><ZenCombo v-model="spec.network.algorithm" :items="items(algorithms)" :searchable="false" :sorted="false" /></ZenField>
         <ZenField label="Layers" stack>
           <ZenCombo v-model="targets" :items="items(['attn', 'mlp', 'attn_mlp', 'all', 'custom'], { attn: 'Attention', mlp: 'MLP', attn_mlp: 'Attention + MLP', all: 'Every layer', custom: 'Custom' })" :searchable="false" :sorted="false" />
         </ZenField>

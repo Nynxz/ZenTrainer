@@ -53,7 +53,7 @@ the optimizer won't like, too few epochs.
 
 - **Trigger word** added to every caption, and `[trigger]` in captions and prompts
 - **Optimizers**: AdamW, Prodigy, Lion, Adafactor, CAME, schedule-free, 8-bit and more, each with a suggested learning rate
-- **LoRA, LoHa, LoKr or OFT**; masked training; caption dropout; mixed caption sets
+- **LoRA or LoKr**; masked training; caption dropout; mixed caption sets
 - **Sample with another model**: train on the raw base, preview on its turbo version
 
 ![New run](docs/images/new-run.webp)

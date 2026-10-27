@@ -72,6 +72,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   a Python example).
 
 ### Run form and look
+- **The adapter list is LoRA and LoKr.** LoHa and OFT aren't ready (LoHa can't train on an int8
+  base), so the form no longer offers them; a run that already uses one keeps it, and specs still
+  take them.
 - **Fixed: an edit sample's input picture didn't show when it was given as a full path** (one on
   another drive, say): training found it, but the run page asked for a dataset named after the
   path's first part ("bad dataset name"). A run now hands the page each
