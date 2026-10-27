@@ -180,10 +180,12 @@ TRIAL_SLOWER = 1.08
 # memory.grad_checkpoint_skip "auto" (weights all on the card): after the first step one block runs
 # un-checkpointed (the biggest, the last first), and what it holds for backward is measured; at the later of these steps
 # (counted from the first, or from a resolution change) every block the spare VRAM holds, bar the
-# margin, is kept too. Measured on an RTX 5090 at 1024 px: MOSS 0.69 -> 0.55 s a step keeping 21
-# of 42, Krea 2 1.12 -> 1.06 keeping 10 of 28. Each kept block is costed as the most any has held
-# (x KEEP_SAFETY): a bigger bucket later holds more, and an out-of-VRAM step backs off blocks
-KEEP_AT = (1, 3, 6, 12, 24, 40)
+# margin, is kept too, at most twice as many as before each time. Measured on an RTX 5090 at 1024
+# px: MOSS 0.69 -> 0.50 s a step keeping 40 of 44, Krea 2 1.12 -> 1.08 keeping 7 of 32. A kept
+# block is costed as the most any has held (x KEEP_SAFETY), and a bigger bucket later holds more:
+# MOSS's first measured 0.18 GB, its biggest 0.49. The doubling bounds that; an out-of-VRAM step
+# backs off blocks
+KEEP_AT = (1, 3, 6, 10, 15, 20, 30, 40)
 KEEP_SAFETY = 1.15
 
 # the run page's phase timings (data, forward, backward, optimizer) come from every this-many-th
@@ -1036,12 +1038,12 @@ class Trainer:
             others = total - free - torch.cuda.memory_reserved()
             spare = total - others - self._peak - TIGHTEN_MARGIN
             ceiling = getattr(self, "_keep_ceiling", len(ck.all))
-            want = max(0, min(ceiling, ck.kept + int(spare // cost)))
+            want = max(0, min(ceiling, 2 * ck.kept, ck.kept + int(spare // cost)))
             if want != ck.kept:
                 was = ck.kept
                 self._kept(want)
                 gb = 1024 ** 3
-                logging.info("[ZenTrainer] training peaked at %.1f GB of %.1f: last blocks un-checkpointed %d -> %d "
+                logging.info("[ZenTrainer] training peaked at %.1f GB of %.1f: blocks un-checkpointed %d -> %d "
                              "of %d (%.2f GB each)", self._peak / gb, (total - others) / gb, was, want, len(ck.all),
                              cost / gb)
         self._peak = 0
@@ -1057,7 +1059,7 @@ class Trainer:
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
         self._keep_ceiling = self._kept(max(0, was - drop))
-        logging.warning("[ZenTrainer] out of VRAM: last blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
+        logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
         return True
 
     def _back_off(self, e: BaseException) -> bool:
