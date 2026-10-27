@@ -30,6 +30,7 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
     m.compile_blocks === true ? 'compile' : (m.compile_blocks ?? 'auto') === 'auto' ? 'compile auto' : '',
     m.fused_qk_rope === true ? 'fused q/k rope' : '',
     m.gradient_checkpointing ? (m.grad_checkpoint_skip === 'auto' ? 'checkpoint · keep auto' : m.grad_checkpoint_skip ? `checkpoint · keep ${m.grad_checkpoint_skip}` : 'checkpoint') : '',
+    m.gradient_checkpointing && !m.offloading && (m.checkpoint_save ?? 'attention') === 'attention' ? 'attention kept' : '',
     m.tread ? `TREAD ${Math.round(m.tread * 100)}%` : '',
   ].filter(Boolean)
   const opt = sp.optim

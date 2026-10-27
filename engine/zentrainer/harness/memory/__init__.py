@@ -36,13 +36,17 @@ def block_lists(model, depth: int = 1) -> list:
     return found
 
 
+# memory.checkpoint_save "attention": a checkpointed block keeps attention's outputs (and its
+# softmax statistics) instead of running attention's forward again in the backward; the rest is
+# recomputed as before. Measured on an RTX 5090 at 1024 px, compiled, nothing kept un-checkpointed:
+# Krea 2 1.08 -> 1.01 s a step for 1.9 GB more, MOSS 0.60 -> 0.51 for 1.0 GB (keeping 10 whole
+# Krea 2 blocks bought the same 6% for 6 GB). The same losses: the step-one loss is the eager run's
+# to the last digit uncompiled, and compiled within the rounding compiling itself changes.
 _SAVE_OPS = ("_scaled_dot_product_flash_attention", "_scaled_dot_product_efficient_attention",
-             "_scaled_dot_product_cudnn_attention")
+             "_scaled_dot_product_cudnn_attention", "_scaled_dot_product_flash_attention_for_cpu")
 
 
-def _sac_context():
-    """Selective checkpointing (prototype, ZENTRAINER_SAC): attention's outputs saved, the rest
-    recomputed."""
+def _keep_attention():
     import torch
     from torch.utils.checkpoint import CheckpointPolicy, create_selective_checkpoint_contexts
 
@@ -54,23 +58,27 @@ def _sac_context():
     return create_selective_checkpoint_contexts(policy)
 
 
-def _sac_patch(m, mode: str) -> None:
+def _patch_saving(m) -> None:
+    """A block checkpointed with _keep_attention. A compiled block (kernels/compile.py) is compiled
+    again around the checkpoint: the policy has to see the ops, which a checkpoint around the
+    compiled forward can't (it fails in the backward)."""
     import torch
 
     org = m.forward
-    inner = getattr(org, "_torchdynamo_orig_callable", None) if mode == "attn-inside" else None
+    inner = getattr(org, "_torchdynamo_orig_callable", None)
 
-    def ck(fn):
+    def checkpointed(fn):
         def run(*args, **kwargs):
-            return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False, context_fn=_sac_context, **kwargs)
+            return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False, context_fn=_keep_attention, **kwargs)
         return run
 
-    m.org_forward = org
-    m.forward = torch.compile(ck(inner), dynamic=True) if inner is not None else ck(org)
+    m.org_forward = org  # what unpatch puts back
+    m.forward = torch.compile(checkpointed(inner), dynamic=True) if inner is not None else checkpointed(org)
 
 
 @contextmanager
-def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloading: bool, skip: int = 0) -> Iterator[int]:
+def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloading: bool, skip: int = 0,
+                           save: str = "none") -> Iterator[int]:
     """Recompute each block's activations in backward instead of keeping them. Yields
     how many blocks are checkpointed.
 
@@ -78,7 +86,8 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     so "depth 1" there wraps the whole network as one segment: backward then rebuilds
     every activation at once and saves nothing. Checkpointing per block is what bounds
     memory to roughly one block's activations. `skip` leaves that many of the biggest blocks
-    (the last first) as they are: keeping their activations, no recompute."""
+    (the last first) as they are: keeping their activations, no recompute. `save` "attention": the
+    checkpointed blocks keep attention's outputs (see _SAVE_OPS)."""
     import types
 
     import torch.nn as nn
@@ -88,19 +97,14 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
         return
     from comfy_extras.nodes_train import patch, unpatch
 
-    import os
-
-    sac = os.environ.get("ZENTRAINER_SAC", "")
-    if sac and not offloading:
+    if save == "attention" and not offloading:  # (offloading checkpoints per layer: untested there)
         comfy_patch = patch
 
         def patch(m, offloading=False):  # noqa: F811
-            if m in every:
-                _sac_patch(m, sac)
+            if any(m is b for b in every):
+                _patch_saving(m)
             else:
                 comfy_patch(m, offloading=offloading)
-
-        logging.info("[ZenTrainer] selective checkpointing (prototype): %s", sac)
 
     every = block_lists(diffusion_model, max(1, depth))
     if not every:  # no repeated blocks (unusual): fall back to the top-level children
@@ -129,8 +133,9 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
 
     keep(skip)
     blocks = [m for m in every if hasattr(m, "org_forward")]
-    logging.info("[ZenTrainer] gradient checkpointing on %d blocks (depth %d%s)", len(blocks), depth,
-                 f", {state.kept} kept" if state.kept else "")
+    logging.info("[ZenTrainer] gradient checkpointing on %d blocks (depth %d%s%s)", len(blocks), depth,
+                 f", {state.kept} kept" if state.kept else "",
+                 ", attention kept" if save == "attention" and not offloading else "")
     state.keep = keep
     if offloading:
         # An offloaded layer's weight lives in a streaming buffer that the next layers reuse, so

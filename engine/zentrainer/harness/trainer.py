@@ -74,6 +74,8 @@ def _oom_advice(spec: TrainSpec, step: int) -> str:
         tips.append("turn on gradient checkpointing")
     elif isinstance(m.grad_checkpoint_skip, int) and m.grad_checkpoint_skip:
         tips.append(f"keep fewer blocks un-checkpointed ({m.grad_checkpoint_skip} -> 0)")
+    if m.gradient_checkpointing and not m.offloading and m.checkpoint_save == "attention":
+        tips.append("let checkpoints keep nothing (Memory -> Checkpoints keep: Nothing)")
     if not m.offloading:
         tips.append("turn on weight offloading")
     if d.resolution > 768:
@@ -273,7 +275,7 @@ class Trainer:
                 skip = m.grad_checkpoint_skip
                 with compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
-                                               0 if skip == "auto" else skip) as ckpt:
+                                               0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:
                     self._input_grad = ckpt.input_grad
                     self._ckpt = ckpt
                     self._keep_auto = skip == "auto" and not m.offloading and bool(ckpt.all) and torch.cuda.is_available()

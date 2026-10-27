@@ -948,3 +948,60 @@ def test_kept_blocks_are_the_biggest_last_first_and_move_between_steps(monkeypat
     assert not any(checkpointed())
     with gradient_checkpointing(net, True, 1, True, skip=2) as ck:  # offloading: fixed at the start
         assert ck.keep(4) == 2 and ck.kept == 2
+
+
+@pytest.mark.parametrize("save,runs", [("attention", 1), ("none", 2)])
+def test_checkpoints_keep_attention_so_it_runs_once(monkeypatch, save, runs):
+    import sys
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    from zentrainer.harness.memory import gradient_checkpointing
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+
+    def patch(m, offloading=False):  # ComfyUI's: the block's forward under torch's checkpoint
+        org = m.forward
+        m.org_forward = org
+        m.forward = lambda *a, **k: torch.utils.checkpoint.checkpoint(org, *a, use_reentrant=False, **k)
+
+    def unpatch(m):
+        if "org_forward" in m.__dict__:
+            m.forward = m.__dict__.pop("org_forward")
+
+    mod.patch, mod.unpatch = patch, unpatch
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.qkv, self.out = nn.Linear(16, 48), nn.Linear(16, 16)
+
+        def forward(self, x):
+            q, k, v = self.qkv(x).view(1, 6, 2, 3, 8).permute(3, 0, 2, 1, 4)
+            return x + self.out(F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(1, 6, 16))
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block(), Block()])
+
+    class Count(TorchDispatchMode):
+        n = 0
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            if "scaled_dot_product" in func.__name__ and "backward" not in func.__name__:
+                Count.n += 1
+            return func(*args, **(kwargs or {}))
+
+    torch.manual_seed(0)
+    net = Net()
+    x = torch.randn(1, 6, 16, requires_grad=True)
+    want = torch.autograd.grad(net.blocks[1](net.blocks[0](x)).square().sum(), x)[0]
+    with gradient_checkpointing(net, True, 1, False, save=save), Count():
+        got = torch.autograd.grad(net.blocks[1](net.blocks[0](x)).square().sum(), x)[0]
+    assert torch.allclose(got, want)
+    assert Count.n == 2 * runs  # two blocks: once each, or again in the backward

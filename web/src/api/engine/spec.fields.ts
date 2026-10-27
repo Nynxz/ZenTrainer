@@ -95,6 +95,7 @@ export interface SpecFields {
     gradient_checkpointing: boolean
     grad_checkpoint_depth: number
     grad_checkpoint_skip: number | "auto"
+    checkpoint_save: string
     offloading: boolean
     vram_headroom: number
     tread: number
