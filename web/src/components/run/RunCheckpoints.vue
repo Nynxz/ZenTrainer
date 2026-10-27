@@ -86,7 +86,7 @@ async function copy(text: string) {
         <span v-if="c.step === bestStep" class="chip best-chip" :title="bestBy === 'likeness' ? 'Its samples look most like the dataset\'s faces' : 'Lowest validation loss of the saved checkpoints'">best</span>
         <span class="spacer" />
         <span class="ck-val mono">
-          <template v-if="likeAt(c.step) != null"><span :title="likeCeil ? `How much its samples' faces look like the dataset's (same person ≳ 0.5); ${likeShare(likeAt(c.step)!, likeCeil)} of how alike your photos are to each other (${likeCeil.toFixed(2)})` : 'How much its samples\' faces look like the dataset\'s (same person ≳ 0.5)'">♥ {{ likeAt(c.step)!.toFixed(2) }}<template v-if="likeCeil"> ({{ likeShare(likeAt(c.step)!, likeCeil) }})</template></span> · </template>
+          <template v-if="likeAt(c.step) != null"><span :title="likeCeil ? `How much its samples' faces look like the dataset's (same person ≳ 0.5); ${likeShare(likeAt(c.step)!, likeCeil)} of how alike your photos are to each other (${likeCeil.toFixed(2)})` : 'How much its samples\' faces look like the dataset\'s (same person ≳ 0.5)'">♥ {{ likeAt(c.step)!.toFixed(2) }}<span v-if="likeCeil" class="share"> ({{ likeShare(likeAt(c.step)!, likeCeil) }})</span></span> · </template>
           <span title="Validation loss">{{ ckptVal(c.step) != null ? ckptVal(c.step)!.toFixed(4) : '—' }}</span>
         </span>
         <span class="ck-acts">
@@ -111,6 +111,15 @@ async function copy(text: string) {
   gap: 1px;
 }
 /* one line per checkpoint; its actions take the numbers' place on hover */
+.ckpts {
+  container-type: inline-size;
+}
+/* a narrow rail: the likeness share goes first (it's in the hover too) */
+@container (max-width: 290px) {
+  .ckpts .share {
+    display: none;
+  }
+}
 .ckpts .ckpt {
   position: relative;
   display: flex;
@@ -142,6 +151,11 @@ async function copy(text: string) {
   font-size: 10px;
   padding: 0 6px;
   line-height: 16px;
+  /* the chips give way, not the numbers: a row that's final and best still shows its loss */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ckpts .ckpt .chip.muted {
   color: var(--zen-muted);
@@ -150,6 +164,7 @@ async function copy(text: string) {
   font-size: 11px;
   color: var(--zen-muted);
   white-space: nowrap;
+  flex-shrink: 0;
   transition: opacity 0.12s ease;
 }
 .ckpts .ck-acts {

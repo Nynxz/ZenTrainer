@@ -502,8 +502,11 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
 
     <div class="row">
       <label class="f set"><span class="eyebrow">Into set</span>
-        <ZenInput v-model="form.set" size="sm" :class="{ bad: !validSet }" list="cp-sets" />
-        <datalist id="cp-sets"><option v-for="s in sets" :key="s" :value="s" /></datalist>
+        <ZenInput v-model="form.set" size="sm" :class="{ bad: !validSet }" placeholder="a set, or a new name" />
+        <!-- every set the dataset has, whatever's typed (a datalist only suggests what starts with it) -->
+        <span v-if="sets.length" class="set-picks">
+          <button v-for="s in sets" :key="s" type="button" class="set-pick" :class="{ on: s === form.set }" :title="`Caption into “${s}”`" @click.prevent="form.set = s">{{ s }}</button>
+        </span>
       </label>
       <div class="f"><span class="eyebrow">Images</span>
         <div class="seg">
@@ -1053,5 +1056,31 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
 }
 .hear-tip:hover {
   text-decoration: underline;
+}
+
+/* the dataset's caption sets, under Into set: one click picks one */
+.set-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.set-pick {
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 8px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-sm, 4px);
+  background: transparent;
+  color: var(--zen-muted);
+  cursor: pointer;
+}
+.set-pick:hover {
+  color: var(--zen-text);
+}
+.set-pick.on {
+  color: var(--zen-accent);
+  border-color: var(--zen-accent);
 }
 </style>

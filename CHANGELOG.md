@@ -72,6 +72,13 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   a Python example).
 
 ### Run form and look
+- **A run's rail folds:** click Time, Learning or Setup to fold it away (remembered in this browser).
+- **A grad norm or loss that blew up reads short** (6.3e16, the whole number on hover) instead of
+  running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
+- **Mask editor on the dataset page:** a button beside Add files (and Masks with a selection) opens
+  it on the first selected picture, or the first one.
+- **Auto-caption's Into set lists every set** under the field, one click each: the field's
+  suggestions showed only sets starting with what it already held.
 - **Fixed: a training step whose gradients overflowed broke the app's pages.** Its grad norm
   (infinite or NaN) went out as `Infinity` in the live updates and the run's details, which a
   browser can't read, so the Jobs page said it couldn't reach the engine. Such a value now goes out

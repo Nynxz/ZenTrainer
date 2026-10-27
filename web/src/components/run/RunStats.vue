@@ -5,9 +5,17 @@ import { ZenTip } from '@nynxz/zenkit-ui'
 import { computed } from 'vue'
 import { gb } from '@/stores/system'
 import { SHARE_TIP, likeShare } from '@/lib/likeness'
+import { isCollapsed, toggleCollapsed } from './collapse'
 import { dur, fmtLr, useRunContext } from './context'
 
 const { detail, last, vramPeak, wall, likeLast, likeFirst, likeCeil } = useRunContext()
+
+// a grad norm or loss as it fits the cell: 3 decimals while it's ordinary, "6.3e16" when a step's
+// gradients blew up (the full number is in the cell's hover)
+function fmtBig(v: number | null | undefined, digits = 3): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '–'
+  return Math.abs(v) >= 1000 ? v.toExponential(1).replace('e+', 'e') : v.toFixed(digits)
+}
 
 const valLast = computed(() => detail.value?.validation.at(-1))
 const valFirst = computed(() => detail.value?.validation[0])
@@ -17,6 +25,8 @@ interface Stat {
   /** what it means, behind an ⓘ */
   tip?: string
   mono?: boolean
+  /** the whole value, on hover, when v is shortened */
+  full?: string
   delta?: { good: boolean; text: string } | null
 }
 const statGroups = computed((): { title: string; items: Stat[] }[] => {
@@ -60,14 +70,14 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
       title: 'Learning',
       items: [
         { k: 'Learning rate', v: fmtLr(l?.lr), tip: "The step size now. Automagic and Prodigy set their own as they go; others follow the schedule" },
-        { k: 'Grad norm', v: l?.grad_norm?.toFixed(3) ?? '–', tip: 'How strongly this step pulled on the LoRA (before clipping). Spikes are hard pictures; a steady climb can mean it’s going unstable' },
+        { k: 'Grad norm', v: fmtBig(l?.grad_norm), full: l?.grad_norm != null ? String(l.grad_norm) : undefined, tip: 'How strongly this step pulled on the LoRA (before clipping). Spikes are hard pictures; a steady climb can mean it’s going unstable' },
         {
           k: 'Validation',
           v: valLast.value ? valLast.value.val_loss.toFixed(4) : '–',
           delta: valDelta,
           tip: 'Loss on a fixed set: the same pictures at the same noise, every time, so it moves only when the LoRA does (the training loss jumps with each step’s random noise). The arrow: change since before training. It’s drawn from the training pictures, so it shows learning, not overfitting: judge that by the samples',
         },
-        { k: 'Loss', v: l?.loss?.toFixed(4) ?? '–', tip: 'This step’s loss. Noisy: each step picks a random picture and noise level. The chart’s smoothed line is the trend' },
+        { k: 'Loss', v: fmtBig(l?.loss, 4), full: l?.loss != null ? String(l.loss) : undefined, tip: 'This step’s loss. Noisy: each step picks a random picture and noise level. The chart’s smoothed line is the trend' },
         ...(likeLast.value
           ? [{
               k: 'Likeness',
@@ -85,12 +95,15 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
 
 <template>
   <section v-for="g in statGroups" :key="g.title" class="card">
-    <header class="sec-head"><span class="sec-title">{{ g.title }}</span></header>
-    <dl class="sgrid">
+    <header class="sec-head fold" :class="{ folded: isCollapsed(g.title) }" :title="isCollapsed(g.title) ? 'Show' : 'Fold away'" @click="toggleCollapsed(g.title)">
+      <span class="sec-title">{{ g.title }}</span><span class="spacer" />
+      <i class="mdi fold-chev" :class="isCollapsed(g.title) ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
+    </header>
+    <dl v-if="!isCollapsed(g.title)" class="sgrid">
       <div v-for="it in g.items" :key="it.k" class="scell">
         <dt><ZenTip v-if="it.tip" :text="it.tip">{{ it.k }}</ZenTip><template v-else>{{ it.k }}</template></dt>
         <dd :class="{ mono: it.mono !== false }">
-          <span class="v">{{ it.v }}</span><span v-if="it.delta" class="delta" :class="it.delta.good ? 'good' : 'bad'">{{ it.delta.text.trim() }}</span>
+          <span class="v" :title="it.full ?? it.v">{{ it.v }}</span><span v-if="it.delta" class="delta" :class="it.delta.good ? 'good' : 'bad'">{{ it.delta.text.trim() }}</span>
         </dd>
       </div>
     </dl>

@@ -99,6 +99,15 @@ function onEsc(e: KeyboardEvent) {
   selected.clear()
 }
 
+// ---- masks: the editor opens on the first selected picture, else the first one ---------------
+const maskStart = computed(() => {
+  const pictures = items.value.filter((i) => i.kind !== 'video')
+  return pictures.find((i) => selected.has(i.path)) ?? pictures[0] ?? null
+})
+function openMasks() {
+  if (maskStart.value) router.push({ path: `/datasets/${encodeURIComponent(props.name)}/mask`, query: { path: maskStart.value.path } })
+}
+
 // ---- upload -------------------------------------------------------------------------------
 const dragging = ref(false)
 const uploading = ref(false)
@@ -163,6 +172,7 @@ onUnmounted(() => {
         <template v-if="counts.mismatched"> · <span class="warn" title="A mask with a different shape from its image is stretched over it and won't line up">{{ counts.mismatched }} mask{{ counts.mismatched === 1 ? '' : 's' }} don't fit</span></template>
       </span>
       <span class="spacer" />
+      <ZenButton size="sm" icon="mdi mdi-vector-selection" :disabled="!maskStart" title="Paint or find (SAM3) where each picture trains; ←/→ moves between pictures" @click="openMasks">Mask editor</ZenButton>
       <ZenButton size="sm" icon="mdi mdi-upload" :disabled="uploading" @click="fileInput?.click()">Add files</ZenButton>
       <ZenButton size="sm" variant="primary" icon="mdi mdi-play" @click="router.push({ path: '/runs/new', query: { dataset: name } })">Train on this</ZenButton>
       <input ref="fileInput" type="file" multiple accept="image/*,video/*,.txt" hidden @change="upload([...(($event.target as HTMLInputElement).files ?? [])])" />
@@ -230,6 +240,7 @@ onUnmounted(() => {
         <span class="sel-sep" />
         <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /> Mute</button>
         <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /> Unmute</button>
+        <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /> Masks</button>
         <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /> Delete</button>
         <span class="sel-sep" />
         <button class="chip-btn" title="Clear the selection (Esc)" @click="selected.clear()"><i class="mdi mdi-close" /></button>

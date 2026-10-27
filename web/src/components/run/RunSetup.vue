@@ -4,6 +4,7 @@
 import { ZenModal } from '@nynxz/zenkit-ui'
 import { computed, ref } from 'vue'
 import RunDatasetLightbox from './RunDatasetLightbox.vue'
+import { isCollapsed, toggleCollapsed } from './collapse'
 import { fmtLr, useRunContext } from './context'
 
 const { detail } = useRunContext()
@@ -69,12 +70,13 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
 
 <template>
   <section class="card">
-    <header class="sec-head">
+    <header class="sec-head fold" :class="{ folded: isCollapsed('Setup') }" :title="isCollapsed('Setup') ? 'Show' : 'Fold away'" @click="toggleCollapsed('Setup')">
       <span class="sec-title">Setup</span>
       <span class="spacer" />
-      <button class="link" @click="specOpen = true"><i class="mdi mdi-code-json" /> Full spec</button>
+      <button class="link" @click.stop="specOpen = true"><i class="mdi mdi-code-json" /> Full spec</button>
+      <i class="mdi fold-chev" :class="isCollapsed('Setup') ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
     </header>
-    <dl class="kv">
+    <dl v-if="!isCollapsed('Setup')" class="kv">
       <div v-for="it in setup" :key="it.k" class="kv-row">
         <dt>{{ it.k }}</dt>
         <dd :title="it.title ?? it.v">
