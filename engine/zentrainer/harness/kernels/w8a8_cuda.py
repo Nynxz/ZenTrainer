@@ -64,7 +64,14 @@ def supported(grad_2d: torch.Tensor, q: torch.Tensor, group: int) -> bool:
             and grad_2d.stride(1) == 1 and grad_2d.stride(0) % 8 == 0
             and (torch.compiler.is_compiling() or _aligned(grad_2d, q))
             and m > 0 and n % 64 == 0 and k % 256 == 0 and group in (0, 256)
-            and _load(grad_2d.device) is not None)
+            and (_loaded(grad_2d.device) if torch.compiler.is_compiling() else _load(grad_2d.device) is not None))
+
+
+def _loaded(device: torch.device) -> bool:
+    """Read-only, for a trace (it can't write the cache): load() ran when the int8 backward was
+    enabled (int8_backward.enable)."""
+    idx = device.index if device.index is not None else torch.cuda.current_device()
+    return _kernels.get(idx) is not None
 
 
 def _aligned(grad_2d: torch.Tensor, q: torch.Tensor) -> bool:

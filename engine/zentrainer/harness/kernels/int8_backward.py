@@ -47,6 +47,10 @@ def enable(mode: str | bool) -> None:
     _mode = "fused" if mode is True else (mode or "")
     if _mode:
         _patch()
+    if _mode == "w8a8" and torch.cuda.is_available():
+        from . import w8a8_cuda
+
+        w8a8_cuda._load(torch.device("cuda", torch.cuda.current_device()))  # now: a compiled block's trace can't
 
 
 def _hadamard(size: int, device, dtype) -> torch.Tensor:
