@@ -49,8 +49,8 @@ const groups = computed(() => {
   const other = listed.value.filter((f) => !isStarred(f.id) && isOther(f.id))
   return [
     ...(starred.length ? [{ key: 'starred', label: 'Starred', items: starred }] : []),
-    ...(main.length ? [{ key: 'main', label: starred.length ? 'The rest' : 'Models', items: main }] : []),
-    ...(other.length ? [{ key: 'other', label: 'Others', items: other }] : []),
+    ...(main.length ? [{ key: 'main', label: 'Models', items: main }] : []),
+    ...(other.length ? [{ key: 'other', label: 'Other models', items: other }] : []),
   ]
 })
 const shown = computed(() => families.value.find((f) => f.id === picked.value) ?? null)

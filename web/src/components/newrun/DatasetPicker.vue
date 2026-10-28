@@ -32,12 +32,14 @@ const sorted = computed(() => {
   }
   return props.datasets.filter((d) => !q || d.folder.toLowerCase().includes(q)).sort(by[sort.value])
 })
+// the list under Starred says how it's sorted, starred or not
+const SORT_LABEL: Record<Sort, string> = { recent: 'Recently changed', name: 'A to Z', size: 'Most pictures' }
 const groups = computed(() => {
   const starred = sorted.value.filter((d) => isDatasetStarred(d.folder))
   const rest = sorted.value.filter((d) => !isDatasetStarred(d.folder))
   return [
     ...(starred.length ? [{ key: 'starred', label: 'Starred', items: starred }] : []),
-    ...(rest.length ? [{ key: 'all', label: starred.length ? 'The rest' : 'Datasets', items: rest }] : []),
+    ...(rest.length ? [{ key: 'all', label: SORT_LABEL[sort.value], items: rest }] : []),
   ]
 })
 const shown = computed(() => props.datasets.find((d) => d.folder === picked.value) ?? null)
