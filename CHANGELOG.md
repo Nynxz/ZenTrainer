@@ -85,6 +85,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **Smoother moving around:** Back and Forward land where each page was scrolled; the Datasets
   and Models lists show at once on a return and refresh in place; switching between Apps no longer
   reloads the whole page.
+- **System's runs table stays short:** the 12 biggest first with Show all, the runs that keep
+  nothing on disk out of the way behind a count, a search, a Total column, and each column's
+  header sorts by it.
 - **Jobs has a search** (a run by name or id, a caption job by what it captioned), in the same
   sticky toolbar Models and the datasets pages have now, with one style of switch for their
   filters, sorts and views.

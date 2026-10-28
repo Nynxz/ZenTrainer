@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ZenButton } from '@nynxz/zenkit-ui'
+import { ZenButton, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref } from 'vue'
 import { engine, type Health, type StorageReport } from '@/api/engine'
 import { fmtBytes } from '@/stores/downloads'
@@ -51,6 +51,28 @@ const total = computed(() => usage.value.reduce((n, r) => n + r.bytes, 0))
 // every finished run's states at once; stopped runs keep theirs to resume from
 const LIVE = ['queued', 'loading', 'training', 'paused']
 const sweepable = computed(() => (store.value?.runs ?? []).filter((r) => r.states && !RESUMABLE.includes(r.status) && !LIVE.includes(r.status)))
+// the runs table: biggest first (or by a column), the 12 first until Show all, the runs that keep nothing out of
+// the way behind a count, and a search (by name or id) that looks through all of them
+const RUNS_SHOWN = 12
+const runQuery = ref('')
+const allRuns = ref(false)
+const emptyShown = ref(false)
+type StoredRun = StorageReport['runs'][number]
+const runSize = (r: StoredRun) => r.checkpoints + r.states + r.samples
+// a column's header sorts by it: a name A to Z, a size biggest first (Total, the default)
+type RunSort = 'name' | 'checkpoints' | 'states' | 'samples' | 'total'
+const runSort = ref<RunSort>('total')
+const sortValue = (r: StoredRun, k: RunSort) => (k === 'total' ? runSize(r) : k === 'name' ? 0 : r[k])
+const runsFound = computed(() => {
+  const q = runQuery.value.trim().toLowerCase()
+  const k = runSort.value
+  return [...(store.value?.runs ?? [])]
+    .filter((r) => !q || r.name.toLowerCase().includes(q) || r.run_id.includes(q))
+    .sort((a, b) => (k === 'name' ? a.name.localeCompare(b.name) : sortValue(b, k) - sortValue(a, k) || runSize(b) - runSize(a)))
+})
+const emptyRuns = computed(() => runsFound.value.filter((r) => !runSize(r)).length)
+const runsListed = computed(() => runsFound.value.filter((r) => emptyShown.value || runSize(r)))
+const runRows = computed(() => (allRuns.value || runQuery.value.trim() ? runsListed.value : runsListed.value.slice(0, RUNS_SHOWN)))
 const kept = computed(() => (store.value?.runs ?? []).filter((r) => r.states && RESUMABLE.includes(r.status)))
 function cleanAllStates() {
   const bytes = sweepable.value.reduce((n, r) => n + r.states, 0)
@@ -170,7 +192,9 @@ async function restart() {
         <div class="card">
           <div class="tbl-head">
             <span class="eyebrow">Runs</span>
+            <span class="muted small">{{ store.runs.length }}</span>
             <span v-if="anyActive" class="muted small">cleanup waits until training finishes</span>
+            <div class="run-search"><ZenInput v-model="runQuery" size="sm" placeholder="Search runs" /></div>
             <button
               v-if="sweepable.length"
               class="chip-btn quiet"
@@ -181,16 +205,24 @@ async function restart() {
               <i class="mdi mdi-broom" /> Delete all finished runs' states · {{ fmtBytes(sweepable.reduce((n, r) => n + r.states, 0)) }}
             </button>
           </div>
-          <table class="tbl">
+          <table class="tbl runs-tbl">
             <thead>
-              <tr><th>Run</th><th>Checkpoints</th><th>Resume states</th><th>Samples</th><th /></tr>
+              <tr>
+                <th v-for="c in ([['name', 'Run'], ['checkpoints', 'Checkpoints'], ['states', 'Resume states'], ['samples', 'Samples'], ['total', 'Total']] as const)" :key="c[0]">
+                  <button class="sort" :class="{ on: runSort === c[0] }" :title="c[0] === 'name' ? 'Sort by name' : `Sort by ${c[1].toLowerCase()}, biggest first`" @click="runSort = c[0]">
+                    {{ c[1] }}<i v-if="runSort === c[0]" :class="c[0] === 'name' ? 'mdi mdi-arrow-up' : 'mdi mdi-arrow-down'" />
+                  </button>
+                </th>
+                <th />
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="r in store.runs" :key="r.run_id">
+              <tr v-for="r in runRows" :key="r.run_id">
                 <td><RouterLink :to="`/runs/${r.run_id}`" class="name">{{ r.name }}</RouterLink><span class="muted small"> · {{ r.status }}</span></td>
                 <td class="mono">{{ r.checkpoint_count ? `${r.checkpoint_count} · ${fmtBytes(r.checkpoints)}` : '–' }}</td>
                 <td class="mono">{{ r.states ? fmtBytes(r.states) : '–' }}</td>
                 <td class="mono">{{ r.samples ? fmtBytes(r.samples) : '–' }}</td>
+                <td class="mono">{{ runSize(r) ? fmtBytes(runSize(r)) : '–' }}</td>
                 <td class="act">
                   <button
                     v-if="r.states"
@@ -205,6 +237,18 @@ async function restart() {
               </tr>
             </tbody>
           </table>
+          <div v-if="runsListed.length > RUNS_SHOWN || emptyRuns || (runQuery.trim() && !runsFound.length)" class="tbl-foot muted small">
+            <template v-if="runQuery.trim() && !runsFound.length">No runs match “{{ runQuery.trim() }}”.</template>
+            <template v-else>
+              <button v-if="!allRuns && !runQuery.trim() && runsListed.length > RUNS_SHOWN" class="more-link" @click="allRuns = true">Show all {{ runsListed.length }}</button>
+              <button v-else-if="allRuns && !runQuery.trim() && runsListed.length > RUNS_SHOWN" class="more-link" @click="allRuns = false">Show the first {{ RUNS_SHOWN }}</button>
+              <template v-if="emptyRuns">
+                <span v-if="runsListed.length > RUNS_SHOWN && !runQuery.trim()"> · </span>
+                {{ emptyRuns }} keep nothing on disk:
+                <button class="more-link" @click="emptyShown = !emptyShown">{{ emptyShown ? 'hide them' : 'show them' }}</button>
+              </template>
+            </template>
+          </div>
         </div>
 
         <div class="card">
@@ -341,8 +385,54 @@ async function restart() {
   gap: 10px;
   min-height: 30px;
 }
+.tbl-head .run-search {
+  margin-left: auto;
+  width: 220px;
+}
+.tbl-head .run-search + .chip-btn {
+  margin-left: 0;
+}
 .tbl-head .chip-btn {
   margin-left: auto;
+}
+/* the runs table keeps its columns where they are when it's sorted or searched */
+.runs-tbl {
+  table-layout: fixed;
+}
+.runs-tbl th:nth-child(1) {
+  width: 34%;
+}
+.runs-tbl th:nth-child(n + 2):nth-child(-n + 5) {
+  width: 13%;
+}
+.tbl th .sort {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.tbl th .sort:hover,
+.tbl th .sort.on {
+  color: var(--zen-text);
+}
+.tbl-foot {
+  padding: 10px 8px 2px;
+}
+.more-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--zen-accent);
+  cursor: pointer;
+}
+.more-link:hover {
+  text-decoration: underline;
 }
 .tbl {
   width: 100%;
