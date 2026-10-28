@@ -4,10 +4,10 @@
 import { ZenCombo, ZenField, ZenInput, ZenNumber, ZenSwitch, ZenTip } from '@nynxz/zenkit-ui'
 import { computed, reactive } from 'vue'
 import type { OptimizerInfo } from '@/api/engine'
-import AdapterPicker from '@/components/AdapterPicker.vue'
 import FocusField from '@/components/FocusField.vue'
 import { fmtBytes } from '@/stores/downloads'
 import { setSetting } from '@/stores/settings'
+import LoraUses from './LoraUses.vue'
 import { items, useRunFormContext } from './form'
 
 const { spec, loraPlaces, choices, familyId, optimizers, dataset, datasets, opt, epochs, noise, resuming } = useRunFormContext()
@@ -18,6 +18,19 @@ const heldOutItems = computed(() => [
 ])
 
 const advanced = reactive({ training: false })
+// LoRA and LoKr: LoHa and OFT aren't ready (LoHa can't train on an int8 base). A run that already
+// uses one keeps it in the list, so its form doesn't show an empty field.
+// the optimizers it can train with now (and the run's own, if it isn't); the rest are a count
+const optimizerItems = computed(() =>
+  optimizers.value
+    .filter((o) => o.available || o.id === spec.optim.optimizer)
+    .map((o) => ({ value: o.id, label: o.label, keywords: o.note, o })),
+)
+const notInstalled = computed(() => optimizers.value.filter((o) => !o.available && o.id !== spec.optim.optimizer))
+const algorithms = computed(() => {
+  const ready = ['LoRA', 'LoKr']
+  return ready.includes(spec.network.algorithm) ? ready : [...ready, spec.network.algorithm]
+})
 // ---- where checkpoints go: one of ComfyUI's loras folders ---------------------------------
 const loraDir = computed({
   get: () => spec.output.lora_dir ?? loraPlaces.value.find((p) => p.default)?.path ?? '',
@@ -64,18 +77,6 @@ const alphaAuto = computed({
 const alphaValue = computed({
   get: () => spec.network.alpha ?? spec.network.rank,
   set: (v: number) => (spec.network.alpha = v),
-})
-const initFrom = computed({
-  get: () => spec.network.init_from ?? '',
-  set: (v: string) => (spec.network.init_from = v || null),
-})
-const trainingAdapter = computed({
-  get: () => spec.network.training_adapter ?? '',
-  set: (v: string) => (spec.network.training_adapter = v || null),
-})
-const baseLora = computed({
-  get: () => spec.network.base_lora ?? '',
-  set: (v: string) => (spec.network.base_lora = v || null),
 })
 // ---- AI Toolkit's timestep types as ours: its linear and sigmoid draw σ unshifted (shift 1), its
 // shift keeps the model's own schedule (shift 0), and weighted is linear with its Flex.1 weights
@@ -132,7 +133,7 @@ const patterns = computed({
     <ZenField label="Optimizer" stack :tip="opt ? `${opt.note} Suggested LR ${opt.lr_hint}.`.trim() : ''">
       <ZenCombo
         v-model="spec.optim.optimizer"
-        :items="optimizers.map((o) => ({ value: o.id, label: o.label, keywords: o.note, o }))"
+        :items="optimizerItems"
         :sorted="false"
         :pick-guard="(v: string | number) => !optimizers.find((o) => o.id === v)?.available"
         :menu-width="360"
@@ -149,13 +150,25 @@ const patterns = computed({
             <span class="muted mono small">{{ (item.o as OptimizerInfo).available ? `lr ${(item.o as OptimizerInfo).lr_hint}` : 'not installed' }}</span>
           </div>
         </template>
+        <template v-if="notInstalled.length" #footer>
+          <div class="opt-more small muted">
+            {{ notInstalled.length }} more with optional packages
+            <ZenTip :text="`${notInstalled.map((o) => o.label).join(', ')}: pip install -r requirements-optional.txt in ComfyUI's Python, then restart`" label="Which, and how" />
+          </div>
+        </template>
       </ZenCombo>
     </ZenField>
     <ZenField label="Learning rate" stack>
       <ZenNumber v-model="spec.optim.learning_rate" :min="0" :step="0.00001" :precision="6" />
     </ZenField>
-    <ZenField label="Rank" stack tip="8–16 for a character, 16–32 for a style">
-      <ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" />
+    <!-- what trains and its size together: the rank means a different thing for each -->
+    <ZenField label="Adapter" stack :tip="resuming ? 'Kept from the run it resumes: its saved state is this adapter at this rank' : 'LoRA, or LoKr (smaller files, often as good). Rank: 8–16 for a character, 16–32 for a style as a LoRA; 4–8 as a LoKr'">
+      <div class="adapter-row" :class="{ locked: resuming }">
+        <div class="view-switch text" role="radiogroup" aria-label="Adapter">
+          <button v-for="a in algorithms" :key="a" role="radio" :aria-checked="spec.network.algorithm === a" :class="{ on: spec.network.algorithm === a }" @click="resuming || (spec.network.algorithm = a)">{{ a }}</button>
+        </div>
+        <label class="rank"><span class="muted small">Rank</span><ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" :disabled="resuming" /></label>
+      </div>
     </ZenField>
     <ZenField label="Schedule" stack>
       <ZenCombo v-model="spec.optim.lr_scheduler" :items="items(['constant', 'linear', 'cosine'])" :searchable="false" :sorted="false" />
@@ -183,7 +196,7 @@ const patterns = computed({
         </template>
       </ZenCombo>
     </ZenField>
-    <ZenField label="Resume states" stack tip="Optimizer state for resuming a stopped run; often bigger than the LoRA">
+    <ZenField label="Resume states" stack tip="Optimizer state for resuming a stopped run; often bigger than the LoRA" :hint="spec.output.keep_states === 'none' ? 'A stopped or crashed run can’t be continued, only started over' : undefined">
       <ZenCombo
         v-model="spec.output.keep_states"
         :items="[{ value: 'latest', label: 'Latest only' }, { value: 'all', label: 'Every checkpoint' }, { value: 'none', label: 'None (no resuming)' }]"
@@ -210,7 +223,7 @@ const patterns = computed({
         <ZenField label="Warmup steps" stack><ZenNumber v-model="spec.optim.warmup_steps" :min="0" :step="10" :precision="0" /></ZenField>
         <ZenField label="Batch size" stack><ZenNumber v-model="spec.optim.batch_size" :min="1" :step="1" :precision="0" /></ZenField>
         <ZenField label="Grad accumulation" stack><ZenNumber v-model="spec.optim.grad_accumulation_steps" :min="1" :step="1" :precision="0" /></ZenField>
-        <ZenField label="LoRA+" stack tip="The LoRA's up matrices learn this many times faster than the down ones: trains faster at the same stability. 4 is a safe start, the paper uses 16. Off for LoHa/LoKr/OFT">
+        <ZenField label="LoRA+" stack tip="The LoRA's up matrices learn this many times faster than the down ones: trains faster at the same stability. 4 is a safe start, the paper uses 16. Off for LoKr">
           <div class="sw-row">
             <ZenSwitch :model-value="(spec.optim.lora_plus ?? 0) > 1" @update:model-value="spec.optim.lora_plus = $event ? 4 : 0" />
             <ZenNumber v-if="(spec.optim.lora_plus ?? 0) > 1" :model-value="spec.optim.lora_plus ?? 4" :min="1.5" :max="32" :step="1" :precision="1" @update:model-value="spec.optim.lora_plus = $event" />
@@ -234,7 +247,6 @@ const patterns = computed({
     <div class="subgroup" :class="{ locked: resuming }">
       <div class="sub-title">Network</div>
       <div class="grid-2">
-        <ZenField label="Algorithm" stack><ZenCombo v-model="spec.network.algorithm" :items="items(['LoRA', 'LoHa', 'LoKr', 'OFT'])" :searchable="false" :sorted="false" /></ZenField>
         <ZenField label="Layers" stack>
           <ZenCombo v-model="targets" :items="items(['attn', 'mlp', 'attn_mlp', 'all', 'custom'], { attn: 'Attention', mlp: 'MLP', attn_mlp: 'Attention + MLP', all: 'Every layer', custom: 'Custom' })" :searchable="false" :sorted="false" />
         </ZenField>
@@ -248,17 +260,8 @@ const patterns = computed({
         <ZenField label="LoRA precision" stack tip="fp32: small steps land. bf16 rounds most AdamW steps away; use it only with Automagic (stochastic rounding)">
           <ZenCombo v-model="spec.network.lora_dtype" :items="items(['fp32', 'bf16'], { fp32: 'fp32 (recommended)', bf16: 'bf16' })" :searchable="false" :sorted="false" />
         </ZenField>
-        <ZenField label="Continue from" stack>
-          <ZenCombo v-model="initFrom" :items="[{ value: '', label: 'New LoRA' }, ...items(choices.loras)]" :item-height="30" />
-        </ZenField>
-        <ZenField label="Training adapter" stack class="span-2" tip="A LoRA applied while training only, never in samples or the saved file. Guidance-distilled models (MiniMax H3) train much better on a de-distillation adapter">
-          <AdapterPicker v-model="trainingAdapter" :family="familyId" />
-        </ZenField>
-        <ZenField label="Base LoRA" stack class="span-2" tip="A LoRA the new one sits on everywhere: training, samples and use. For a fix the model always needs (MOSS SFT's destripe) or an edit LoRA to build on. The new LoRA learns only what's left, so load the base beside it when you use it">
-          <AdapterPicker v-model="baseLora" :family="familyId" kind="base" />
-        </ZenField>
-        <ZenField v-if="spec.network.base_lora" label="Base strength" stack tip="The strength the base LoRA runs at, in training and samples. Use it at the same strength">
-          <ZenNumber :model-value="spec.network.base_strength ?? 1" :min="-4" :max="4" :step="0.05" :precision="2" @update:model-value="spec.network.base_strength = $event" />
+        <ZenField label="Other LoRAs" stack class="full-row" tip="A LoRA to train more on, one to sit under the new LoRA, or one that's on only while training: pick the file, then how it's used">
+          <LoraUses />
         </ZenField>
         <ZenField v-if="targets === 'custom'" label="Layer patterns" stack class="full-row" tip="One per line: a layer gets an adapter when its name matches any of them (regular expressions over names like diffusion_model.layers.30.proj.ffn_down). The Blocks and Skip blocks below still apply">
           <textarea v-model.lazy="patterns" class="patterns mono" rows="2" spellcheck="false" placeholder="proj\.ffn_(up_gate|down)$" />
@@ -393,5 +396,30 @@ const patterns = computed({
 }
 .opt-row.off {
   opacity: 0.5;
+}
+
+/* the adapter and its rank on one line */
+.adapter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.adapter-row .rank {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.adapter-row .rank > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.opt-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
 }
 </style>

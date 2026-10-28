@@ -6,7 +6,8 @@
 // A box (R) takes a region out, e.g. a watermark; the list on the left selects images, and "Apply to
 // selected" writes the mask to every selected image of this size (cut out of masks they already
 // have), with a preview first and an undo after.
-// Keys: [ / ] brush size, B brush, E eraser, P points, R box, ←/→ previous/next image, Ctrl+S save.
+// Keys: [ / ] brush size, B brush, E eraser, P points, R box, ←/→ previous/next image, Ctrl+S save,
+// Ctrl+→ save and next.
 import { ZenButton, ZenInput, ZenModal, ZenSlider } from '@nynxz/zenkit-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -223,7 +224,7 @@ function stroke(p: { x: number; y: number }) {
   render()
 }
 function down(e: PointerEvent) {
-  if (!loaded.value) return
+  if (!loaded.value || busy.value) return // saving: an edit now would be lost when Save & next moves on
   const p = toImage(e)
   if (p.x < 0 || p.y < 0 || p.x > W.value || p.y > H.value) return
   if (tool.value === 'points') {
@@ -380,7 +381,7 @@ async function save() {
     hasMask.value = true
     grow.value = 0
     feather.value = 0
-    status.value = 'Saved'
+    status.value = ''
     bust.value++
     await refresh()
   } catch (e) {
@@ -388,6 +389,15 @@ async function save() {
   } finally {
     busy.value = false
   }
+}
+// save (if anything changed: an untouched image keeps what it has), then the next image
+async function saveNext() {
+  if (busy.value || !loaded.value) return // the next picture still loading: its canvas isn't it yet
+  if (dirty.value || grow.value || feather.value) {
+    await save()
+    if (error.value) return // the save failed: stay on it
+  }
+  go(1)
 }
 async function remove() {
   if (!item.value || !confirm('Delete this image’s mask? It trains on the whole image again.')) return
@@ -557,6 +567,9 @@ function onKey(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault()
     save()
+  } else if ((e.ctrlKey || e.metaKey) && e.key === 'ArrowRight') {
+    e.preventDefault()
+    saveNext()
   } else if (e.key === '[') brush.value = Math.max(4, brush.value - 8)
   else if (e.key === ']') brush.value = Math.min(400, brush.value + 8)
   else if (e.key === 'b') tool.value = 'brush'
@@ -593,6 +606,8 @@ watch(path, load)
       </div>
       <ZenButton icon="mdi mdi-chevron-left" :disabled="index <= 0" @click="go(-1)">Previous</ZenButton>
       <ZenButton icon="mdi mdi-chevron-right" :disabled="index >= items.length - 1" @click="go(1)">Next</ZenButton>
+      <ZenButton icon="mdi mdi-content-save-outline" :disabled="busy || !loaded || !(dirty || grow || feather)" title="Save this mask (Ctrl+S)" @click="save">{{ dirty || grow || feather ? 'Save' : 'Saved' }}</ZenButton>
+      <ZenButton variant="primary" icon="mdi mdi-content-save-move-outline" :disabled="busy || !loaded || index >= items.length - 1" title="Save this mask, then the next image (Ctrl+→)" @click="saveNext">Save &amp; next</ZenButton>
     </div>
 
     <div class="editor">
@@ -640,23 +655,6 @@ watch(path, load)
 
       <aside class="side">
         <section class="card grp">
-          <div class="eyebrow">Find it (SAM3)</div>
-          <div class="row">
-            <ZenInput v-model="text" size="sm" placeholder="what to keep, e.g. person" @keydown.enter="detect" />
-            <ZenButton size="sm" icon="mdi mdi-magnify" :disabled="busy || !text.trim()" @click="detect">Find</ZenButton>
-          </div>
-          <p class="muted small">Or pick <b>Points</b> and click the subject: left-click keeps, right-click excludes, click a dot to take it away.</p>
-          <label class="f small">
-            <span class="muted">Confidence {{ threshold.toFixed(2) }}</span>
-            <ZenSlider v-model="threshold" :min="0.1" :max="0.9" :step="0.05" />
-          </label>
-          <div v-if="points.length" class="row small">
-            <span class="muted">{{ points.filter((p) => p.keep).length }} keep · {{ points.filter((p) => !p.keep).length }} exclude</span>
-            <button class="link" @click="(points = []), render()">Clear points</button>
-          </div>
-        </section>
-
-        <section class="card grp">
           <div class="eyebrow">Tools</div>
           <div class="seg">
             <button :class="{ on: tool === 'points' }" title="P" @click="tool = 'points'"><i class="mdi mdi-gesture-tap" /> Points</button>
@@ -675,10 +673,47 @@ watch(path, load)
             <button class="mini" title="Leave everything out, to paint back only what should train" @click="fill(false)">Drop all</button>
           </div>
         </section>
-
+        <section class="card grp">
+          <div class="eyebrow">Find it (SAM3)</div>
+          <div class="row">
+            <ZenInput v-model="text" size="sm" placeholder="what to keep, e.g. person" @keydown.enter="detect" />
+            <ZenButton size="sm" icon="mdi mdi-magnify" :disabled="busy || !text.trim()" @click="detect">Find</ZenButton>
+          </div>
+          <p class="muted small">Or <b>Points</b>: click keeps, right-click excludes, click a dot to remove it.</p>
+          <label class="f small">
+            <span class="muted">Confidence {{ threshold.toFixed(2) }}</span>
+            <ZenSlider v-model="threshold" :min="0.1" :max="0.9" :step="0.05" />
+          </label>
+          <div v-if="points.length" class="row small">
+            <span class="muted">{{ points.filter((p) => p.keep).length }} keep · {{ points.filter((p) => !p.keep).length }} exclude</span>
+            <button class="link" @click="(points = []), render()">Clear points</button>
+          </div>
+        </section>
+        <section class="card grp">
+          <div class="eyebrow">Mask</div>
+          <div class="seg small">
+            <button :class="{ on: show === 'overlay' }" @click="show = 'overlay'">Overlay</button>
+            <button :class="{ on: show === 'mask' }" @click="show = 'mask'">Mask only</button>
+          </div>
+          <label class="f small">
+            <span class="muted">{{ grow >= 0 ? 'Grow' : 'Shrink' }} {{ Math.abs(grow) }} px</span>
+            <ZenSlider v-model="grow" :min="-60" :max="60" :step="1" />
+          </label>
+          <label class="f small">
+            <span class="muted">Feather {{ feather }} px</span>
+            <ZenSlider v-model="feather" :min="0" :max="60" :step="1" />
+          </label>
+          <div v-if="status" class="small muted">{{ status }}</div>
+          <div v-if="error" class="small err">{{ error }}</div>
+          <div class="row small">
+            <span class="muted">{{ coverage != null ? `${Math.round(coverage * 100)}% trains at full weight` : '' }}</span>
+            <span class="spacer" />
+            <button v-if="hasMask" class="link danger" :disabled="busy" @click="remove">Delete mask</button>
+          </div>
+        </section>
         <section v-if="item" class="card grp">
           <div class="eyebrow">This size · {{ item.width }}×{{ item.height }}</div>
-          <p class="muted small">{{ sameSize.length }} image{{ sameSize.length === 1 ? '' : 's' }} this size, {{ sameSize.filter((i) => i.mask).length }} masked</p>
+          <p class="muted small">{{ sameSize.length }} image{{ sameSize.length === 1 ? '' : 's' }}, {{ sameSize.filter((i) => i.mask).length }} masked. Apply this mask to the ones you select</p>
           <template v-if="sameMasks.length">
             <span class="muted small">Start from one of their masks:</span>
             <div class="mask-picks">
@@ -699,34 +734,6 @@ watch(path, load)
           <div v-if="lastBatch" class="row small">
             <span class="muted">Applied to {{ lastBatch.count }}</span>
             <button class="link" :disabled="busy" @click="undoApply">Undo</button>
-          </div>
-        </section>
-
-        <section class="card grp">
-          <div class="eyebrow">Edges</div>
-          <label class="f small">
-            <span class="muted">{{ grow >= 0 ? 'Grow' : 'Shrink' }} {{ Math.abs(grow) }} px</span>
-            <ZenSlider v-model="grow" :min="-60" :max="60" :step="1" />
-          </label>
-          <label class="f small">
-            <span class="muted">Feather {{ feather }} px</span>
-            <ZenSlider v-model="feather" :min="0" :max="60" :step="1" />
-          </label>
-          <div class="seg small">
-            <button :class="{ on: show === 'overlay' }" @click="show = 'overlay'">Overlay</button>
-            <button :class="{ on: show === 'mask' }" @click="show = 'mask'">Mask only</button>
-          </div>
-        </section>
-
-        <section class="card grp">
-          <div class="row small">
-            <span class="muted">{{ coverage != null ? `${Math.round(coverage * 100)}% trains at full weight` : '' }}</span>
-          </div>
-          <div v-if="status" class="small muted">{{ status }}</div>
-          <div v-if="error" class="small err">{{ error }}</div>
-          <div class="row">
-            <ZenButton variant="primary" icon="mdi mdi-content-save-outline" :disabled="busy || !loaded" @click="save">{{ dirty || grow || feather ? 'Save mask' : 'Saved' }}</ZenButton>
-            <ZenButton v-if="hasMask" icon="mdi mdi-trash-can-outline" :disabled="busy" @click="remove">Delete</ZenButton>
           </div>
         </section>
       </aside>
@@ -890,6 +897,12 @@ watch(path, load)
   color: var(--zen-accent);
   cursor: pointer;
 }
+.link.danger {
+  color: var(--zen-muted);
+}
+.link.danger:hover {
+  color: var(--zen-error, #e5484d);
+}
 .small {
   font-size: 12px;
 }
@@ -961,7 +974,7 @@ watch(path, load)
   font: inherit;
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-sm);
   cursor: pointer;
 }
 .chip.on {

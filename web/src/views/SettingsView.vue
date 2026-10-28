@@ -1,13 +1,14 @@
 <script setup lang="ts">
 // Settings, top to bottom: versions (what's running, what's newer: the first thing to check when
-// something's off), appearance, training defaults, faces, then where things are stored.
+// something's off), general (how much of the app shows), training defaults, appearance, faces,
+// then where things are stored.
 // Theme previews are drawn from each pack's own tokens, so every ZenKit pack and user drop-in gets
 // one without shipping banner images.
 import { ZenButton, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { engine, type EngineSettings, type Health } from '@/api/engine'
 import { SETTINGS, setSetting, settings, type SettingId } from '@/stores/settings'
-import { checkingUpdates, checkUpdates, comfyVersion as comfy, webNewer, webStale, ztVersion as zt } from '@/stores/status'
+import { checkingUpdates, checkUpdates, comfyVersion as comfy, engineStale, restartEngine, restarting, webBuildable, webNewer, webStale, ztVersion as zt } from '@/stores/status'
 import { currentModes, currentTheme, packCards, setMode, setTheme } from '@/lib/theme'
 
 const mode = computed(() => currentTheme.value.mode)
@@ -24,6 +25,15 @@ const shownPacks = computed(() =>
     .filter((p) => packFilter.value === 'all' || p.modes.includes(packFilter.value))
     .sort((a, b) => Number(!!COMFY[b.id]) - Number(!!COMFY[a.id]) || (a.id === 'maroon-volt' ? -1 : b.id === 'maroon-volt' ? 1 : 0)),
 )
+// a few packs, the current one among them, until Show all: 29 cards would be most of the page
+const PACKS_FOLDED = 8
+const allPacks = ref(false)
+const foldedPacks = computed(() => {
+  if (allPacks.value || shownPacks.value.length <= PACKS_FOLDED) return shownPacks.value
+  const first = shownPacks.value.slice(0, PACKS_FOLDED)
+  const cur = shownPacks.value.find((p) => p.id === currentTheme.value.id)
+  return cur && !first.includes(cur) ? [...first.slice(0, PACKS_FOLDED - 1), cur] : first
+})
 // the swatch shows the pack in the current mode when it has it
 const sw = (p: (typeof packCards.value)[number]) => (p.modes.includes(mode.value) ? p.swatch[mode.value] : p.swatch[p.modes[0]!])!
 
@@ -76,6 +86,12 @@ async function copyVersions() {
   setTimeout(() => (copied.value = false), 1500)
 }
 const reload = () => location.reload()
+// a web-only update: rebuild here (an engine restart too goes through the sidebar's button, which
+// waits for training to finish)
+async function rebuild() {
+  if (!confirm('Rebuild the web app now? The page reloads when it’s done.')) return
+  await restartEngine().catch((e) => alert(String((e as Error).message ?? e)))
+}
 
 // Storage: the ZenTrainer folder (datasets and results out of ComfyUI's input/output). The engine
 // reads it at start, so a saved change shows as pending until ComfyUI restarts.
@@ -198,7 +214,12 @@ async function pickFace(id: string) {
           <span v-if="WEB.dirty" class="tag-s" title="Built from web files with local changes">local changes</span>
           <div class="status">
             <span v-if="webNewer" class="warn"><i class="mdi mdi-refresh" /> rebuilt since this tab opened: <button class="link" @click="reload">reload</button> to see it</span>
-            <span v-else-if="webStale" class="warn"><i class="mdi mdi-hammer-wrench" /> its source is newer than this build (after an update): the sidebar's update button rebuilds it</span>
+            <span v-else-if="webStale" class="warn">
+              <i class="mdi mdi-hammer-wrench" /> its source is newer than this build (after an update)
+              <button v-if="webBuildable && !engineStale" class="link" :disabled="restarting" @click="rebuild">{{ restarting ? 'rebuilding…' : 'rebuild it' }}</button>
+              <template v-else-if="webBuildable">: the sidebar's update button rebuilds it and restarts ComfyUI</template>
+              <template v-else>: run <span class="mono">pnpm install &amp;&amp; pnpm build</span> in web/</template>
+            </span>
             <span v-else-if="webMatches" class="ok"><i class="mdi mdi-check-circle-outline" /> built from the code on disk</span>
           </div>
         </dd>
@@ -229,6 +250,50 @@ async function pickFace(id: string) {
       </div>
     </section>
 
+
+    <section class="card section">
+      <div>
+        <h2>General</h2>
+        <p class="muted">How much of the app shows.</p>
+      </div>
+      <div v-for="id in settingsIn('General')" :key="id" class="stack">
+        <div class="eyebrow">{{ SETTINGS[id].label }}</div>
+        <div class="segmented">
+          <button
+            v-for="o in SETTINGS[id].options"
+            :key="String(o.value)"
+            :class="{ on: settings[id] === o.value }"
+            @click="setSetting(id, o.value)"
+          >
+            <i v-if="o.icon" :class="o.icon" /> {{ o.label }}
+          </button>
+        </div>
+        <p v-if="SETTINGS[id].description" class="muted hint">{{ SETTINGS[id].description }}</p>
+      </div>
+    </section>
+
+    <section class="card section">
+      <div>
+        <h2>Training</h2>
+        <p class="muted">Defaults for new runs. Each run keeps the values it started with; where LoRAs are saved is picked in New run.</p>
+      </div>
+      <div v-for="id in settingsIn('Training').filter((x) => SETTINGS[x].options.length)" :key="id" class="stack">
+        <div class="eyebrow">{{ SETTINGS[id].label }}</div>
+        <div class="segmented">
+          <button
+            v-for="o in SETTINGS[id].options"
+            :key="String(o.value)"
+            :class="{ on: settings[id] === o.value }"
+            @click="setSetting(id, o.value as never)"
+          >
+            <i v-if="o.icon" :class="o.icon" /> {{ o.label }}
+          </button>
+        </div>
+        <p v-if="SETTINGS[id].description" class="muted hint">{{ SETTINGS[id].description }}</p>
+        <p v-if="id === 'keepStates' && settings.keepStates === 'none'" class="warn hint"><i class="mdi mdi-alert-outline" /> New runs keep no resume states: a stopped or crashed run can't be continued, only started over.</p>
+      </div>
+    </section>
+
     <section class="card section">
       <div>
         <h2>Appearance</h2>
@@ -236,7 +301,7 @@ async function pickFace(id: string) {
       </div>
 
       <div class="stack">
-        <div class="eyebrow">Mode</div>
+        <div class="eyebrow">Light or dark</div>
         <div class="segmented">
           <button
             v-for="m in ['light', 'dark'] as const"
@@ -255,6 +320,7 @@ async function pickFace(id: string) {
         </p>
       </div>
 
+
       <div v-for="id in settingsIn('Appearance')" :key="id" class="stack">
         <div class="eyebrow">{{ SETTINGS[id].label }}</div>
         <div class="segmented">
@@ -269,7 +335,6 @@ async function pickFace(id: string) {
         </div>
         <p v-if="SETTINGS[id].description" class="muted hint">{{ SETTINGS[id].description }}</p>
       </div>
-
       <div class="stack">
         <div class="pack-head">
           <span class="eyebrow">Theme pack</span>
@@ -283,7 +348,7 @@ async function pickFace(id: string) {
         </div>
         <div class="packs">
           <button
-            v-for="p in shownPacks"
+            v-for="p in foldedPacks"
             :key="p.id"
             class="pack"
             :class="{ active: currentTheme.id === p.id }"
@@ -314,27 +379,9 @@ async function pickFace(id: string) {
             <i v-if="currentTheme.id === p.id" class="mdi mdi-check check" />
           </button>
         </div>
-      </div>
-    </section>
-
-    <section class="card section">
-      <div>
-        <h2>Training</h2>
-        <p class="muted">Defaults for new runs. Each run keeps the values it started with; where LoRAs are saved is picked in New run.</p>
-      </div>
-      <div v-for="id in settingsIn('Training').filter((x) => SETTINGS[x].options.length)" :key="id" class="stack">
-        <div class="eyebrow">{{ SETTINGS[id].label }}</div>
-        <div class="segmented">
-          <button
-            v-for="o in SETTINGS[id].options"
-            :key="String(o.value)"
-            :class="{ on: settings[id] === o.value }"
-            @click="setSetting(id, o.value as never)"
-          >
-            <i v-if="o.icon" :class="o.icon" /> {{ o.label }}
-          </button>
-        </div>
-        <p v-if="SETTINGS[id].description" class="muted hint">{{ SETTINGS[id].description }}</p>
+        <button v-if="shownPacks.length > PACKS_FOLDED" class="link more-packs" @click="allPacks = !allPacks">
+          {{ allPacks ? 'Show fewer' : `Show all ${shownPacks.length}` }}
+        </button>
       </div>
     </section>
 
@@ -426,6 +473,10 @@ async function pickFace(id: string) {
 </template>
 
 <style scoped>
+.more-packs {
+  align-self: flex-start;
+  font-size: 12px;
+}
 .narrow {
   max-width: 880px;
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ZenLotus } from '@nynxz/zenkit-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppSidebar from './components/AppSidebar.vue'
 import HoverPeek from './components/HoverPeek.vue'
 import LogDrawer from './components/LogDrawer.vue'
@@ -73,14 +73,56 @@ watch(drawerOpen, async (open) => {
 })
 watch(drawerHeight, (h) => drawerOpen.value && (roomPx.value = h))
 
-// new page: back to the top, and re-observe the new content for the scrollbar
+// a page's scroll, kept by its address: Back and Forward land where it was, a page opened anew
+// starts at the top. The page fills in as its data comes, so the restore keeps at it for a moment
+// until there's room to scroll that far. Then re-observe the new content for the scrollbar.
 const route = useRoute()
 const scroller = ref<InstanceType<typeof ScrollArea> | null>(null)
+const scrolls = new Map<string, number>()
+// the browser's Back or Forward: the router's history says so before it navigates (a popstate
+// listener of our own would hear it only after the navigation, microtasks running between listeners)
+let popped = false
+const router = useRouter()
+const stopListening = router.options.history.listen(() => (popped = true))
+// a pop that doesn't land on another page (a leave guard cancels it, or only the query changes)
+// mustn't make the next ordinary link restore an old scroll
+const stopAfter = router.afterEach((to, from, failure) => {
+  if (failure || to.path === from.path) popped = false
+})
+onUnmounted(() => (stopListening(), stopAfter()))
+// each restore has a number: a later one (Back again before the first got there) ends it, so it
+// can't write its page's scroll into the next page
+let restore = 0
+function scrollTo(top: number) {
+  const mine = ++restore
+  let frames = 0
+  // the user scrolling (wheel, touch, keys) ends it: the restore doesn't fight them
+  let stopped = false
+  const stop = () => (stopped = true)
+  const opts = { once: true, passive: true, capture: true } as const
+  for (const ev of ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const) addEventListener(ev, stop, opts)
+  const step = () => {
+    const el = scroller.value?.viewport
+    if (!el || stopped || mine !== restore) return
+    el.scrollTop = top
+    if (Math.abs(el.scrollTop - top) > 2 && frames++ < 90) requestAnimationFrame(step)
+  }
+  step()
+}
 watch(
   () => route.path,
-  async () => {
+  async (to, from) => {
+    const el = scroller.value?.viewport
+    if (el && from) {
+      // still the old page: the watch runs before it's swapped. The 200 latest pages, the oldest go
+      scrolls.delete(from)
+      scrolls.set(from, el.scrollTop)
+      if (scrolls.size > 200) scrolls.delete(scrolls.keys().next().value!)
+    }
+    const top = popped ? (scrolls.get(to) ?? 0) : 0
+    popped = false
     await nextTick()
-    if (scroller.value?.viewport) scroller.value.viewport.scrollTop = 0
+    scrollTo(top)
     scroller.value?.refresh()
   },
 )
@@ -101,7 +143,8 @@ watch(
         <ZenLotus class="lotus" /> <b class="zt-title">ZenTrainer</b>
       </header>
       <ScrollArea ref="scroller" class="content">
-        <main><RouterView /></main>
+        <!-- a page marked remount (an app) starts fresh when its address changes, not reused -->
+        <main><RouterView v-slot="{ Component, route: r }"><component :is="Component" :key="r.meta.remount ? r.path : undefined" /></RouterView></main>
         <!-- room to scroll the page's end up above the open log; below the content, so nothing visible moves -->
         <div class="log-room" :style="{ height: `${roomPx}px` }" aria-hidden="true" />
       </ScrollArea>

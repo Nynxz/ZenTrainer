@@ -1,15 +1,20 @@
 <script setup lang="ts">
 // Every dataset folder in ComfyUI's input directory: as cards (a fixed-shape mosaic, so every
-// card is the same size) or as a table that sorts. The view is remembered per browser.
-import { ZenButton, ZenEmpty, ZenInput } from '@nynxz/zenkit-ui'
+// card is the same size) or as a table that sorts. The view is remembered per browser. Starred
+// ones (the same stars as New run's dataset picker) come first, whichever the sort.
+import { ZenButton, ZenCombo, ZenEmpty, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { engine, thumbUrl, type DatasetInfo } from '@/api/engine'
 import CaptionRing from '@/components/CaptionRing.vue'
+import StarButton from '@/components/StarButton.vue'
+import StickyBar from '@/components/StickyBar.vue'
 import TemplateCard from '@/components/TemplateCard.vue'
+import { isDatasetStarred } from '@/stores/favorites'
+import { datasetsSeen } from '@/stores/lists'
 
 const router = useRouter()
-const datasets = ref<DatasetInfo[] | null>(null)
+const datasets = datasetsSeen // last visit's list at once, refreshed in place
 const error = ref<string | null>(null)
 const creating = ref(false)
 const newName = ref('')
@@ -70,9 +75,31 @@ const kinds = (d: DatasetInfo) =>
     { icon: 'mdi-swap-horizontal', n: d.pairs ?? 0, tip: 'edit pairs' },
   ].filter((k) => k.n)
 
+// the sort, for cards and table alike (the table's headers set it too), remembered like the view
 type Key = 'name' | 'items' | 'captioned' | 'modified' | 'health'
-const sortKey = ref<Key>('modified')
-const sortDir = ref(-1)
+const SORTS: { value: Key; label: string }[] = [
+  { value: 'modified', label: 'Changed' },
+  { value: 'name', label: 'Name' },
+  { value: 'items', label: 'Items' },
+  { value: 'captioned', label: 'Captioned' },
+  { value: 'health', label: 'Health' },
+]
+const SORT = 'zentrainer.datasets.sort'
+const [savedKey, savedDir] = read(SORT, 'modified:-1').split(':')
+const sortKey = ref<Key>(SORTS.some((o) => o.value === savedKey) ? (savedKey as Key) : 'modified')
+const sortDir = ref(savedDir === '1' ? 1 : -1)
+watch([sortKey, sortDir], ([k, d]) => {
+  try {
+    localStorage.setItem(SORT, `${k}:${d}`)
+  } catch {
+    // storage blocked
+  }
+})
+function pickSort(k: Key) {
+  if (k === sortKey.value) return
+  sortKey.value = k
+  sortDir.value = k === 'name' ? 1 : -1
+}
 function sortBy(k: Key) {
   if (sortKey.value === k) sortDir.value = -sortDir.value
   else {
@@ -87,9 +114,26 @@ const shown = computed(() => {
     sortKey.value === 'health'
       ? (overall(d) ?? -1)
       : { name: d.folder.toLowerCase(), items: d.images, captioned: d.images ? d.captioned / d.images : 0, modified: d.modified ?? 0 }[sortKey.value]
-  return [...list].sort((a, b) => (val(a) < val(b) ? -1 : val(a) > val(b) ? 1 : 0) * sortDir.value)
+  const star = (d: DatasetInfo) => Number(isDatasetStarred(d.folder))
+  return [...list].sort((a, b) => star(b) - star(a) || (val(a) < val(b) ? -1 : val(a) > val(b) ? 1 : 0) * sortDir.value)
 })
 
+// what's here, as Jobs says it: how many, their pictures, the masked ones, the space they take
+const summary = computed(() => {
+  const ds = datasets.value ?? []
+  const n = (k: (d: DatasetInfo) => number) => ds.reduce((t, d) => t + k(d), 0)
+  const pics = n((d) => d.images)
+  const masked = n((d) => (d.masked ? 1 : 0))
+  const bytes = n((d) => d.bytes ?? 0)
+  return [
+    `${ds.length} dataset${ds.length === 1 ? '' : 's'}`,
+    `${pics.toLocaleString()} picture${pics === 1 ? '' : 's'}`,
+    masked && `${masked} with masks`,
+    bytes && fmtBytes(bytes),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+})
 const link = (d: DatasetInfo) => `/datasets/${encodeURIComponent(d.folder)}`
 const thumb = (d: DatasetInfo, t: DatasetInfo['thumbs'][number], size = 256) =>
   thumbUrl(d.folder, t.path ?? t.subfolder.split('/').slice(1).concat(t.filename).join('/'), size)
@@ -110,7 +154,7 @@ const ago = (t?: number) => {
     <div class="page-head">
       <div class="titles">
         <h1>Datasets</h1>
-        <p v-if="datasets?.length" class="lede">{{ datasets.length }} in ComfyUI's input folder</p>
+        <p v-if="datasets?.length" class="lede">{{ summary }}</p>
       </div>
       <form v-if="creating" class="create" @submit.prevent="create">
         <ZenInput v-model="newName" placeholder="dataset name" />
@@ -124,13 +168,21 @@ const ago = (t?: number) => {
       Put a folder of images and captions in ComfyUI's input directory.
     </ZenEmpty>
     <template v-else-if="datasets">
-      <div class="bar">
-        <div class="seg">
-          <button :class="{ on: view === 'cards' }" title="Cards" @click="view = 'cards'"><i class="mdi mdi-view-grid-outline" /></button>
-          <button :class="{ on: view === 'table' }" title="Table" @click="view = 'table'"><i class="mdi mdi-view-list-outline" /></button>
+      <StickyBar>
+        <div class="page-toolbar card">
+          <div class="view-switch">
+            <button :class="{ on: view === 'cards' }" title="Cards" @click="view = 'cards'"><i class="mdi mdi-view-grid-outline" /></button>
+            <button :class="{ on: view === 'table' }" title="Table" @click="view = 'table'"><i class="mdi mdi-view-list-outline" /></button>
+          </div>
+          <div class="search"><ZenInput v-model="query" placeholder="Search datasets" size="sm" /></div>
+          <div class="sort">
+            <ZenCombo :model-value="sortKey" :items="SORTS" :sorted="false" :searchable="false" size="sm" title="Sort by" @update:model-value="pickSort($event as Key)" />
+            <button class="dir" :title="sortDir > 0 ? 'Ascending: click for descending' : 'Descending: click for ascending'" @click="sortDir = -sortDir">
+              <i :class="sortDir > 0 ? 'mdi mdi-sort-ascending' : 'mdi mdi-sort-descending'" />
+            </button>
+          </div>
         </div>
-        <div class="search"><ZenInput v-model="query" placeholder="Search datasets" size="sm" /></div>
-      </div>
+      </StickyBar>
 
       <!-- cards: one shape for every card -->
       <div v-if="view === 'cards'" class="grid">
@@ -144,6 +196,7 @@ const ago = (t?: number) => {
             <div class="mosaic" :class="`n${pics(d).length}`">
               <img v-for="t in pics(d)" :key="t.filename" :src="thumb(d, t)" loading="lazy" alt="" />
               <span v-if="!pics(d).length" class="none"><i class="mdi mdi-image-off-outline" /></span>
+              <span class="star-corner" :class="{ on: isDatasetStarred(d.folder) }"><StarButton :id="d.folder" :name="d.folder" kind="dataset" /></span>
               <span v-if="d.health || d.captioned < d.images" class="corner" :title="badgeTip(d)"><CaptionRing :done="d.captioned" :total="d.images" :scores="d.health?.scores" :size="34" /></span>
             </div>
           </template>
@@ -177,7 +230,10 @@ const ago = (t?: number) => {
           <span class="strip">
             <img v-for="t in pics(d).slice(0, 2)" :key="t.filename" :src="thumb(d, t, 96)" loading="lazy" alt="" />
           </span>
-          <RouterLink :to="link(d)" class="name ellipsis" :title="d.folder" @click.stop>{{ d.folder }}</RouterLink>
+          <span class="name-cell">
+            <StarButton :id="d.folder" :name="d.folder" kind="dataset" />
+            <RouterLink :to="link(d)" class="name ellipsis" :title="d.folder" @click.stop>{{ d.folder }}</RouterLink>
+          </span>
           <span class="kinds small mono">
             <span v-for="k in kinds(d)" :key="k.icon" :title="`${k.n} ${k.tip}`"><i class="mdi" :class="k.icon" />{{ k.n }}</span>
           </span>
@@ -201,39 +257,37 @@ const ago = (t?: number) => {
 </template>
 
 <style scoped>
+.sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  width: 170px;
+}
+.sort > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.dir {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--zen-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.dir:hover {
+  color: var(--zen-text);
+}
 .create {
   display: flex;
   gap: 8px;
   align-items: center;
-}
-.bar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.search {
-  width: 260px;
-}
-.seg {
-  display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
-  border-radius: var(--r-md);
-}
-.seg button {
-  border: none;
-  background: none;
-  color: var(--zen-muted);
-  width: 30px;
-  height: 26px;
-  border-radius: calc(var(--r-md) - 2px);
-  cursor: pointer;
-}
-.seg button.on {
-  background: var(--zen-selected-bg, var(--zen-surface-2));
-  color: var(--zen-selected-text, var(--zen-text));
-  box-shadow: inset 0 0 0 1px var(--zen-selected, var(--zen-accent));
 }
 .grid {
   display: grid;
@@ -278,6 +332,28 @@ const ago = (t?: number) => {
 .name {
   font-weight: 600;
   font-size: 13px;
+  min-width: 0;
+}
+/* the star: shown when starred, on hover otherwise */
+.mosaic .star-corner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--zen-bg) 70%, transparent);
+  opacity: 0;
+  transition: opacity var(--zen-dur-fast) ease;
+}
+.mosaic .star-corner.on,
+:deep(a:hover) .mosaic .star-corner,
+.mosaic:hover .star-corner,
+.mosaic .star-corner:focus-within {
+  opacity: 1;
+}
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 .mosaic .corner {

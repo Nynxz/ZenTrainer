@@ -12,7 +12,6 @@ import DatasetSection from '@/components/newrun/DatasetSection.vue'
 import { RUN_FORM, useRunForm } from '@/components/newrun/form'
 import MemorySection from '@/components/newrun/MemorySection.vue'
 import ModelSection from '@/components/newrun/ModelSection.vue'
-import RecipePicker from '@/components/newrun/RecipePicker.vue'
 import SaveRecipe from '@/components/SaveRecipe.vue'
 import RunSummary from '@/components/newrun/RunSummary.vue'
 import SamplesSection from '@/components/newrun/SamplesSection.vue'
@@ -25,7 +24,7 @@ const form = useRunForm()
 provide(RUN_FORM, form)
 const { spec, editing, retrying, resuming, resumeStep } = form
 const { imported, exportSettings, copySettings, importSettings, recipeApplied, undoRecipe } = form
-const recipesOpen = ref(false)
+
 
 const saveOpen = ref(false) // these settings as one of your recipes (the recipes dialog lists them under Yours)
 const openSave = () => (saveOpen.value = true)
@@ -89,9 +88,6 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
         </p>
       </div>
       <span v-if="copied" class="copied small"><i class="mdi mdi-check" /> Copied</span>
-      <button v-if="!resuming" class="bar-btn" title="Ready-made settings, ours and yours: applied here, sized to your dataset" @click="recipesOpen = true">
-        <i class="mdi mdi-book-open-page-variant-outline" /> Recipes
-      </button>
       <ZenPopover placement="bottom-end">
         <template #trigger="{ toggle }">
           <button class="bar-btn icon" title="Save these settings as a recipe, share them, or load someone's" @click="toggle"><i class="mdi mdi-dots-horizontal" /></button>
@@ -156,7 +152,6 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
 
       <RunSummary />
     </div>
-    <RecipePicker v-model:open="recipesOpen" />
     <SaveRecipe v-model:open="saveOpen" :spec="spec" />
   </div>
 </template>

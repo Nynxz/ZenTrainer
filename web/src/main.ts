@@ -37,7 +37,7 @@ const router = createRouter({
     { path: '/gallery', component: () => import('./views/GalleryView.vue') },
     { path: '/apps', component: () => import('./views/AppsView.vue') },
     { path: '/apps/w/txt2img', redirect: '/apps/text-to-image' },
-    { path: '/apps/:id', component: () => import('./views/AppView.vue'), props: true },
+    { path: '/apps/:id', component: () => import('./views/AppView.vue'), props: true, meta: { remount: true } },
     { path: '/system', component: () => import('./views/SystemView.vue') },
     { path: '/settings', component: () => import('./views/SettingsView.vue') },
   ],

@@ -216,3 +216,73 @@ textarea {
   object-position: -100000px -100000px;
   background: repeating-conic-gradient(#f0f 0 25%, #000 0 50%) 0 0 / 18px 18px;
 }
+
+/* a page's switch (cards / list, a filter, a sort): buttons in one frame, the chosen one ringed */
+.view-switch {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
+  border-radius: var(--r-md);
+}
+.view-switch button {
+  border: none;
+  background: none;
+  color: var(--zen-muted);
+  width: 30px;
+  height: 26px;
+  border-radius: calc(var(--r-md) - 2px);
+  cursor: pointer;
+}
+.view-switch button:hover {
+  color: var(--zen-text);
+}
+/* with words in it instead of icons */
+.view-switch.text button {
+  width: auto;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.view-switch button.on {
+  background: var(--zen-selected-bg, var(--zen-surface-2));
+  color: var(--zen-selected-text, var(--zen-text));
+  box-shadow: inset 0 0 0 1px var(--zen-selected, var(--zen-accent));
+}
+
+/* a page's sticky toolbar under its header (Datasets, a dataset, Models, Jobs): its filters and search */
+.page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 47px; /* Models' toolbar: a 29px control row in 8px padding */
+  padding: 0 10px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.page-toolbar .search {
+  flex: 1 1 120px;
+  min-width: 70px;
+}
+/* a phone: the controls wrap onto a second row rather than past the edge (the search, the side
+   panel's button) */
+@media (max-width: 720px) {
+  .page-toolbar {
+    height: auto;
+    min-height: 47px;
+    padding: 8px 10px;
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .page-toolbar .search {
+    flex-basis: 100%;
+  }
+}
+
+/* a dialog or the lightbox open: the page behind it stays put (its own lists still scroll) */
+body:has(.zen-modal, .zlb) .shell > .main > .scroll-area.content > .viewport {
+  overflow-y: hidden;
+}

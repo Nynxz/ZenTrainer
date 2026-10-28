@@ -354,12 +354,17 @@ def test_a_run_that_fails_to_reach_comfyui_is_tried_again(tmp_path, monkeypatch)
         if len(tried) == 1:
             raise ConnectionError("not listening yet")
 
-    async def run(seconds):
+    async def run(limit):
+        # until the retry has gone out (a slow CI runner can take longer than a fast machine), or
+        # the limit: a queue that never retries still fails
         task = asyncio.ensure_future(jobqueue.worker(dispatch, None, None, interval=0.01))
-        await asyncio.sleep(seconds)
+        for _ in range(int(limit / 0.01)):
+            if len(tried) >= 2 and q.current == "a":
+                break
+            await asyncio.sleep(0.01)
         task.cancel()
 
-    asyncio.run(run(0.1))
+    asyncio.run(run(5.0))
     assert tried[:2] == ["a", "a"] and q.current == "a" and q.snapshot()["order"] == ["b"]
 
 

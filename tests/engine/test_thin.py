@@ -27,6 +27,15 @@ def test_a_long_run_keeps_its_curve_and_its_latest_steps():
     assert abs(mean_all - mean_out) < 0.01  # the same curve, fewer points
 
 
+
+def test_a_nan_step_is_left_out_of_its_stretch_not_spread_over_it():
+    rows = _rows(10_000)
+    rows[5]["loss"] = float("nan")
+    rows[6]["loss"] = float("inf")
+    out, every = thin(rows, keep=1000, tail=100)
+    first = [r["loss"] for r in rows[:every] if r["loss"] == r["loss"] and r["loss"] != float("inf")]
+    assert abs(out[0]["loss"] - sum(first) / len(first)) < 1e-9
+
 def test_abandoned_steps_give_way_to_their_redo():
     rows = _rows(10) + _rows(5, start=6, elapsed0=100.0)  # resumed from step 5's checkpoint
     kept = history(rows)
