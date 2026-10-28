@@ -207,9 +207,8 @@ onUnmounted(() => {
       <span class="lbl">{{ simple ? 'Train a LoRA' : 'New run' }}</span>
     </RouterLink>
     <ScrollArea class="nav-scroll"><nav>
+      <div v-for="item in items.filter((i) => !i.experimental || settings.experimental)" :key="item.to" class="nav-row">
       <RouterLink
-        v-for="item in items.filter((i) => !i.experimental || settings.experimental)"
-        :key="item.to"
         :to="item.to"
         class="row item"
         :class="{ active: isActive(item.to) }"
@@ -223,11 +222,22 @@ onUnmounted(() => {
         <span class="lbl">{{ item.label }}</span>
         <span v-if="item.count?.()" class="lbl count">{{ item.count() }}</span>
       </RouterLink>
+      <!-- a paused queue: resume it here, as the update square beside Settings loads an update -->
+      <button
+        v-if="item.to === '/jobs' && queue.paused && (!collapsed || mobileOpen)"
+        class="sq"
+        :disabled="resuming"
+        :title="waiting.length ? `Queue paused: resume it (${waiting.length} waiting)` : 'Queue paused: resume it (a run you queue waits until then)'"
+        @click="resumeQueue"
+      >
+        <i :class="resuming ? 'mdi mdi-loading mdi-spin' : 'mdi mdi-play'" />
+      </button>
+      </div>
     </nav></ScrollArea>
 
     <!-- what's training, above the memory meters: one click to it. The queue rides on the card's
          foot as one "next" line (all of it in the tooltip), so the card stays put as runs come and go -->
-    <div v-if="running.length || waiting.length || queue.paused" class="live">
+    <div v-if="running.length || waiting.length" class="live">
       <RouterLink
         v-for="r in running"
         :key="r.run_id"
@@ -251,28 +261,17 @@ onUnmounted(() => {
           </span>
         </span>
       </RouterLink>
-      <!-- paused with nothing waiting still shows: the next run queued won't start until it's resumed -->
-      <div v-if="waiting.length || queue.paused" class="next-row">
+      <div v-if="waiting.length" class="next-row">
         <RouterLink
           to="/jobs"
           class="live-next"
           :class="{ paused: queue.paused }"
-          :title="waiting.length ? `${queue.paused ? 'Queue paused. ' : ''}Queued, in order:\n${waiting.map((w, i) => `${i + 1}. ${w.name}`).join('\n')}` : 'Queue paused: a run you queue waits until it’s resumed'"
+          :title="`${queue.paused ? 'Queue paused. ' : ''}Queued, in order:\n${waiting.map((w, i) => `${i + 1}. ${w.name}`).join('\n')}`"
           @click="emit('navigate')"
         >
-          <span class="ic"><i :class="queue.paused ? 'mdi mdi-pause-circle-outline' : 'mdi mdi-tray-full'" /><span v-if="waiting.length" class="q-count">{{ waiting.length }}</span></span>
-          <span v-if="waiting.length" class="lbl next-body"><span class="muted">{{ queue.paused ? 'Paused' : 'Next' }}</span><span class="ellipsis">{{ waiting[0]!.name }}</span><span v-if="waiting.length > 1" class="mono muted">+{{ waiting.length - 1 }}</span></span>
-          <span v-else class="lbl next-body"><span>Queue paused</span></span>
+          <span class="ic"><i :class="queue.paused ? 'mdi mdi-pause-circle-outline' : 'mdi mdi-tray-full'" /><span class="q-count">{{ waiting.length }}</span></span>
+          <span class="lbl next-body"><span class="muted">{{ queue.paused ? 'Paused' : 'Next' }}</span><span class="ellipsis">{{ waiting[0]!.name }}</span><span v-if="waiting.length > 1" class="mono muted">+{{ waiting.length - 1 }}</span></span>
         </RouterLink>
-        <button
-          v-if="queue.paused && (!collapsed || mobileOpen)"
-          class="sq sq-s"
-          :disabled="resuming"
-          title="Resume the queue: queued runs start again"
-          @click="resumeQueue"
-        >
-          <i :class="resuming ? 'mdi mdi-loading mdi-spin' : 'mdi mdi-play'" />
-        </button>
       </div>
     </div>
 
@@ -696,8 +695,19 @@ nav {
   flex: 1;
   min-width: 0;
 }
-.next-row .sq-s {
-  margin-right: 4px;
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.nav-row > .item {
+  flex: 1;
+  min-width: 0;
+}
+.nav-row > .sq {
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
 }
 .live-next.paused .ic {
   color: var(--zen-warn);
@@ -866,12 +876,6 @@ nav {
 .sq > i {
   display: block;
   line-height: 1;
-}
-.sq-s {
-  width: 26px;
-  height: 26px;
-  font-size: 15px;
-  border-radius: var(--r-sm);
 }
 .sq:hover:not(:disabled) {
   background: color-mix(in srgb, var(--sb-accent) 60%, transparent);

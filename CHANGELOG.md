@@ -145,8 +145,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **Settings is tidier:** a General section (Interface, Experimental pages), then Training, then
   Appearance (Light or dark, Motion, eight theme packs until Show all). A web-only update
   rebuilds from Versions.
-- **A paused queue resumes from the sidebar:** its line reads Paused, with a play button beside it.
-  The update button lines up with Settings, its icon centred.
+- **A paused queue resumes from the sidebar:** a play button beside Jobs while it's paused (its
+  queued runs' line reads Paused instead of Next). The update button lines up with Settings, its
+  icon centred.
 - **Fixed: one NaN step blanked a stretch of a long run's loss chart.** Thinning averaged it in;
   it's left out now.
 - **Fixed: an edit sample's input picture didn't show when it was given as a full path** (one on
