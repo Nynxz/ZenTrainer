@@ -1,13 +1,16 @@
 <script setup lang="ts">
 // Every dataset folder in ComfyUI's input directory: as cards (a fixed-shape mosaic, so every
-// card is the same size) or as a table that sorts. The view is remembered per browser.
+// card is the same size) or as a table that sorts. The view is remembered per browser. Starred
+// ones (the same stars as New run's dataset picker) come first, whichever the sort.
 import { ZenButton, ZenEmpty, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { engine, thumbUrl, type DatasetInfo } from '@/api/engine'
 import CaptionRing from '@/components/CaptionRing.vue'
+import StarButton from '@/components/StarButton.vue'
 import StickyBar from '@/components/StickyBar.vue'
 import TemplateCard from '@/components/TemplateCard.vue'
+import { isDatasetStarred } from '@/stores/favorites'
 import { datasetsSeen } from '@/stores/lists'
 
 const router = useRouter()
@@ -89,7 +92,8 @@ const shown = computed(() => {
     sortKey.value === 'health'
       ? (overall(d) ?? -1)
       : { name: d.folder.toLowerCase(), items: d.images, captioned: d.images ? d.captioned / d.images : 0, modified: d.modified ?? 0 }[sortKey.value]
-  return [...list].sort((a, b) => (val(a) < val(b) ? -1 : val(a) > val(b) ? 1 : 0) * sortDir.value)
+  const star = (d: DatasetInfo) => Number(isDatasetStarred(d.folder))
+  return [...list].sort((a, b) => star(b) - star(a) || (val(a) < val(b) ? -1 : val(a) > val(b) ? 1 : 0) * sortDir.value)
 })
 
 const link = (d: DatasetInfo) => `/datasets/${encodeURIComponent(d.folder)}`
@@ -148,6 +152,7 @@ const ago = (t?: number) => {
             <div class="mosaic" :class="`n${pics(d).length}`">
               <img v-for="t in pics(d)" :key="t.filename" :src="thumb(d, t)" loading="lazy" alt="" />
               <span v-if="!pics(d).length" class="none"><i class="mdi mdi-image-off-outline" /></span>
+              <span class="star-corner" :class="{ on: isDatasetStarred(d.folder) }"><StarButton :id="d.folder" :name="d.folder" kind="dataset" /></span>
               <span v-if="d.health || d.captioned < d.images" class="corner" :title="badgeTip(d)"><CaptionRing :done="d.captioned" :total="d.images" :scores="d.health?.scores" :size="34" /></span>
             </div>
           </template>
@@ -181,7 +186,10 @@ const ago = (t?: number) => {
           <span class="strip">
             <img v-for="t in pics(d).slice(0, 2)" :key="t.filename" :src="thumb(d, t, 96)" loading="lazy" alt="" />
           </span>
-          <RouterLink :to="link(d)" class="name ellipsis" :title="d.folder" @click.stop>{{ d.folder }}</RouterLink>
+          <span class="name-cell">
+            <StarButton :id="d.folder" :name="d.folder" kind="dataset" />
+            <RouterLink :to="link(d)" class="name ellipsis" :title="d.folder" @click.stop>{{ d.folder }}</RouterLink>
+          </span>
           <span class="kinds small mono">
             <span v-for="k in kinds(d)" :key="k.icon" :title="`${k.n} ${k.tip}`"><i class="mdi" :class="k.icon" />{{ k.n }}</span>
           </span>
@@ -253,6 +261,28 @@ const ago = (t?: number) => {
 .name {
   font-weight: 600;
   font-size: 13px;
+  min-width: 0;
+}
+/* the star: shown when starred, on hover otherwise */
+.mosaic .star-corner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--zen-bg) 70%, transparent);
+  opacity: 0;
+  transition: opacity var(--zen-dur-fast) ease;
+}
+.mosaic .star-corner.on,
+:deep(a:hover) .mosaic .star-corner,
+.mosaic:hover .star-corner,
+.mosaic .star-corner:focus-within {
+  opacity: 1;
+}
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 .mosaic .corner {

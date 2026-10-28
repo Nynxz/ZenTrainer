@@ -9,7 +9,7 @@ const on = computed(() => (dataset.value ? isDatasetStarred(props.id) : isStarre
 const tip = computed(() =>
   on.value
     ? `Unstar ${props.name ?? (dataset.value ? 'this dataset' : 'this model')}`
-    : `Star ${props.name ?? (dataset.value ? 'this dataset' : 'this model')}: it goes to the top of ${dataset.value ? 'the dataset picker' : 'model lists'}`,
+    : `Star ${props.name ?? (dataset.value ? 'this dataset' : 'this model')}: it goes to the top of ${dataset.value ? 'dataset lists' : 'model lists'}`,
 )
 const toggle = () => (dataset.value ? toggleDatasetStar(props.id) : toggleStar(props.id))
 </script>
