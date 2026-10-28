@@ -367,7 +367,6 @@ function apply() {
       <div class="foot" :class="{ phone }">
         <span v-if="!phone" class="muted small"><i class="mdi mdi-lock-outline" /> Your name, dataset, trigger word and captions stay. Undo puts everything else back.</span>
         <span class="grow" />
-        <ZenButton @click="open = false">Cancel</ZenButton>
         <ZenButton v-if="!phone || step === 'detail'" variant="primary" icon="mdi mdi-check" :disabled="!next || planning" @click="apply">
           {{ picked ? (phone ? 'Apply' : `Apply ${picked.title}`) : 'Apply' }}
         </ZenButton>

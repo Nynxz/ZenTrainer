@@ -78,6 +78,10 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   with Datasets as its crumb), then the same sticky toolbar and view switch.
 - **A grad norm or loss that blew up reads short** (6.3e16, the whole number on hover) instead of
   running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
+- **New run's dataset picker is a dialog like Recipes:** the datasets on the left (starred first,
+  a search, by recent, name or size) and the one highlighted on the right, eight of its pictures,
+  its health and what's in it, before Use. Stars follow you, as starred models do. The pickers
+  close with ✕ or Esc: no Cancel button.
 - **A run's full spec reads like Recipes:** every setting by part, in words, or the JSON, and
   it copies or downloads as JSON (`zt train` takes it, and a New run page takes it pasted).
 - **Recipes reads more cleanly:** a shorter header over each recipe, and its changes in words (a

@@ -2,8 +2,9 @@
 // 2 Dataset: the folder, captions and trigger, resolution (and starting lower), dropout, edit
 // pairs, masks, and how videos turn into training clips.
 import { ZenCombo, ZenField, ZenInput, ZenNumber, ZenSwitch } from '@nynxz/zenkit-ui'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { thumbUrl, type DatasetInfo, type TrainSpec } from '@/api/engine'
+import DatasetPicker from './DatasetPicker.vue'
 import { items, useRunFormContext } from './form'
 
 const { spec, choices, datasets, dataset, pairCount, stage0, resuming, controlCounts, chosenInputs, toggleInput, channelModel } = useRunFormContext()
@@ -31,6 +32,7 @@ function toggleSet(st: string) {
   spec.dataset.caption_set = next[0]!
   spec.dataset.caption_mix = next.length > 1 ? next : []
 }
+const pickerOpen = ref(false)
 const firstThumb = (d: DatasetInfo) => {
   const t = d.thumbs[0]
   return t ? thumbUrl(d.folder, [...t.subfolder.split('/').slice(1), t.filename].join('/'), 256) : ''
@@ -46,23 +48,16 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
 <section class="card sec" :class="{ locked: resuming }">
   <h2><span class="num">2</span> Dataset</h2>
   <ZenField label="Folder" stack>
-    <ZenCombo
-      v-model="spec.dataset.folder"
-      :items="datasets.map((d) => ({ value: d.folder, label: d.folder, keywords: d.folder, d }))"
-      placeholder="Pick a dataset…"
-      grid
-      :grid-min="150"
-      :menu-width="560"
-    >
-      <template #option="{ item }">
-        <div class="ds-opt">
-          <img v-if="firstThumb(item.d as DatasetInfo)" :src="firstThumb(item.d as DatasetInfo)" alt="" />
-          <b>{{ item.label }}</b>
-          <span class="muted">{{ (item.d as DatasetInfo).images }} images</span>
-        </div>
-      </template>
-    </ZenCombo>
+    <button type="button" class="ds-field" :class="{ empty: !dataset }" @click="pickerOpen = true">
+      <span class="ds-thumb"><img v-if="dataset && firstThumb(dataset)" :src="firstThumb(dataset)" alt="" /><i v-else class="mdi mdi-image-multiple-outline" /></span>
+      <span class="ds-text">
+        <b>{{ dataset?.folder ?? spec.dataset.folder ?? 'Pick a dataset…' }}</b>
+        <span v-if="dataset" class="muted small">{{ dataset.images }} pictures · {{ dataset.captioned }} captioned</span>
+      </span>
+      <span class="ds-change">{{ dataset ? 'Change' : 'Pick' }} <i class="mdi mdi-chevron-right" /></span>
+    </button>
   </ZenField>
+  <DatasetPicker v-model:open="pickerOpen" :datasets="datasets" :current="spec.dataset.folder" @pick="spec.dataset.folder = $event" />
   <div class="grid-2">
     <ZenField label="Captions" stack :hint="spec.dataset.caption_mix.length > 1 ? 'Each step picks one of these sets at random' : 'Which caption set to train on; click more to mix them'">
       <div class="chips">
@@ -244,17 +239,60 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   font-weight: 600;
   font-size: 13px;
 }
-.ds-opt {
+/* the dataset field: what's picked, with a picture; it opens the picker */
+.ds-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px 6px 6px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md);
+  background: var(--zen-surface);
+  color: var(--zen-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ds-field:hover {
+  border-color: color-mix(in srgb, var(--zen-accent) 50%, var(--zen-border));
+}
+.ds-thumb {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 6px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--zen-surface-2);
+  color: var(--zen-muted);
+}
+.ds-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ds-text {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
+  min-width: 0;
+  flex: 1;
 }
-.ds-opt img {
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
-  border-radius: var(--r-md);
-  background: var(--zen-surface-2);
+.ds-text b {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-field.empty .ds-text b {
+  color: var(--zen-muted);
+  font-weight: 500;
+}
+.ds-change {
+  font-size: 12px;
+  color: var(--zen-accent);
+  display: inline-flex;
+  align-items: center;
 }
 </style>
