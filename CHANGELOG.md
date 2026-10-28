@@ -95,6 +95,7 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   it copies or downloads as JSON (`zt train` takes it, and a New run page takes it pasted).
 - **Recipes reads more cleanly:** a shorter header over each recipe, and its changes in words (a
   resolution stage reads "768 px for the first 60%", not its JSON).
+- **The page behind a dialog or the lightbox stays put:** the wheel scrolls only the dialog.
 - **Smoother moving around:** Back and Forward land where each page was scrolled; the Datasets
   and Models lists show at once on a return and refresh in place; switching between Apps no longer
   reloads the whole page.
