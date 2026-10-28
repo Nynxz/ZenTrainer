@@ -108,17 +108,18 @@ const ago = (t?: number) => {
 
 <template>
   <div class="page full ds-page">
-    <header class="ds-head">
-      <h1>Datasets</h1>
-      <span v-if="datasets?.length" class="lede">{{ datasets.length }} in ComfyUI's input folder</span>
-      <span class="spacer" />
+    <div class="page-head">
+      <div class="titles">
+        <h1>Datasets</h1>
+        <p v-if="datasets?.length" class="lede">{{ datasets.length }} in ComfyUI's input folder</p>
+      </div>
       <form v-if="creating" class="create" @submit.prevent="create">
-        <ZenInput v-model="newName" size="sm" placeholder="dataset name" />
-        <ZenButton size="sm" variant="primary" :disabled="!newName.trim()" @click="create">Create</ZenButton>
-        <ZenButton size="sm" variant="ghost" @click="creating = false">Cancel</ZenButton>
+        <ZenInput v-model="newName" placeholder="dataset name" />
+        <ZenButton variant="primary" :disabled="!newName.trim()" @click="create">Create</ZenButton>
+        <ZenButton variant="ghost" @click="creating = false">Cancel</ZenButton>
       </form>
-      <ZenButton v-else size="sm" variant="primary" icon="mdi mdi-plus" @click="creating = true">New dataset</ZenButton>
-    </header>
+      <ZenButton v-else variant="primary" icon="mdi mdi-plus" @click="creating = true">New dataset</ZenButton>
+    </div>
     <div v-if="error" class="card muted">Can't reach the engine: {{ error }}</div>
     <ZenEmpty v-else-if="datasets && !datasets.length" title="No datasets yet" icon="mdi mdi-image-multiple-outline">
       Put a folder of images and captions in ComfyUI's input directory.
