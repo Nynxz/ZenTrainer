@@ -19,6 +19,30 @@ function useSuggestion() {
   if (!s?.installed) return
   Object.assign(spec.samples, { model_name: s.installed, steps: s.steps, cfg: s.cfg, sampler: s.sampler, scheduler: s.scheduler })
 }
+// the LoRA under samples (spec: turbo_lora): a "+" until one is added, then a picker with its
+// strength and an x. A turbo one (by its name, as models/families.py DISTILLED) offers few-step
+// settings, and clearing it offers the ones from before (when known)
+const TURBO = { steps: 8, cfg: 1 }
+const turboOpen = ref(!!spec.samples.turbo_lora)
+const turboCleared = ref(false)
+const plain = ref<{ steps: number; cfg: number } | null>(null)  // the settings from before a turbo LoRA, once seen
+const isTurboSteps = () => spec.samples.steps <= 12 && spec.samples.cfg <= 1.5
+const DISTILLED = /turbo|distill|lightning|hyper|lcm|schnell|dmd|\bfast\b/i
+const turboSteps = computed(() => DISTILLED.test(spec.samples.turbo_lora ?? '') && !isTurboSteps() && !spec.samples.sigmas?.length)
+const plainSteps = computed(() => turboCleared.value && !!plain.value && isTurboSteps() && !spec.samples.sigmas?.length)
+watch(() => spec.samples.turbo_lora, (v) => v && (turboOpen.value = true))  // a recipe or an import set one
+function pickTurbo(v: unknown) {
+  spec.samples.turbo_lora = v == null || v === '' ? null : String(v)
+  if (DISTILLED.test(spec.samples.turbo_lora ?? '') && !isTurboSteps()) plain.value = { steps: spec.samples.steps, cfg: spec.samples.cfg }
+}
+function clearTurbo() {
+  turboCleared.value = DISTILLED.test(spec.samples.turbo_lora ?? '')
+  spec.samples.turbo_lora = null
+  turboOpen.value = false
+}
+function setSteps(v: { steps: number; cfg: number }) {
+  Object.assign(spec.samples, v)
+}
 // the scheduler, or "custom": the sigmas typed here (steps then follow from them)
 const scheduleItems = computed(() => [...items(choices.scheduler ?? ['normal']), { value: 'custom', label: 'Custom sigmas', keywords: 'custom sigmas manual' }])
 const schedule = computed({
@@ -229,6 +253,7 @@ async function savePromptSet(name: string) {
       <ZenCombo
         v-model="sampleModel"
         :items="[{ value: '', label: 'The model being trained' }, ...items(spec.model.kind === 'split' ? choices.unet : choices.ckpt)]"
+        :pinned="['']"
         :item-height="30"
       />
     </ZenField>
@@ -253,10 +278,27 @@ async function savePromptSet(name: string) {
         <ZenNumber :model-value="spec.samples.fps ?? 24" :min="1" :max="60" :step="1" :precision="0" @update:model-value="spec.samples.fps = $event" />
       </div>
     </ZenField>
-    <ZenField label="Turbo LoRA" stack tip="Rides under every sample (never training or the saved LoRA) so previews take a few steps: MiniMax H3's minimax_h3_turbo_v4_step600_ema at 0.75, 6 steps, CFG 1">
-      <div class="inline">
-        <ZenCombo :model-value="spec.samples.turbo_lora ?? ''" :items="[{ value: '', label: 'None' }, ...items(choices.loras)]" :item-height="30" @update:model-value="spec.samples.turbo_lora = String($event) || null" />
-        <ZenNumber v-if="spec.samples.turbo_lora" :model-value="spec.samples.turbo_strength ?? 0.75" :min="0" :max="1.5" :step="0.05" :precision="2" @update:model-value="spec.samples.turbo_strength = $event" />
+    <ZenField label="LoRA under samples" stack class="wide-f" tip="On under every sample, never in training or the saved LoRA. Usually a turbo LoRA, so previews take a few steps: MiniMax H3's minimax_h3_turbo_v4_step600_ema at 0.75, 6 steps, CFG 1">
+      <div v-if="turboOpen" class="turbo">
+        <div class="turbo-pick">
+          <ZenCombo :model-value="spec.samples.turbo_lora ?? ''" :items="items(choices.loras)" placeholder="Pick a LoRA…" :item-height="30" @update:model-value="pickTurbo" />
+          <label class="strength" title="Its strength under samples; 0 samples without it">
+            <span class="muted small">Strength</span>
+            <ZenNumber :model-value="spec.samples.turbo_strength ?? 0.75" :min="0" :max="1.5" :step="0.05" :precision="2" @update:model-value="spec.samples.turbo_strength = $event" />
+          </label>
+          <button type="button" class="remove" title="Sample without it" @click="clearTurbo"><i class="mdi mdi-close" /></button>
+        </div>
+        <p v-if="turboSteps" class="hint muted small">
+          A turbo LoRA samples in a few steps; these are {{ spec.samples.steps }} at CFG {{ spec.samples.cfg }}.
+          <button type="button" class="link" @click="setSteps(TURBO)">Use {{ TURBO.steps }} steps, CFG {{ TURBO.cfg }}</button>
+        </p>
+      </div>
+      <div v-else class="turbo-add">
+        <button type="button" class="add-lora" @click="turboOpen = true"><i class="mdi mdi-plus" /> Add a LoRA under samples</button>
+        <p v-if="plainSteps" class="hint muted small">
+          Without the turbo LoRA, {{ spec.samples.steps }} steps at CFG {{ spec.samples.cfg }} are likely too few.
+          <button v-if="plain" type="button" class="link" @click="setSteps(plain)">Use {{ plain.steps }} steps, CFG {{ plain.cfg }}</button>
+        </p>
       </div>
     </ZenField>
     <ZenField label="Steps / CFG" stack>
@@ -353,5 +395,78 @@ async function savePromptSet(name: string) {
 }
 .suggest > span:not(.muted) {
   flex: 1;
+}
+/* the turbo LoRA: as a row of Other LoRAs (LoraUses.vue) */
+.turbo-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.turbo {
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.turbo-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.turbo-pick > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.strength {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 170px;
+  flex: none;
+}
+.remove {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--zen-muted);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 16px;
+}
+.remove:hover {
+  color: var(--zen-text);
+}
+.hint {
+  margin: 0;
+  line-height: 1.4;
+}
+.hint .link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--zen-accent);
+  cursor: pointer;
+}
+.add-lora {
+  align-self: flex-start;
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px dashed var(--zen-border);
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--zen-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.add-lora:hover {
+  color: var(--zen-text);
+  border-color: color-mix(in srgb, var(--zen-accent) 50%, var(--zen-border));
 }
 </style>

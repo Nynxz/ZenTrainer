@@ -943,8 +943,9 @@
         },
         "turbo_strength": {
           "type": "number",
-          "description": "turbo_lora's strength.",
-          "default": 0.75
+          "description": "turbo_lora's strength; 0 samples without it (it stays loaded, so it can be turned back up while the run trains).",
+          "default": 0.75,
+          "minimum": 0
         },
         "slg_mode": {
           "type": "string",

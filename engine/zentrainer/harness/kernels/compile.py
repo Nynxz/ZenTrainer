@@ -97,6 +97,15 @@ def compiled_blocks(diffusion_model, enabled: bool):
             and "forward" not in sub.__dict__]
     for sub in mlps:
         sub.forward = _swiglu_out_of_place(sub)
+    # ComfyUI's layers read comfy_cast_weights, a class attribute until a low-VRAM round trip
+    # (samples on a card the model doesn't fit beside) sets it on the instance and puts it back
+    # as one. The graphs guard on its absence from the instance, so that round trip invalidated
+    # every graph after the run's first sample (a cluster of slow steps, every graph again).
+    # Set on the instance now, the guard is on its value, which the round trip restores.
+    casts = [sub for b in blocks for sub in b.modules()
+             if hasattr(sub, "comfy_cast_weights") and "comfy_cast_weights" not in sub.__dict__]
+    for sub in casts:
+        sub.comfy_cast_weights = sub.comfy_cast_weights
     done = []
     for m in blocks:
         if "forward" in m.__dict__:  # already wrapped by someone else: leave it
@@ -109,26 +118,36 @@ def compiled_blocks(diffusion_model, enabled: bool):
     finally:
         for m in done + mlps:
             m.__dict__.pop("forward", None)
+        for sub in casts:
+            # only where it's still the class's value: a layer ComfyUI left offloaded (True on the
+            # instance) keeps it, or the cached model would stop casting that layer's weights
+            if sub.__dict__.get("comfy_cast_weights") == type(sub).comfy_cast_weights:
+                sub.__dict__.pop("comfy_cast_weights", None)
         if cache_was is not None:
             functorch_config.enable_autograd_cache = cache_was
 
 
-def residency(diffusion_model) -> int:
-    """Which weights are on the GPU, as a number to compare: compiled graphs guard on each
-    parameter's device, so a change means recompiles."""
-    return hash(tuple(p.is_cuda for p in diffusion_model.parameters()))
+def residency(diffusion_model) -> tuple[bool, ...]:
+    """Which weights are on the GPU, to compare: compiled graphs guard on each parameter's
+    device, so a change means recompiles."""
+    return tuple(p.is_cuda for p in diffusion_model.parameters())
 
 
-def reset_if_moved(diffusion_model, before: int | None) -> int:
+def reset_if_moved(diffusion_model, before: tuple[bool, ...] | None, why: str = "", step: int = 0) -> tuple[bool, ...]:
     """Drop the compiled graphs when weights moved between CPU and GPU since `before` (the VRAM
     fit loading more, a back-off, a reload after samples). Left alone, the next steps recompile
     beside the old graphs, and a checkpointed block's recompute can run a different one than its
     forward did: "Recomputed values ... have different metadata" (3 of 3 runs at the first fit,
-    0 of 2 with the weights left in place). Fresh graphs compile like the first steps do."""
+    0 of 2 with the weights left in place). Fresh graphs compile like the first steps do: the
+    log line says when and why, since every graph compiles again (a few seconds a graph with a
+    warm cache, far more without), which is what slow steps after it are."""
     now = residency(diffusion_model)
     if before is not None and now != before:
         import torch._dynamo
 
         torch._dynamo.reset()
-        logging.info("[ZenTrainer] weights moved between CPU and GPU: compiled blocks recompile")
+        on = sum(1 for a, b in zip(before, now) if b and not a)
+        off = sum(1 for a, b in zip(before, now) if a and not b)
+        logging.info("[ZenTrainer] step %d%s: %d weights moved onto the GPU and %d off it, so the compiled blocks "
+                     "recompile", step, f" ({why})" if why else "", on, off)
     return now

@@ -1,4 +1,4 @@
-"""Commands into a running session: pause, resume, stop, save, sample, set_lr.
+"""Commands into a running session: pause, resume, stop, save, sample, samples, set_lr.
 
 The HTTP routes push commands; the training loop drains them between optimizer
 steps, so every command lands at a clean step boundary.
@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-COMMANDS = {"pause", "resume", "stop", "save", "sample", "set_lr", "profile"}
+COMMANDS = {"pause", "resume", "stop", "save", "sample", "samples", "set_lr", "profile"}
 
 
 @dataclass

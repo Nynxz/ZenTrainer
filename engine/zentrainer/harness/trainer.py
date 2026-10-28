@@ -11,6 +11,7 @@ from __future__ import annotations
 import pickle
 
 import contextlib
+import dataclasses
 import logging
 import os
 import random
@@ -776,7 +777,7 @@ class Trainer:
             guard_backward(True)
         if getattr(self, "_compiled", 0):
             torch.compiler.set_stance("default")
-        self._recompile_if_moved()
+        self._recompile_if_moved("reloaded for training, e.g. after samples")
 
     def enter_inference(self) -> None:
         import comfy.model_management as mm
@@ -903,18 +904,18 @@ class Trainer:
         self.__dict__.pop("_ceiling", None)
         self._resident = self._first_resident
         self._fit_weights()
-        self._recompile_if_moved()
+        self._recompile_if_moved("a new resolution")
         self._resident = None
         self._warm = self._peak = 0
         self._times = []  # step times are by warm step, which starts again
         torch.cuda.reset_peak_memory_stats()
 
-    def _recompile_if_moved(self) -> None:
+    def _recompile_if_moved(self, why: str = "") -> None:
         if getattr(self, "_compiled", 0):
             from .kernels.compile import reset_if_moved
 
             dm = self.models.patcher.model.diffusion_model
-            self._residency = reset_if_moved(dm, getattr(self, "_residency", None))
+            self._residency = reset_if_moved(dm, getattr(self, "_residency", None), why, getattr(self, "step", 0))
 
     def _auto_vram(self) -> bool:
         m = self.spec.memory
@@ -969,7 +970,7 @@ class Trainer:
                        "retries": torch.cuda.memory_stats().get("num_alloc_retries", 0)}
         self._resident = target
         self._fit_weights()
-        self._recompile_if_moved()
+        self._recompile_if_moved("the VRAM fit loading more")
         now = patcher.loaded_size()
         logging.info("[ZenTrainer] training peaked at %.1f GB of %.1f: model on the card %.1f -> %.1f of %.1f GB",
                      self._peak / gb, (total - others) / gb, have / gb, now / gb, patcher.model_size() / gb)
@@ -995,7 +996,7 @@ class Trainer:
         have = patcher.loaded_size()
         self._resident = self._ceiling = trial["prev"]
         self._fit_weights()
-        self._recompile_if_moved()
+        self._recompile_if_moved("the VRAM fit going back")
         why = f"{retries} allocator retries (the card ran too full)" if retries else f"same-shaped steps {(ratio - 1) * 100:+.0f}%"
         logging.info("[ZenTrainer] more of the model on the card was slower (%s): back to %.1f GB from %.1f, and no higher",
                      why, trial["prev"] / gb, have / gb)
@@ -1095,7 +1096,7 @@ class Trainer:
             return False  # nothing left on the card to move off
         self._resident = self._ceiling = max(0, have - TIGHTEN_MARGIN)
         self._fit_weights()
-        self._recompile_if_moved()
+        self._recompile_if_moved("out of VRAM: fewer weights on the card")
         mm.soft_empty_cache()
         self._peak = 0
         torch.cuda.reset_peak_memory_stats()
@@ -1490,6 +1491,11 @@ class Trainer:
                 self._profile_next = True
             elif cmd.name == "set_lr":
                 optim.set_lr(self.optimizer, self.scheduler, float(cmd.args["lr"]))
+            elif cmd.name == "samples":  # validated by the route (spec.live_samples): from the next sample on
+                self.spec.samples = dataclasses.replace(self.spec.samples, **cmd.args)
+                if self._samples is not None:
+                    self._samples.every = self.spec.samples.every
+                logging.info("[ZenTrainer] sample settings changed: %s", cmd.args)
         if tries and self._samples:
             # manual tries in one session; ones queued while it renders join it, so the model and
             # encoder aren't swapped in and out per try. Other commands that arrive meanwhile

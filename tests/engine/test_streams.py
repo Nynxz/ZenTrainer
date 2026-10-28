@@ -139,6 +139,21 @@ def test_training_adapter_is_switchable_and_not_saved():
     assert only(w).tolist() == [0.0, 0.0] and only.h(w, w) == 0
 
 
+def test_the_turbo_lora_is_on_in_samples_at_the_strength_asked():
+    from zentrainer.harness.network import _Assisted, _Switch
+
+    sw = _Switch()
+    a = _Assisted(_Frozen(1.0), None, sw, preview=_Frozen(10.0), preview_strength=0.5)
+    w = torch.zeros(2)
+    assert a(w).tolist() == [1.0, 1.0]  # training: no turbo
+    sw.on = False
+    assert a(w).tolist() == [6.0, 6.0] and a.h(w, w).tolist() == [6.0, 6.0]  # samples: as attached
+    sw.turbo = 0.0
+    assert a(w).tolist() == [1.0, 1.0] and a.h(w, w).tolist() == [1.0, 1.0]  # 0: without it
+    sw.turbo = 1.0
+    assert a(w).tolist() == [11.0, 11.0]
+
+
 def test_base_lora_is_on_in_training_and_samples():
     from zentrainer.harness.network import _Assisted, _Switch
     from zentrainer.harness.callbacks import write_metadata
@@ -459,15 +474,25 @@ def test_w8a8_kernels_match_torch():
 def test_compiled_blocks_are_undone():
     from zentrainer.harness.kernels.compile import compiled_blocks
 
+    class Linear(torch.nn.Linear):
+        comfy_cast_weights = False  # as ComfyUI's layers: a class attribute until a low-VRAM round trip
+
     class Net(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.blocks = torch.nn.ModuleList(torch.nn.Linear(4, 4) for _ in range(3))
+            self.blocks = torch.nn.ModuleList(Linear(4, 4) for _ in range(3))
 
     net = Net()
     with compiled_blocks(net, True) as n:
         assert n == 3 and all("forward" in b.__dict__ for b in net.blocks)
+        # on the instance while compiled, so the graphs guard on its value, not on its absence
+        assert all(b.__dict__.get("comfy_cast_weights") is False for b in net.blocks)
     assert not any("forward" in b.__dict__ for b in net.blocks)  # the cached model is left as it was
+    assert not any("comfy_cast_weights" in b.__dict__ for b in net.blocks)
+    with compiled_blocks(net, True):
+        net.blocks[1].comfy_cast_weights = True  # ComfyUI offloaded this one while the run trained
+    assert net.blocks[1].__dict__.get("comfy_cast_weights") is True  # it still casts its weights
+    assert not any("comfy_cast_weights" in b.__dict__ for b in (net.blocks[0], net.blocks[2]))
 
 
 def test_failed_run_frames_let_go_of_their_tensors():
@@ -771,7 +796,7 @@ def test_a_fit_that_slows_the_steps_is_undone(monkeypatch):
     t.models = types.SimpleNamespace(patcher=Patcher())
     fits = []
     t._fit_weights = lambda: (fits.append(t._resident), setattr(t.models.patcher, "loaded", t._resident))
-    t._recompile_if_moved = lambda: None
+    t._recompile_if_moved = lambda why="": None
     stats = {"num_alloc_retries": 0}
     monkeypatch.setattr(torch.cuda, "memory_stats", lambda: dict(stats))
 

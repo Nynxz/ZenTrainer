@@ -257,6 +257,18 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   first time.
 
 ### Runs
+- **The LoRA under samples** (was Turbo LoRA) is a row like Other LoRAs: "+ Add a LoRA under
+  samples", then its picker, strength and an x to clear it. A turbo one (by its name) offers
+  few-step settings, and clearing it offers the ones from before. Before, the picker's "None" was
+  sorted in among the LoRA files, so it couldn't be found once one was picked. The same went for
+  "The model being trained", Compact's base and an App's "Auto" file: each is first now.
+- **A run's sample settings change while it trains:** a try can set the LoRA under samples'
+  strength (0 renders without it), and "Use for the run's samples" makes the tuned steps, CFG,
+  sampler, scheduler and strength the run's own from its next sample (kept in its settings).
+- **A warning when likeness keeps the checkpoints but samples ride on a LoRA:** the scores then
+  measure those renders, not your LoRA alone.
+- **The log says why compiled blocks recompile** (the step, what moved the weights and how many),
+  and the README says what a first compile at a new resolution costs and how to log recompiles.
 - **Steadier speed and ETA:** the loss chart's speed line, and the it/s and time left on a run,
   jumped about while a run blended into a new resolution (its steps come at both sizes then).
   They're now an average over the last 50 or so steps, leaving out compiles, so they read as the
@@ -335,6 +347,12 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **Fixed: a run with Targets on Custom and no patterns** loaded its model for a couple of minutes
   and then failed ("no layers matched network.targets=[]"). It's refused when you start it now,
   and the form says so under the patterns box.
+- **Fixed: compiled blocks recompiled every graph after a run's first sample** on a card where
+  ComfyUI unloads part of the model for the render and loads it back (16 GB and the like): a cluster
+  of slow steps after each sample and save, 7–8 s each with a warm kernel cache on an RX 7800 XT,
+  which made a compiled run slower than an uncompiled one. The graphs stay valid across that round
+  trip now: the steps after a sample under a 10 GB budget went from 3.4 and 2.2 s spikes to a flat
+  0.6 s (MOSS, RTX 5090).
 - **Faster steps when the card has room: Keep last blocks is now Auto.** Gradient checkpointing
   recomputes every block in the backward; with the model all on the card, ZenTrainer now measures
   what a block keeps over the first steps and leaves as many blocks un-checkpointed as the free

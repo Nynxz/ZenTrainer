@@ -304,7 +304,8 @@ class SampleSpec:
     lora_strength: float = setting(1.0, "The trained LoRA's strength in samples.")
     turbo_lora: str | None = setting(None, "A turbo LoRA under every sample (not training, not the saved LoRA): "
                                            "few-step previews.")
-    turbo_strength: float = setting(0.75, "turbo_lora's strength.")
+    turbo_strength: float = setting(0.75, "turbo_lora's strength; 0 samples without it (it stays loaded, so it can be "
+                                          "turned back up while the run trains).", ge=0)
     slg_mode: str = setting("off", 'Skip-layer guidance, as ComfyUI\'s SkipLayerGuidanceDiT: "uncond" skips the layers '
                                    'in the negative pass only (no extra cost), "standard" adds a pass without them and '
                                    "pushes away from it by slg_scale.", choices=("off", "uncond", "standard"))
@@ -943,6 +944,29 @@ def locked_changes(old: dict, new: dict) -> list[str]:
         elif a != b:
             out.append(path)
     return out
+
+
+# sample settings a run can change while it trains (the "samples" command): they apply from its
+# next sample; the rest load with the run (prompts are encoded, the turbo LoRA attached, at its start)
+LIVE_SAMPLES = ("every", "steps", "cfg", "sampler", "scheduler", "sigmas", "turbo_strength", "lora_strength")
+
+
+def live_samples(spec: dict, changes: dict) -> dict:
+    """The run's spec with `changes` to its LIVE_SAMPLES settings, validated. SpecError for any
+    other key or a bad value."""
+    if not isinstance(changes, dict) or not changes:
+        raise SpecError("no sample settings to change")
+    other = sorted(set(changes) - set(LIVE_SAMPLES))
+    if other:
+        raise SpecError(f"these can't change while a run trains: {', '.join('samples.' + k for k in other)} "
+                        f"(only {', '.join(LIVE_SAMPLES)})")
+    d = json.loads(json.dumps(spec))
+    d.setdefault("samples", {}).update(changes)
+    if "scheduler" in changes and "sigmas" not in changes:
+        d["samples"]["sigmas"] = []  # a scheduler of its own replaces custom sigmas, as a try's does
+    new = TrainSpec.from_dict(d)
+    new.validate()
+    return new.to_dict()
 
 
 if __name__ == "__main__":

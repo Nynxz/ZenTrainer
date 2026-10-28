@@ -101,7 +101,7 @@ export interface SampleRow {
   /** a manual render without the LoRA, to compare with the one at the same index */
   base?: boolean
   /** a manual render's sampling (its own, or the run's) */
-  sampling?: { sampler: string; scheduler: string; steps: number; cfg: number; sigmas?: number[] }
+  sampling?: { sampler: string; scheduler: string; steps: number; cfg: number; sigmas?: number[]; turbo_strength?: number }
   seed?: number
   width?: number
   height?: number
@@ -149,7 +149,7 @@ export interface ValidationRow {
   held_out?: boolean
 }
 
-export type Command = 'pause' | 'resume' | 'stop' | 'save' | 'sample' | 'set_lr'
+export type Command = 'pause' | 'resume' | 'stop' | 'save' | 'sample' | 'set_lr' | 'samples'
 
 export const runPath = (id: string) => `/runs/${encodeURIComponent(id)}`
 
