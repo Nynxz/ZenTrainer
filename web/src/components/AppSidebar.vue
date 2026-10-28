@@ -867,6 +867,16 @@ nav {
   color: var(--sb-primary);
   cursor: pointer;
 }
+/* a square only shows with the sidebar open: it fades in once the unfold's 0.2s widening is done,
+   rather than appearing squeezed into the still-narrow rail */
+.sq {
+  animation: sq-in 0.15s ease 0.2s both;
+}
+@keyframes sq-in {
+  from {
+    opacity: 0;
+  }
+}
 /* the glyph's own line box sat it a little high in the square */
 .sq > i {
   display: block;
