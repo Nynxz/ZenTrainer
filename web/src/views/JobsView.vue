@@ -404,7 +404,6 @@ a.row:hover {
 .bar div {
   height: 100%;
   background: var(--zen-accent);
-  transition: width var(--zen-dur, 0.3s) ease;
 }
 .acts {
   display: flex;

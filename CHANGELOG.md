@@ -339,6 +339,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Fixed: an open ZenTrainer page cost training about 13% of its speed.** Progress bars and the
+  sidebar's job ring eased every change, but a run updates them every step, faster than the easing
+  ends, so the page redrew 60 times a second for the whole run, on the GPU training uses: MOSS at
+  768 px trained at 5.2 it/s with a run page open against 6.0 with Motion set to Reduced. Progress
+  now jumps to each value (one redraw a step), so Motion no longer matters to training.
 - **Fixed: compiled blocks recompiled every graph after a run's first sample** on a card where
   ComfyUI unloads part of the model for the render and loads it back (16 GB and the like): a cluster
   of slow steps after each sample and save, 7–8 s each with a warm kernel cache on an RX 7800 XT,

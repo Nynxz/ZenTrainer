@@ -464,7 +464,6 @@ async function tryIt() {
   display: block;
   height: 100%;
   background: var(--zen-accent);
-  transition: width 0.6s ease;
 }
 .meta {
   display: flex;
@@ -512,7 +511,6 @@ async function tryIt() {
   display: block;
   height: 100%;
   background: var(--zen-accent);
-  transition: width 0.3s ease;
 }
 .stage img,
 .stage video {

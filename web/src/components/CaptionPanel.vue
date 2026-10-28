@@ -893,7 +893,6 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
 .bar div {
   height: 100%;
   background: var(--zen-accent);
-  transition: width var(--zen-dur, 0.3s) ease;
 }
 .line .grow {
   flex: 1 1 0;

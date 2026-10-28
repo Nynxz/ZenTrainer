@@ -163,6 +163,12 @@ a {
   }
 }
 
+/* What updates while a job runs (progress bars and rings, meters) never animates its change:
+   updates come faster than a transition ends (a step every ~0.16 s), so it never stops and the
+   page repaints 60 times a second for the whole run, on the GPU training uses (MOSS 768 px:
+   5.2 against 6.0 it/s with a run page open). tests/web/test_live_redraws.py keeps width and
+   stroke-dasharray transitions out of the app. */
+
 /* Reduced motion, app-wide: the user's Motion setting (data-zen-motion on <html>, set by
    settings.ts) or the OS preference when the setting is System. ZenKit honours the same
    attribute through its --zen-dur tokens. */

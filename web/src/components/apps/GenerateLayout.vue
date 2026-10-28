@@ -739,7 +739,6 @@ watch([values, randomSeed, count], remember, { deep: true })
   display: block;
   height: 100%;
   background: var(--zen-accent);
-  transition: width var(--zen-dur-fast, 0.15s) linear;
 }
 .acts {
   position: absolute;

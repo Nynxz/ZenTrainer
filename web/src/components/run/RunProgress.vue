@@ -133,7 +133,6 @@ const etaLine = computed(() => {
 .bar div {
   height: 100%;
   background: var(--zen-accent);
-  transition: width 0.3s ease;
 }
 .notch {
   position: absolute;
