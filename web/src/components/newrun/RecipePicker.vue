@@ -5,8 +5,8 @@
 // stay; Undo takes it back. The dialog has a fixed height: the list and the detail each scroll on
 // their own (the app's overlay scrollbars). A search narrows the list; on a phone it fills the
 // screen and goes list, then detail.
-import { ZenButton, ZenInput, ZenModal } from '@nynxz/zenkit-ui'
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, toRaw, watch } from 'vue'
+import { ZenButton, ZenInput } from '@nynxz/zenkit-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch } from 'vue'
 import type { Preset, TrainSpec } from '@/api/engine'
 import ScrollArea from '@/components/ScrollArea.vue'
 import { makerLogo } from '@/lib/makers'
@@ -108,7 +108,9 @@ phoneQuery.addEventListener('change', onPhone)
 onBeforeUnmount(() => phoneQuery.removeEventListener('change', onPhone))
 const step = ref<'list' | 'detail'>('list')
 
-watch(open, async (o) => {
+// on opening, and as the view appears in the open dialog (a tab switch): after setup, so it
+// reads what's declared further down
+async function reset(o: boolean) {
   if (!o) return
   void planAll()
   query.value = ''
@@ -120,6 +122,13 @@ watch(open, async (o) => {
     await nextTick()
     document.querySelector<HTMLInputElement>('.recipe-search input')?.focus()
   }
+}
+watch(open, reset)
+onMounted(() => open.value && reset(true))
+// Details on a model's recipe, with the dialog already open: that recipe
+watch(() => props.start, (id) => {
+  const e = id ? flat.value.find((x) => x.id === id) : null
+  if (e) choose(e)
 })
 // a search (or a delete) that hides the picked entry picks the first that's left
 watch(flat, (list) => {
@@ -241,20 +250,16 @@ function apply() {
 </script>
 
 <template>
-  <ZenModal v-model:open="open" width="1080px" height="min(720px, 88vh)">
-    <template #header>
+  <!-- a view of ModelDialog: its controls and its buttons go in the dialog's header and footer -->
+  <Teleport defer to="#zt-md-head">
       <div class="head" :class="{ phone }">
         <button v-if="phone && step === 'detail'" class="back" @click="step = 'list'"><i class="mdi mdi-chevron-left" /> Recipes</button>
-        <div v-else class="head-text">
-          <b class="zt-title">Recipes</b>
-          <span class="muted">Settings for each model, sized to your dataset</span>
-        </div>
         <div v-if="!(phone && step === 'detail')" class="recipe-search">
           <i class="mdi mdi-magnify" />
           <ZenInput v-model="query" size="sm" placeholder="Search recipes" />
         </div>
       </div>
-    </template>
+  </Teleport>
 
     <div class="picker" :class="{ phone, detailed: step === 'detail' }">
       <ScrollArea class="list">
@@ -366,7 +371,7 @@ function apply() {
       </ScrollArea>
     </div>
 
-    <template #footer>
+    <Teleport defer to="#zt-md-foot">
       <div class="foot" :class="{ phone }">
         <span v-if="!phone" class="muted small"><i class="mdi mdi-lock-outline" /> Your name, dataset, trigger word and captions stay. Undo puts everything else back.</span>
         <span class="grow" />
@@ -374,8 +379,7 @@ function apply() {
           {{ picked ? (phone ? 'Apply' : `Apply ${picked.title}`) : 'Apply' }}
         </ZenButton>
       </div>
-    </template>
-  </ZenModal>
+    </Teleport>
 </template>
 
 <style scoped>
@@ -390,18 +394,6 @@ function apply() {
   gap: 16px;
   flex: 1;
   min-width: 0;
-}
-.head-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-.head-text b {
-  font-size: 15px;
-}
-.head-text .muted {
-  font-size: 12px;
 }
 .recipe-search {
   position: relative;

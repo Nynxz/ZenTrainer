@@ -6,7 +6,7 @@ import { computed, ref, toRaw } from 'vue'
 import type { ModelProfile, TrainSpec } from '@/api/engine'
 import FamilyPicker from '@/components/FamilyPicker.vue'
 import { RECIPES, applyTo, plan } from '@/lib/recipes'
-import ModelBrowser from './ModelBrowser.vue'
+import ModelDialog from './ModelDialog.vue'
 import { items, merge, useRunFormContext } from './form'
 
 const { spec, choices, modelMissing, sampleSuggestion, profile, familyId, resuming, applyRecipe } = useRunFormContext()
@@ -33,17 +33,20 @@ const profileApplied = computed(() => {
   return same(p.train, spec as unknown as Record<string, unknown>) && same(p.samples as Record<string, unknown>, spec.samples as unknown as Record<string, unknown>)
 })
 const profileOpen = ref(false)
-// the model browser: a family picked there goes through the picker (its files, its downloads); a
-// recipe there is applied as Recipes applies it (its model with it, Undo to take it back). If its
-// files can't be worked out here, Recipes opens on it to say why
-const emit = defineEmits<{ recipe: [id: string | null] }>()
+// the model dialog: a family picked there goes through the picker (its files, its downloads); a
+// recipe on Models is applied as Recipes applies it (its model with it, Undo to take it back). If
+// its files can't be worked out here, the dialog opens on Recipes at it, to say why
+const dialogView = ref<'models' | 'recipes'>('models')
+const recipeStart = ref<string | null>(null)
 async function useRecipe(id: string) {
   const r = RECIPES.find((x) => x.id === id)
   if (!r) return
   try {
     applyRecipe({ id: r.id, title: r.title }, applyTo(r, await plan(r), toRaw(spec) as TrainSpec))
   } catch {
-    emit('recipe', id)
+    recipeStart.value = id
+    dialogView.value = 'recipes'
+    browsing.value = true
   }
 }
 const picker = ref<InstanceType<typeof FamilyPicker> | null>(null)
@@ -72,12 +75,12 @@ const browsing = ref(false)
       </template>
     </ZenPopover>
   </div>
-  <ModelBrowser v-model:open="browsing" :current="familyId" @pick="picker?.pick($event)" @recipe="useRecipe" @details="emit('recipe', $event)" />
+  <ModelDialog v-model:open="browsing" v-model:view="dialogView" v-model:start="recipeStart" :current="familyId" @pick="picker?.pick($event)" @recipe="useRecipe" />
   <FamilyPicker
     ref="picker"
     v-model="spec.model"
     browse
-    @browse="browsing = true"
+    @browse="(dialogView = 'models'), (browsing = true)"
     @missing="modelMissing = $event"
     @sample-suggestion="sampleSuggestion = $event"
     @custom="customModel = $event"

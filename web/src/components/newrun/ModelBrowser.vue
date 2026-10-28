@@ -3,7 +3,7 @@
 // first, a search, installed or all) and the one highlighted on the right: whether it's ready,
 // where it comes from, and its recipes. Use picks the family (FamilyPicker then sorts out its
 // files); a recipe card opens Recipes on it, to see what it changes before it's applied.
-import { ZenButton, ZenInput, ZenModal } from '@nynxz/zenkit-ui'
+import { ZenButton, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { engine, type ModelFamily } from '@/api/engine'
 import ScrollArea from '@/components/ScrollArea.vue'
@@ -49,12 +49,16 @@ async function relist() {
 const query = ref('')
 const only = ref<'all' | 'ready'>('all')
 const picked = ref<string>('')
-watch(open, (o) => {
+// on opening, and as the view appears in the open dialog (a tab switch): after setup, so it
+// reads what's declared further down
+function reset(o: boolean) {
   if (!o) return
   query.value = ''
   picked.value = props.current || families.value[0]?.id || ''
   void load()
-})
+}
+watch(open, reset)
+onMounted(() => open.value && reset(true))
 
 const ready = (f: ModelFamily) => !f.missing.length
 const listed = computed(() => {
@@ -87,27 +91,23 @@ function recipe(id: string) {
   emit('recipe', id)
   open.value = false
 }
+// the Recipes view, on it: the dialog stays open
 function details(id: string | null) {
   emit('details', id)
-  open.value = false
 }
 </script>
 
 <template>
-  <ZenModal v-model:open="open" width="980px" height="min(640px, 86vh)">
-    <template #header>
+  <!-- a view of ModelDialog: its controls and its buttons go in the dialog's header and footer -->
+  <Teleport defer to="#zt-md-head">
       <div class="head">
-        <div class="head-text">
-          <b class="zt-title">Models</b>
-          <span class="muted">What this run trains: the models in your ComfyUI, and their recipes</span>
-        </div>
         <div class="view-switch text" title="Show">
           <button :class="{ on: only === 'all' }" @click="only = 'all'">All</button>
           <button :class="{ on: only === 'ready' }" @click="only = 'ready'">Installed</button>
         </div>
         <div class="mb-search"><ZenInput v-model="query" size="sm" placeholder="Search models" /></div>
       </div>
-    </template>
+  </Teleport>
 
     <div class="picker">
       <ScrollArea class="list">
@@ -199,9 +199,8 @@ function details(id: string | null) {
       </ScrollArea>
     </div>
 
-    <template #footer>
+    <Teleport defer to="#zt-md-foot">
       <div class="foot">
-        <button type="button" class="foot-link" title="Every recipe, by model, and the ones you saved: each with what it changes" @click="details(null)"><i class="mdi mdi-book-open-page-variant-outline" /> All recipes</button>
         <button type="button" class="foot-link" title="Pick the diffusion model, text encoder and VAE files yourself" @click="use('__custom')"><i class="mdi mdi-file-cog-outline" /> Pick the files yourself</button>
         <button type="button" class="foot-link" :disabled="relisting" title="List the model makers' Hugging Face repos again: models they've added show up without waiting for the cache" @click="relist">
           <i class="mdi mdi-refresh" :class="{ spin: relisting }" /> {{ relisting ? 'Re-listing…' : 'Re-list' }}
@@ -210,8 +209,7 @@ function details(id: string | null) {
         <span class="spacer" />
         <ZenButton variant="primary" icon="mdi mdi-check" :disabled="!shown" @click="use()">{{ shown ? `Use ${shown.name}` : 'Use' }}</ZenButton>
       </div>
-    </template>
-  </ZenModal>
+    </Teleport>
 </template>
 
 <style scoped>
@@ -222,19 +220,6 @@ function details(id: string | null) {
   gap: 12px;
   width: 100%;
   min-width: 0;
-}
-.head-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  margin-right: auto;
-}
-.head-text b {
-  font-size: 15px;
-}
-.head-text .muted {
-  font-size: 12px;
 }
 .mb-search {
   width: 200px;

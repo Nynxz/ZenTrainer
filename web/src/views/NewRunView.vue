@@ -12,7 +12,6 @@ import DatasetSection from '@/components/newrun/DatasetSection.vue'
 import { RUN_FORM, useRunForm } from '@/components/newrun/form'
 import MemorySection from '@/components/newrun/MemorySection.vue'
 import ModelSection from '@/components/newrun/ModelSection.vue'
-import RecipePicker from '@/components/newrun/RecipePicker.vue'
 import SaveRecipe from '@/components/SaveRecipe.vue'
 import RunSummary from '@/components/newrun/RunSummary.vue'
 import SamplesSection from '@/components/newrun/SamplesSection.vue'
@@ -25,13 +24,7 @@ const form = useRunForm()
 provide(RUN_FORM, form)
 const { spec, editing, retrying, resuming, resumeStep } = form
 const { imported, exportSettings, copySettings, importSettings, recipeApplied, undoRecipe } = form
-const recipesOpen = ref(false)
-// Recipes opens from the model browser: on a recipe (its Details), or on the first (All recipes)
-const recipeStart = ref<string | null>(null)
-function openRecipe(id: string | null) {
-  recipeStart.value = id
-  recipesOpen.value = true
-}
+
 
 const saveOpen = ref(false) // these settings as one of your recipes (the recipes dialog lists them under Yours)
 const openSave = () => (saveOpen.value = true)
@@ -148,7 +141,7 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
           <i class="mdi mdi-lock-outline" /> It has trained, so its model, dataset and LoRA shape (algorithm, rank, layers, blocks) and
           optimizer type stay as they were. Memory, samples, learning rate, schedule and length can change.
         </div>
-        <ModelSection @recipe="openRecipe" />
+        <ModelSection />
         <DatasetSection />
         <!-- after the dataset: an image slider's other end is one of its picture sets -->
         <SliderSection />
@@ -159,7 +152,6 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
 
       <RunSummary />
     </div>
-    <RecipePicker v-model:open="recipesOpen" :start="recipeStart" />
     <SaveRecipe v-model:open="saveOpen" :spec="spec" />
   </div>
 </template>

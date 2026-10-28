@@ -81,9 +81,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **New run's model field opens a model browser,** as its dataset field opens the dataset picker:
   every model family (starred first, a search, all or installed) and the one highlighted, whether
   it's installed or what it downloads, where it comes from, and its recipes. A recipe there is
-  applied at once with its model (Undo takes it back), and its Details open Recipes on it; All
-  recipes (yours too), Pick the files yourself and Re-list are in its footer. Recipes opens from
-  there now, not from a button of its own.
+  applied at once with its model (Undo takes it back). Recipes is the same dialog's other view
+  (every recipe, yours too, with what it changes), and a recipe's Details go to it there; Pick
+  the files yourself and Re-list are in its footer.
 - **A new run picks the dataset changed last**, not the first by name (Train on this and a
   duplicate still bring their own).
 - **New run's dataset picker is a dialog like Recipes:** the datasets on the left (starred first,
