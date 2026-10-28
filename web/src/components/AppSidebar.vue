@@ -519,7 +519,7 @@ onUnmounted(() => {
 nav {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 4px;
   padding-top: 4px;
 }
 .item {
