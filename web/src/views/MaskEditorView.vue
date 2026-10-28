@@ -6,7 +6,8 @@
 // A box (R) takes a region out, e.g. a watermark; the list on the left selects images, and "Apply to
 // selected" writes the mask to every selected image of this size (cut out of masks they already
 // have), with a preview first and an undo after.
-// Keys: [ / ] brush size, B brush, E eraser, P points, R box, ←/→ previous/next image, Ctrl+S save.
+// Keys: [ / ] brush size, B brush, E eraser, P points, R box, ←/→ previous/next image, Ctrl+S save,
+// Ctrl+→ save and next.
 import { ZenButton, ZenInput, ZenModal, ZenSlider } from '@nynxz/zenkit-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -389,6 +390,11 @@ async function save() {
     busy.value = false
   }
 }
+// save (if anything changed: an untouched image keeps what it has), then the next image
+async function saveNext() {
+  if (dirty.value || grow.value || feather.value) await save()
+  if (!error.value) go(1)
+}
 async function remove() {
   if (!item.value || !confirm('Delete this image’s mask? It trains on the whole image again.')) return
   await engine.saveMask(props.name, item.value.path, '')
@@ -557,6 +563,9 @@ function onKey(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault()
     save()
+  } else if ((e.ctrlKey || e.metaKey) && e.key === 'ArrowRight') {
+    e.preventDefault()
+    saveNext()
   } else if (e.key === '[') brush.value = Math.max(4, brush.value - 8)
   else if (e.key === ']') brush.value = Math.min(400, brush.value + 8)
   else if (e.key === 'b') tool.value = 'brush'
@@ -593,6 +602,7 @@ watch(path, load)
       </div>
       <ZenButton icon="mdi mdi-chevron-left" :disabled="index <= 0" @click="go(-1)">Previous</ZenButton>
       <ZenButton icon="mdi mdi-chevron-right" :disabled="index >= items.length - 1" @click="go(1)">Next</ZenButton>
+      <ZenButton variant="primary" icon="mdi mdi-content-save-move-outline" :disabled="busy || !loaded || index >= items.length - 1" title="Save this mask, then the next image (Ctrl+→)" @click="saveNext">Save &amp; next</ZenButton>
     </div>
 
     <div class="editor">
@@ -961,7 +971,7 @@ watch(path, load)
   font: inherit;
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-sm);
   cursor: pointer;
 }
 .chip.on {
