@@ -162,7 +162,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page full ds-page">
+  <div class="page full">
     <div class="page-head">
       <div class="titles">
         <h1><RouterLink to="/datasets" class="crumb">Datasets</RouterLink> {{ name }}</h1>
@@ -182,7 +182,7 @@ onUnmounted(() => {
 
     <!-- one fixed-height row: nothing in it appears, disappears or wraps -->
     <StickyBar>
-    <div class="ds-toolbar card">
+    <div class="page-toolbar card">
       <div class="view-switch" role="tablist" aria-label="View">
         <button :class="{ on: layout === 'grid' }" title="Grid" @click="view = 'grid'"><i class="mdi mdi-view-grid-outline" /></button>
         <button :class="{ on: layout === 'list' }" title="Table" @click="view = 'list'"><i class="mdi mdi-view-list-outline" /></button>
@@ -347,11 +347,11 @@ onUnmounted(() => {
 }
 /* ---- page layout: a slim header, one fixed toolbar, the pictures and a side panel ---- */
 /* everything gives way before anything is cut off: the side panel's button is always there */
-.ds-toolbar .zoom {
+.page-toolbar .zoom {
   flex: 0 1 150px;
   min-width: 70px;
 }
-.ds-toolbar .zoom.off {
+.page-toolbar .zoom.off {
   opacity: 0.35;
 }
 .tb-field {
@@ -439,7 +439,7 @@ onUnmounted(() => {
   transform: translate(-50%, 8px);
 }
 @media (max-width: 900px) {
-  .ds-toolbar .zoom,
+  .page-toolbar .zoom,
   .tb-field > .mdi {
     display: none;
   }

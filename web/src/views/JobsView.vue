@@ -2,11 +2,12 @@
 // Everything that runs, on one page: training runs with their queue (what's training now,
 // what's next, still reorderable: those haven't been handed to ComfyUI yet) and caption jobs;
 // then everything that has finished, newest first. Each opens its own page with its log.
-import { ZenButton, ZenEmpty } from '@nynxz/zenkit-ui'
+import { ZenButton, ZenEmpty, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { engine, type CaptionJob, type RunMeta } from '@/api/engine'
 import StatusPill from '@/components/StatusPill.vue'
+import StickyBar from '@/components/StickyBar.vue'
 import { activeCaptions, captionJobs, startCaptionSync } from '@/stores/captions'
 import { engineError, latest, queue, refreshQueue, refreshRuns, runs } from '@/stores/runs'
 
@@ -57,12 +58,20 @@ function pick(id: string) {
 const pickedName = (id: string) => runs.value.find((r) => r.run_id === id)?.name ?? id
 const compare = () => router.push({ path: '/compare', query: { a: picked.value[0], b: picked.value[1] } })
 
+// the history's search: a run by its name or id, a caption job by what it captioned
+const query = ref('')
+const matches = (...texts: (string | undefined)[]) => {
+  const q = query.value.trim().toLowerCase()
+  return !q || texts.some((t) => t?.toLowerCase().includes(q))
+}
 const history = computed<Row[]>(() => {
   const live = new Set([current.value?.run_id, ...queued.value.map((r) => r.run_id)])
   const rows: Row[] = []
-  if (kind.value !== 'caption') for (const r of runs.value) if (!live.has(r.run_id)) rows.push({ kind: 'train', t: r.created, run: r })
+  if (kind.value !== 'caption')
+    for (const r of runs.value) if (!live.has(r.run_id) && matches(r.name, r.run_id)) rows.push({ kind: 'train', t: r.created, run: r })
   if (kind.value !== 'train')
-    for (const j of captions.value) if (!['queued', 'running'].includes(j.status)) rows.push({ kind: 'caption', t: j.created ?? 0, job: j })
+    for (const j of captions.value)
+      if (!['queued', 'running'].includes(j.status) && matches(capTitle(j), j.dataset, j.set_name)) rows.push({ kind: 'caption', t: j.created ?? 0, job: j })
   return rows.sort((a, b) => b.t - a.t)
 })
 const liveCaptions = computed(() => (kind.value === 'train' ? [] : activeCaptions.value))
@@ -147,11 +156,17 @@ const summary = computed(() => {
     </ZenEmpty>
 
     <template v-else>
-      <div class="kinds">
-        <button :class="{ on: kind === 'all' }" @click="kind = 'all'">All</button>
-        <button :class="{ on: kind === 'train' }" @click="kind = 'train'"><i class="mdi mdi-chart-timeline-variant" /> Training</button>
-        <button :class="{ on: kind === 'caption' }" @click="kind = 'caption'"><i class="mdi mdi-creation-outline" /> Captioning</button>
-      </div>
+      <StickyBar>
+        <div class="page-toolbar card">
+          <div class="view-switch text">
+            <button :class="{ on: kind === 'all' }" @click="kind = 'all'">All</button>
+            <button :class="{ on: kind === 'train' }" @click="kind = 'train'"><i class="mdi mdi-chart-timeline-variant" /> Training</button>
+            <button :class="{ on: kind === 'caption' }" @click="kind = 'caption'"><i class="mdi mdi-creation-outline" /> Captioning</button>
+          </div>
+          <span class="spacer" />
+          <div class="search"><ZenInput v-model="query" placeholder="Search runs and caption jobs" size="sm" /></div>
+        </div>
+      </StickyBar>
       <section v-if="liveCaptions.length || (current && kind !== 'caption')" class="sec">
         <div class="eyebrow">Now</div>
         <RouterLink v-for="j in liveCaptions" :key="j.job_id" :to="`/jobs/caption/${j.job_id}`" class="row card now">
@@ -208,6 +223,7 @@ const summary = computed(() => {
         </div>
       </section>
 
+      <p v-if="query.trim() && !history.length" class="muted small">No runs or caption jobs match “{{ query.trim() }}”.</p>
       <section v-if="history.length" class="sec">
         <div v-if="current || queued.length || liveCaptions.length" class="eyebrow">History</div>
         <template v-for="h in history" :key="h.kind === 'train' ? h.run.run_id : h.job.job_id">
@@ -255,24 +271,8 @@ const summary = computed(() => {
 </template>
 
 <style scoped>
-.kinds {
-  display: flex;
-  gap: 4px;
-}
-.kinds button {
-  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
-  background: none;
-  color: var(--zen-muted);
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: var(--r-md);
-  cursor: pointer;
-}
-.kinds button.on {
-  background: var(--zen-selected-bg, var(--zen-surface-2));
-  color: var(--zen-selected-text, var(--zen-text));
-  box-shadow: inset 0 0 0 1px var(--zen-selected, var(--zen-accent));
+.page-toolbar .search {
+  flex: 0 1 300px;
 }
 .kind-ic {
   color: var(--zen-muted);

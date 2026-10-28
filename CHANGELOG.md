@@ -82,6 +82,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   it copies or downloads as JSON (`zt train` takes it, and a New run page takes it pasted).
 - **Recipes reads more cleanly:** a shorter header over each recipe, and its changes in words (a
   resolution stage reads "768 px for the first 60%", not its JSON).
+- **Jobs has a search** (a run by name or id, a caption job by what it captioned), in the same
+  sticky toolbar Models and the datasets pages have now, with one style of switch for their
+  filters, sorts and views.
 - **Crop to the card works in the table view too:** off, its thumbnails show the whole picture.
 - **Mask editor on the dataset page:** a button beside Add files (and Masks with a selection) opens
   it on the first selected picture, or the first one.

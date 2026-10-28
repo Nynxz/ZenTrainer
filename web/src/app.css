@@ -217,7 +217,7 @@ textarea {
   background: repeating-conic-gradient(#f0f 0 25%, #000 0 50%) 0 0 / 18px 18px;
 }
 
-/* the cards / list switch on the datasets pages: icon buttons in one frame, the shown one ringed */
+/* a page's switch (cards / list, a filter, a sort): buttons in one frame, the chosen one ringed */
 .view-switch {
   display: inline-flex;
   padding: 2px;
@@ -237,28 +237,33 @@ textarea {
 .view-switch button:hover {
   color: var(--zen-text);
 }
+/* with words in it instead of icons */
+.view-switch.text button {
+  width: auto;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 .view-switch button.on {
   background: var(--zen-selected-bg, var(--zen-surface-2));
   color: var(--zen-selected-text, var(--zen-text));
   box-shadow: inset 0 0 0 1px var(--zen-selected, var(--zen-accent));
 }
 
-/* the datasets pages' sticky toolbar, under the app's page header */
-.ds-page {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.ds-toolbar {
+/* a page's sticky toolbar under its header (Datasets, a dataset, Models, Jobs): its filters and search */
+.page-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 46px;
-  padding: 0 8px;
+  height: 47px; /* Models' toolbar: a 29px control row in 8px padding */
+  padding: 0 10px;
   flex-wrap: nowrap;
   overflow: hidden;
 }
-.ds-toolbar .search {
+.page-toolbar .search {
   flex: 1 1 120px;
   min-width: 70px;
 }

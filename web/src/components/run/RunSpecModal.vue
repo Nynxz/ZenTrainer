@@ -77,13 +77,6 @@ function download() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* the shared switch, with words in it instead of icons */
-.view-switch.text button {
-  width: auto;
-  padding: 0 12px;
-  font: inherit;
-  font-size: 12px;
-}
 /* as Recipes lists a recipe's changes: a part's name over its settings, one a row */
 .settings {
   display: grid;

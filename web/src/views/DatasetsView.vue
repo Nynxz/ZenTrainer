@@ -107,7 +107,7 @@ const ago = (t?: number) => {
 </script>
 
 <template>
-  <div class="page full ds-page">
+  <div class="page full">
     <div class="page-head">
       <div class="titles">
         <h1>Datasets</h1>
@@ -126,7 +126,7 @@ const ago = (t?: number) => {
     </ZenEmpty>
     <template v-else-if="datasets">
       <StickyBar>
-        <div class="ds-toolbar card">
+        <div class="page-toolbar card">
           <div class="view-switch">
             <button :class="{ on: view === 'cards' }" title="Cards" @click="view = 'cards'"><i class="mdi mdi-view-grid-outline" /></button>
             <button :class="{ on: view === 'table' }" title="Table" @click="view = 'table'"><i class="mdi mdi-view-list-outline" /></button>
