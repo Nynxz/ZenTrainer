@@ -20,6 +20,13 @@ const heldOutItems = computed(() => [
 const advanced = reactive({ training: false })
 // LoRA and LoKr: LoHa and OFT aren't ready (LoHa can't train on an int8 base). A run that already
 // uses one keeps it in the list, so its form doesn't show an empty field.
+// the optimizers it can train with now (and the run's own, if it isn't); the rest are a count
+const optimizerItems = computed(() =>
+  optimizers.value
+    .filter((o) => o.available || o.id === spec.optim.optimizer)
+    .map((o) => ({ value: o.id, label: o.label, keywords: o.note, o })),
+)
+const notInstalled = computed(() => optimizers.value.filter((o) => !o.available && o.id !== spec.optim.optimizer))
 const algorithms = computed(() => {
   const ready = ['LoRA', 'LoKr']
   return ready.includes(spec.network.algorithm) ? ready : [...ready, spec.network.algorithm]
@@ -126,7 +133,7 @@ const patterns = computed({
     <ZenField label="Optimizer" stack :tip="opt ? `${opt.note} Suggested LR ${opt.lr_hint}.`.trim() : ''">
       <ZenCombo
         v-model="spec.optim.optimizer"
-        :items="optimizers.map((o) => ({ value: o.id, label: o.label, keywords: o.note, o }))"
+        :items="optimizerItems"
         :sorted="false"
         :pick-guard="(v: string | number) => !optimizers.find((o) => o.id === v)?.available"
         :menu-width="360"
@@ -143,6 +150,12 @@ const patterns = computed({
             <span class="muted mono small">{{ (item.o as OptimizerInfo).available ? `lr ${(item.o as OptimizerInfo).lr_hint}` : 'not installed' }}</span>
           </div>
         </template>
+        <template v-if="notInstalled.length" #footer>
+          <div class="opt-more small muted">
+            {{ notInstalled.length }} more with optional packages
+            <ZenTip :text="`${notInstalled.map((o) => o.label).join(', ')}: pip install -r requirements-optional.txt in ComfyUI's Python, then restart`" label="Which, and how" />
+          </div>
+        </template>
       </ZenCombo>
     </ZenField>
     <ZenField label="Learning rate" stack>
@@ -154,7 +167,7 @@ const patterns = computed({
         <div class="view-switch text" role="radiogroup" aria-label="Adapter">
           <button v-for="a in algorithms" :key="a" role="radio" :aria-checked="spec.network.algorithm === a" :class="{ on: spec.network.algorithm === a }" @click="spec.network.algorithm = a">{{ a }}</button>
         </div>
-        <ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" title="Rank" />
+        <label class="rank"><span class="muted small">Rank</span><ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" /></label>
       </div>
     </ZenField>
     <ZenField label="Schedule" stack>
@@ -391,8 +404,22 @@ const patterns = computed({
   align-items: center;
   gap: 8px;
 }
-.adapter-row > :last-child {
+.adapter-row .rank {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.adapter-row .rank > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.opt-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
 }
 </style>
