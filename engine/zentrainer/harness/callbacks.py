@@ -169,6 +169,10 @@ class Samples(Callback):
             self._liker.submit(row)
 
     def on_start(self, t):
+        s = t.spec.samples
+        if s.turbo_lora and s.turbo_strength and t.spec.output.keep.startswith("likeness"):
+            logging.warning("[ZenTrainer] checkpoints are kept by likeness, scored on samples that ride on %s: "
+                            "few-step turbo renders, not the LoRA alone (its strength 0 scores without it)", s.turbo_lora)
         # encode even when unscheduled: a "sample now" command can still ask for them
         with torch.no_grad():
             self._encode(t, t.spec.samples)
@@ -192,7 +196,7 @@ class Samples(Callback):
         # samples render with these on, so they make another baseline (added only when set, as sigmas)
         if t.spec.network.base_lora:
             parts.append(["base", t.spec.network.base_lora, t.spec.network.base_strength])
-        if s.turbo_lora:
+        if s.turbo_lora and s.turbo_strength:
             parts.append(["turbo", s.turbo_lora, s.turbo_strength])
         return hashlib.sha1(json.dumps(parts, default=str).encode()).hexdigest()[:20]
 
@@ -358,8 +362,8 @@ class Samples(Callback):
         encoded, then the encoder freed once) and one sampling session (the model switched to
         sampling once, back to training once); `more()` can hand over tries queued meanwhile,
         which join the same session. Each try: {prompt, width?, height?, frames?, seed?, base?,
-        index?, sampler?, scheduler?, steps?, cfg?, sigmas?} (the last five: its own sampling,
-        else the run's; see _try_sampling)."""
+        index?, sampler?, scheduler?, steps?, cfg?, sigmas?, turbo_strength?} (the last six: its own
+        sampling, else the run's; see _try_sampling)."""
         from ..spec import SamplePrompt
         from .data import apply_trigger
 
@@ -477,6 +481,7 @@ class Samples(Callback):
         if t.spec.memory.offloading:
             mm.EXTRA_RESERVED_VRAM = reserved + SAMPLE_HEADROOM
         t.network.assist = False  # samples show the LoRA on the real model, not the training adapter
+        t.network.turbo = s.turbo_strength  # a try's own, or the run's (changeable while it trains)
         try:
             with torch.no_grad():
                 model = self._sampling_model(t)
@@ -557,7 +562,8 @@ class Samples(Callback):
                         row.update(manual=True, index=manual, width=self.items[i].width, height=self.items[i].height,
                                    seed=self.items[i].seed, frames=self.items[i].frames, base=base,
                                    sampling={"sampler": s.sampler, "scheduler": "custom" if s.sigmas else s.scheduler,
-                                             "steps": steps, "cfg": s.cfg, **({"sigmas": list(s.sigmas)} if s.sigmas else {})})
+                                             "steps": steps, "cfg": s.cfg, **({"sigmas": list(s.sigmas)} if s.sigmas else {}),
+                                             **({"turbo_strength": s.turbo_strength} if s.turbo_lora else {})})
                     # recorded as each one lands, so the UI swaps that tile now, not after the pass
                     rows.append(row)
                     t.emit(events.SAMPLE, row)
@@ -957,7 +963,8 @@ def _strip(shots: list, strengths) -> "Image.Image":
 
 
 def _try_sampling(s, a: dict):
-    """A try's own sampler, scheduler, steps, cfg or sigmas laid over the run's sample settings
+    """A try's own sampler, scheduler, steps, cfg, sigmas or turbo_strength (0: without the turbo
+    LoRA) laid over the run's sample settings
     (s), or None when it sets none. What ComfyUI doesn't have, or doesn't parse, is left as the
     run's, with a warning: a typo shouldn't cost the render."""
     import dataclasses
@@ -977,7 +984,7 @@ def _try_sampling(s, a: dict):
             got["scheduler"] = str(a["scheduler"])
         else:
             logging.warning("[ZenTrainer] try: no scheduler %r here, using the run's", a["scheduler"])
-    for key, kind, lo, hi in (("steps", int, 1, 200), ("cfg", float, 0.0, 30.0)):
+    for key, kind, lo, hi in (("steps", int, 1, 200), ("cfg", float, 0.0, 30.0), ("turbo_strength", float, 0.0, 1.5)):
         if a.get(key) is not None:
             try:
                 got[key] = min(hi, max(lo, kind(a[key])))

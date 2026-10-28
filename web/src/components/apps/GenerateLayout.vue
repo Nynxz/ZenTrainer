@@ -297,7 +297,7 @@ watch([values, randomSeed, count], remember, { deep: true })
           </ZenCombo>
           <div v-if="fileInput" class="file-line">
             <span class="muted small">Build</span>
-            <ZenCombo v-model="modelFile" :items="modelFileItems" :item-height="30" :menu-width="440" size="sm" class="file-combo" />
+            <ZenCombo v-model="modelFile" :items="modelFileItems" :pinned="['']" :item-height="30" :menu-width="440" size="sm" class="file-combo" />
           </div>
           <p v-if="fam?.missing.length" class="warn small">
             <i class="mdi mdi-download-outline" /> Some files aren’t installed: <RouterLink to="/models">get them on Models</RouterLink>

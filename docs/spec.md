@@ -195,7 +195,7 @@ Sample pictures (or clips) during the run: what, how often, and how they're made
 | `samples.model_weight_dtype` | `"default"` | `"default"` or `"fp8_e4m3fn"` or `"fp8_e4m3fn_fast"` or `"fp8_e5m2"` | How model_name's weights load. |
 | `samples.lora_strength` | `1.0` | number | The trained LoRA's strength in samples. |
 | `samples.turbo_lora` | `null` | text or null | A turbo LoRA under every sample (not training, not the saved LoRA): few-step previews. |
-| `samples.turbo_strength` | `0.75` | number | turbo_lora's strength. |
+| `samples.turbo_strength` | `0.75` | number, >= 0 | turbo_lora's strength; 0 samples without it (it stays loaded, so it can be turned back up while the run trains). |
 | `samples.slg_mode` | `"off"` | `"off"` or `"uncond"` or `"standard"` | Skip-layer guidance, as ComfyUI's SkipLayerGuidanceDiT: "uncond" skips the layers in the negative pass only (no extra cost), "standard" adds a pass without them and pushes away from it by slg_scale. |
 | `samples.slg_layers` | `[]` | list of whole number | Skip-layer guidance: the main (single-stream) blocks to skip. |
 | `samples.slg_double_layers` | `[]` | list of whole number | Skip-layer guidance: double-stream blocks, for models that have them. |

@@ -5,12 +5,12 @@
 import { ZenButton, ZenCombo, ZenNumber, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { inputChoices } from '@/api/comfy'
-import { viewUrl, type SampleRow } from '@/api/engine'
+import { engine, viewUrl, type SampleRow } from '@/api/engine'
 import { vAutosize } from '@/lib/autosize'
 import { useRunContext } from './context'
 import { isVideo, rowHasVideo, sampleItem, useSamplesContext } from './samples'
 
-const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries } = useRunContext()
+const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries, id, error, load } = useRunContext()
 const { liveManual, lb, syncing, toggleSync, hoverPlay, hoverPause } = useSamplesContext()
 
 // each try is a card: its no-LoRA render (if asked for) and every step it was rendered at
@@ -68,9 +68,11 @@ const tryPrompt = ref('')
 const trySize = ref('')
 const tryFrames = ref<number | null>(null)
 const tryBase = ref(true)
-// a try's own sampling (else the run's): sampler, scheduler or custom sigmas, steps, CFG
+// a try's own sampling (else the run's): sampler, scheduler or custom sigmas, steps, CFG, and the
+// turbo LoRA's strength (0: without it)
 const tune = ref(false)
-const tuned = reactive({ sampler: '', scheduler: '', steps: null as number | null, cfg: null as number | null, sigmas: '' })
+const tuned = reactive({ sampler: '', scheduler: '', steps: null as number | null, cfg: null as number | null, sigmas: '', turbo: null as number | null })
+const untuned = { sampler: '', scheduler: '', steps: null, cfg: null, sigmas: '', turbo: null }
 const samplerNames = ref<string[]>([])
 const schedulerNames = ref<string[]>([])
 onMounted(async () => {
@@ -100,9 +102,28 @@ function sampling(): Record<string, unknown> {
   else if (tuned.scheduler) out.scheduler = tuned.scheduler
   if (tuned.steps != null && tuned.scheduler !== 'custom') out.steps = tuned.steps
   if (tuned.cfg != null) out.cfg = tuned.cfg
+  if (tuned.turbo != null && run.value?.turbo_lora) out.turbo_strength = tuned.turbo
   return out
 }
+// the tuned settings become the run's own, from its next sample on (and kept in its spec)
+const applying = ref(false)
+async function applyToRun() {
+  const own = sampling()
+  if (!Object.keys(own).length || sigmaError.value) return
+  applying.value = true
+  try {
+    await engine.control(id.value, 'samples', own)  // rejects when the run refuses them
+    Object.assign(tuned, untuned)  // the run's now; kept on screen if it refused them
+    await load()
+  } catch (e) {
+    error.value = String((e as Error).message ?? e)
+  } finally {
+    applying.value = false
+  }
+}
 const ownSampling = computed(() => Object.keys(sampling()).length > 0)
+// the LoRA under samples' strength the next try renders with (0: without it)
+const turboNow = computed(() => tuned.turbo ?? run.value?.turbo_strength ?? 0.75)
 // what the next try renders with, its own settings or the run's
 const samplingSummary = computed(() => {
   const own = tune.value
@@ -111,10 +132,14 @@ const samplingSummary = computed(() => {
   const sched = custom ? 'custom' : (own && tuned.scheduler) || runSchedule.value
   const steps = custom ? Math.max(0, sigmaList.value.length - 1) : (own && tuned.steps) || (runSchedule.value === 'custom' ? (run.value?.sigmas?.length ?? 1) - 1 : run.value?.steps ?? 20)
   const cfg = (own && tuned.cfg != null ? tuned.cfg : run.value?.cfg) ?? 1
-  return `${sampler} · ${sched} · ${steps} steps · cfg ${cfg}`
+  const turbo = (own && tuned.turbo != null ? tuned.turbo : run.value?.turbo_strength) ?? 0.75
+  return `${sampler} · ${sched} · ${steps} steps · cfg ${cfg}${run.value?.turbo_lora ? turboText(turbo) : ''}`
 })
+const turboText = (s: number) => (s ? ` · sample LoRA ${s}` : ' · no sample LoRA')
 const samplingText = (x: SampleRow) =>
-  x.sampling ? ` · ${x.sampling.sampler} / ${x.sampling.scheduler} · ${x.sampling.steps} steps · cfg ${x.sampling.cfg}` : ''
+  x.sampling
+    ? ` · ${x.sampling.sampler} / ${x.sampling.scheduler} · ${x.sampling.steps} steps · cfg ${x.sampling.cfg}${x.sampling.turbo_strength != null ? turboText(x.sampling.turbo_strength) : ''}`
+    : ''
 async function renderTry() {
   // one try per line: several prompts queue at once
   const lines = tryPrompt.value.split('\n').map((l) => l.trim()).filter(Boolean)
@@ -185,6 +210,7 @@ const tileOf = (x: SampleRow | null | undefined) => {
         <ZenButton size="sm" variant="primary" icon="mdi mdi-creation-outline" :disabled="(status !== 'training' && !sampleCkpt) || !tryPrompt.trim() || !!sigmaError" :title="status === 'training' ? 'Queues it (Ctrl+Enter). One prompt per line queues several' : sampleCkpt ? `Renders with the step ${sampleCkpt.step} checkpoint (Ctrl+Enter). One prompt per line for several` : 'Only while it trains, or once it has a checkpoint'" @click="renderTry">Render</ZenButton>
       </div>
       <div v-if="tune" class="try-tune">
+        <div class="tune-fields">
         <label class="f"><span class="lbl">Sampler</span><ZenCombo v-model="tuned.sampler" :items="samplerItems" :sorted="false" size="sm" /></label>
         <label class="f"><span class="lbl">Scheduler</span><ZenCombo v-model="tuned.scheduler" :items="schedulerItems" :sorted="false" size="sm" /></label>
         <label v-if="tuned.scheduler === 'custom'" class="f wide">
@@ -193,7 +219,22 @@ const tileOf = (x: SampleRow | null | undefined) => {
         </label>
         <label v-else class="f num"><span class="lbl">Steps</span><ZenNumber :model-value="tuned.steps ?? run?.steps ?? 20" :min="1" :max="200" :step="1" :precision="0" size="sm" @update:model-value="tuned.steps = $event" /></label>
         <label class="f num"><span class="lbl">CFG</span><ZenNumber :model-value="tuned.cfg ?? run?.cfg ?? 1" :min="0" :max="30" :step="0.5" :precision="1" size="sm" @update:model-value="tuned.cfg = $event" /></label>
-        <button v-if="ownSampling" class="link small" title="Back to the run's own sample settings" @click="Object.assign(tuned, { sampler: '', scheduler: '', steps: null, cfg: null, sigmas: '' })">Use the run's settings</button>
+        </div>
+        <!-- the run's LoRA under samples: its strength, or off (it loaded with the run, so it can't be swapped here) -->
+        <div v-if="run?.turbo_lora" class="tune-lora" :class="{ off: turboNow === 0 }">
+          <span class="lbl">LoRA under samples</span>
+          <span class="lora-name mono" :title="run.turbo_lora">{{ run.turbo_lora }}</span>
+          <template v-if="turboNow">
+            <label class="strength"><span class="lbl">Strength</span><ZenNumber :model-value="turboNow" :min="0.05" :max="1.5" :step="0.05" :precision="2" size="sm" @update:model-value="tuned.turbo = $event" /></label>
+            <button type="button" class="remove" title="Render without it: your LoRA alone (a turbo one needs more steps and CFG then)" @click="tuned.turbo = 0"><i class="mdi mdi-close" /></button>
+          </template>
+          <button v-else type="button" class="link small" @click="tuned.turbo = run.turbo_strength || 0.75">Off · put it back</button>
+        </div>
+        <div v-if="ownSampling" class="tune-foot">
+          <button class="link small" title="Back to the run's own sample settings" @click="Object.assign(tuned, untuned)">Reset to the run's</button>
+          <span class="grow" />
+          <ZenButton v-if="status === 'training'" size="sm" :disabled="applying || !!sigmaError" title="The run's own samples (and the likeness they're scored on) use these from its next one, and its settings keep them" @click="applyToRun">Use for the run's samples</ZenButton>
+        </div>
       </div>
     </div>
     <div v-if="!manualGroups.length && !waitingCards.length" class="muted small empty-manual">
@@ -329,13 +370,61 @@ const tileOf = (x: SampleRow | null | undefined) => {
 }
 .try-tune {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 10px 12px;
+  flex-direction: column;
+  gap: 10px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--zen-surface) 60%, transparent);
+}
+.tune-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+}
+.tune-lora {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
+}
+.tune-lora .lora-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.tune-lora.off .lora-name {
+  color: var(--zen-muted);
+  text-decoration: line-through;
+}
+.tune-lora .strength {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 150px;
+  flex: none;
+}
+.remove {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--zen-muted);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 16px;
+}
+.remove:hover {
+  color: var(--zen-text);
+}
+.tune-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .f {
   display: flex;

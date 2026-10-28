@@ -160,6 +160,14 @@ instead. It works as long as that ComfyUI is close to the pin in `comfy.lock`.
 against. The harness uses ComfyUI internals, so move the pin with
 `zt update --ref <commit|tag>` and test before committing it.
 
+**Compiled blocks** (Memory → Compile blocks): the first run at a resolution it hasn't compiled
+before generates its kernels. That's a few minutes on Linux with an NVIDIA card, and 10-25 on
+ROCm or Windows, where the first steps can take 40-60 s each and the run looks stalled. The
+kernels stay in Triton's cache (`TRITON_CACHE_DIR`, else `~/.triton`), so later runs at that
+resolution are fast from the start: don't delete it to clean up. To see why a run recompiles,
+start ComfyUI with `TORCH_LOGS=recompiles` and `PYTHONUNBUFFERED=1` (on Windows, `set` both in the
+launcher): without the second, ComfyUI's log can lag minutes behind the run.
+
 ## How it works
 
 The training loop is ZenTrainer's own: it loads models, patches in the LoRA and steps the
