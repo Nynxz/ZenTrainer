@@ -91,7 +91,7 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **Other LoRAs, in one list:** a LoRA to train more on, to sit under the new one, or to be on only
   while training (a de-distillation adapter) is one row each, its file and how it's used,
   instead of three fields (Continue from, Base LoRA, Training adapter). The settings are the same.
-- **Trigger word: Use “<dataset>”** beside it fills in the dataset's name (lower case, `_` for
+- **Trigger word: Use “`<dataset>`”** beside it fills in the dataset's name (lower case, `_` for
   spaces), and goes once it's used.
 - **A new run picks the dataset changed last**, not the first by name (Train on this and a
   duplicate still bring their own).

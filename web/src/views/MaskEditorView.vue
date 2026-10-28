@@ -224,7 +224,7 @@ function stroke(p: { x: number; y: number }) {
   render()
 }
 function down(e: PointerEvent) {
-  if (!loaded.value) return
+  if (!loaded.value || busy.value) return // saving: an edit now would be lost when Save & next moves on
   const p = toImage(e)
   if (p.x < 0 || p.y < 0 || p.x > W.value || p.y > H.value) return
   if (tool.value === 'points') {
@@ -392,7 +392,7 @@ async function save() {
 }
 // save (if anything changed: an untouched image keeps what it has), then the next image
 async function saveNext() {
-  if (busy.value) return
+  if (busy.value || !loaded.value) return // the next picture still loading: its canvas isn't it yet
   if (dirty.value || grow.value || feather.value) {
     await save()
     if (error.value) return // the save failed: stay on it

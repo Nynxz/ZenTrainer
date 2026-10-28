@@ -110,7 +110,7 @@ function use(folder = picked.value) {
               :aria-pressed="picked === d.folder"
               @click="picked = d.folder"
               @dblclick="use(d.folder)"
-              @keydown.enter.prevent="picked === d.folder ? use(d.folder) : (picked = d.folder)"
+              @keydown.enter.self.prevent="picked === d.folder ? use(d.folder) : (picked = d.folder)"
             >
               <span class="thumb"><img v-if="d.thumbs[0]" :src="thumb(d, d.thumbs[0], 96)" alt="" loading="lazy" /><i v-else class="mdi mdi-image-off-outline" /></span>
               <span class="item-text">
@@ -130,7 +130,7 @@ function use(folder = picked.value) {
         <article v-if="shown" class="detail-in">
           <!-- always two rows of four, empty tiles for a smaller set: the panel doesn't jump between datasets -->
           <div class="mosaic">
-            <button v-for="t in shown.thumbs.slice(0, 8)" :key="t.filename" type="button" class="pic" title="See it big, with its caption" @click="gallery = relPath(t)">
+            <button v-for="t in shown.thumbs.slice(0, 8)" :key="relPath(t)" type="button" class="pic" title="See it big, with its caption" @click="gallery = relPath(t)">
               <img :src="thumb(shown, t, 320)" alt="" loading="lazy" />
             </button>
             <span v-for="n in Math.max(0, 8 - shown.thumbs.slice(0, 8).length)" :key="`gap${n}`" class="gap"><i v-if="!shown.thumbs.length && n === 1" class="mdi mdi-image-off-outline" /></span>

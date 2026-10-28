@@ -90,7 +90,11 @@ const stopAfter = router.afterEach((to, from, failure) => {
   if (failure || to.path === from.path) popped = false
 })
 onUnmounted(() => (stopListening(), stopAfter()))
+// each restore has a number: a later one (Back again before the first got there) ends it, so it
+// can't write its page's scroll into the next page
+let restore = 0
 function scrollTo(top: number) {
+  const mine = ++restore
   let frames = 0
   // the user scrolling (wheel, touch, keys) ends it: the restore doesn't fight them
   let stopped = false
@@ -99,7 +103,7 @@ function scrollTo(top: number) {
   for (const ev of ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const) addEventListener(ev, stop, opts)
   const step = () => {
     const el = scroller.value?.viewport
-    if (!el || stopped) return
+    if (!el || stopped || mine !== restore) return
     el.scrollTop = top
     if (Math.abs(el.scrollTop - top) > 2 && frames++ < 90) requestAnimationFrame(step)
   }

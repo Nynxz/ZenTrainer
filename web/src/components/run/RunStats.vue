@@ -73,7 +73,7 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
         { k: 'Grad norm', v: fmtBig(l?.grad_norm), full: l?.grad_norm != null ? String(l.grad_norm) : undefined, tip: 'How strongly this step pulled on the LoRA (before clipping). Spikes are hard pictures; a steady climb can mean it’s going unstable' },
         {
           k: 'Validation',
-          v: valLast.value ? valLast.value.val_loss.toFixed(4) : '–',
+          v: valLast.value?.val_loss != null ? valLast.value.val_loss.toFixed(4) : '–',
           delta: valDelta,
           tip: 'Loss on a fixed set: the same pictures at the same noise, every time, so it moves only when the LoRA does (the training loss jumps with each step’s random noise). The arrow: change since before training. It’s drawn from the training pictures, so it shows learning, not overfitting: judge that by the samples',
         },
@@ -95,7 +95,17 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
 
 <template>
   <section v-for="g in statGroups" :key="g.title" class="card">
-    <header class="sec-head fold" :class="{ folded: isCollapsed(g.title) }" :title="isCollapsed(g.title) ? 'Show' : 'Fold away'" @click="toggleCollapsed(g.title)">
+    <header
+      class="sec-head fold"
+      :class="{ folded: isCollapsed(g.title) }"
+      role="button"
+      tabindex="0"
+      :aria-expanded="!isCollapsed(g.title)"
+      :title="isCollapsed(g.title) ? 'Show' : 'Fold away'"
+      @click="toggleCollapsed(g.title)"
+      @keydown.enter.self.prevent="toggleCollapsed(g.title)"
+      @keydown.space.self.prevent="toggleCollapsed(g.title)"
+    >
       <span class="sec-title">{{ g.title }}</span><span class="spacer" />
       <i class="mdi fold-chev" :class="isCollapsed(g.title) ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
     </header>

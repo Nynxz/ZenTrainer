@@ -72,7 +72,12 @@ const runsFound = computed(() => {
 })
 const emptyRuns = computed(() => runsFound.value.filter((r) => !runSize(r)).length)
 const runsListed = computed(() => runsFound.value.filter((r) => emptyShown.value || runSize(r)))
-const runRows = computed(() => (allRuns.value || runQuery.value.trim() ? runsListed.value : runsListed.value.slice(0, RUNS_SHOWN)))
+// the biggest 12, and the empty ones too once asked for (sorted by size they'd fall past the 12)
+const runRows = computed(() => {
+  if (allRuns.value || runQuery.value.trim()) return runsListed.value
+  const top = runsListed.value.filter((r) => runSize(r)).slice(0, RUNS_SHOWN)
+  return emptyShown.value ? [...top, ...runsListed.value.filter((r) => !runSize(r))] : top
+})
 const kept = computed(() => (store.value?.runs ?? []).filter((r) => r.states && RESUMABLE.includes(r.status)))
 function cleanAllStates() {
   const bytes = sweepable.value.reduce((n, r) => n + r.states, 0)
@@ -205,7 +210,7 @@ async function restart() {
               <i class="mdi mdi-broom" /> Delete all finished runs' states · {{ fmtBytes(sweepable.reduce((n, r) => n + r.states, 0)) }}
             </button>
           </div>
-          <table class="tbl runs-tbl">
+          <div class="tbl-scroll"><table class="tbl runs-tbl">
             <thead>
               <tr>
                 <th v-for="c in ([['name', 'Run'], ['checkpoints', 'Checkpoints'], ['states', 'Resume states'], ['samples', 'Samples'], ['total', 'Total']] as const)" :key="c[0]">
@@ -236,7 +241,7 @@ async function restart() {
                 </td>
               </tr>
             </tbody>
-          </table>
+          </table></div>
           <div v-if="runsListed.length > RUNS_SHOWN || emptyRuns || (runQuery.trim() && !runsFound.length)" class="tbl-foot muted small">
             <template v-if="runQuery.trim() && !runsFound.length">No runs match “{{ runQuery.trim() }}”.</template>
             <template v-else>
@@ -253,7 +258,7 @@ async function restart() {
 
         <div class="card">
           <div class="tbl-head"><span class="eyebrow">Datasets</span></div>
-          <table class="tbl">
+          <div class="tbl-scroll"><table class="tbl">
             <thead>
               <tr><th>Dataset</th><th>Images</th><th>Caches</th><th /></tr>
             </thead>
@@ -275,7 +280,7 @@ async function restart() {
                 </td>
               </tr>
             </tbody>
-          </table>
+          </table></div>
         </div>
       </template>
     </section>
@@ -394,6 +399,15 @@ async function restart() {
 }
 .tbl-head .chip-btn {
   margin-left: auto;
+}
+/* a phone: the tables keep their columns and scroll sideways, rather than squeeze into overlap */
+.tbl-scroll {
+  overflow-x: auto;
+}
+@media (max-width: 720px) {
+  .tbl-scroll > .tbl {
+    min-width: 640px;
+  }
 }
 /* the runs table keeps its columns where they are when it's sorted or searched */
 .runs-tbl {

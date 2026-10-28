@@ -26,7 +26,17 @@ onUnmounted(() => stopLoaded())
 
 <template>
   <section v-if="runLoaded.length" class="card loaded-card">
-    <header class="sec-head fold" :class="{ folded: isCollapsed('In VRAM') }" :title="isCollapsed('In VRAM') ? 'Show' : 'Fold away'" @click="toggleCollapsed('In VRAM')">
+    <header
+      class="sec-head fold"
+      :class="{ folded: isCollapsed('In VRAM') }"
+      role="button"
+      tabindex="0"
+      :aria-expanded="!isCollapsed('In VRAM')"
+      :title="isCollapsed('In VRAM') ? 'Show' : 'Fold away'"
+      @click="toggleCollapsed('In VRAM')"
+      @keydown.enter.self.prevent="toggleCollapsed('In VRAM')"
+      @keydown.space.self.prevent="toggleCollapsed('In VRAM')"
+    >
       <span class="sec-title">In VRAM</span>
       <span class="sec-sub">loaded now</span>
       <span class="spacer" />

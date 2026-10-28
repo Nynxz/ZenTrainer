@@ -223,7 +223,7 @@ const summary = computed(() => {
         </div>
       </section>
 
-      <p v-if="query.trim() && !history.length" class="muted small">No runs or caption jobs match “{{ query.trim() }}”.</p>
+      <p v-if="query.trim() && !history.length" class="muted small">{{ current || queued.length || liveCaptions.length ? 'Nothing in the history matches' : 'No runs or caption jobs match' }} “{{ query.trim() }}”.</p>
       <section v-if="history.length" class="sec">
         <div v-if="current || queued.length || liveCaptions.length" class="eyebrow">History</div>
         <template v-for="h in history" :key="h.kind === 'train' ? h.run.run_id : h.job.job_id">

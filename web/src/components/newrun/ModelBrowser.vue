@@ -66,6 +66,11 @@ const listed = computed(() => {
   const q = query.value.trim().toLowerCase()
   return families.value.filter((f) => (!q || f.name.toLowerCase().includes(q) || f.id.includes(q)) && (only.value === 'all' || ready(f)))
 })
+// a search or Installed that hides the highlighted model moves it to the first listed: Use
+// never takes one that isn't in view
+watch(listed, (l) => {
+  if (picked.value && l.length && !l.some((f) => f.id === picked.value)) picked.value = l[0]!.id
+})
 const groups = computed(() => {
   const starred = listed.value.filter((f) => isStarred(f.id))
   const main = listed.value.filter((f) => !isStarred(f.id) && !isOther(f.id))
@@ -126,7 +131,7 @@ function details(id: string | null) {
               :aria-pressed="picked === f.id"
               @click="picked = f.id"
               @dblclick="use(f.id)"
-              @keydown.enter.prevent="picked === f.id ? use(f.id) : (picked = f.id)"
+              @keydown.enter.self.prevent="picked === f.id ? use(f.id) : (picked = f.id)"
             >
               <span class="logo">
                 <img v-if="makerLogo(f.id)" :src="makerLogo(f.id)!.src" :class="{ mono: makerLogo(f.id)!.mono }" alt="" />
@@ -184,7 +189,7 @@ function details(id: string | null) {
               class="recipe"
               :title="`Use ${r.title}: its model and settings (Undo takes it back)`"
               @click="recipe(r.id)"
-              @keydown.enter.prevent="recipe(r.id)"
+              @keydown.enter.self.prevent="recipe(r.id)"
             >
               <span class="cover" :style="{ background: `linear-gradient(135deg, ${r.cover.from}, ${r.cover.to})` }"><i :class="r.cover.icon" /></span>
               <span class="r-text">

@@ -70,7 +70,17 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
 
 <template>
   <section class="card">
-    <header class="sec-head fold" :class="{ folded: isCollapsed('Setup') }" :title="isCollapsed('Setup') ? 'Show' : 'Fold away'" @click="toggleCollapsed('Setup')">
+    <header
+      class="sec-head fold"
+      :class="{ folded: isCollapsed('Setup') }"
+      role="button"
+      tabindex="0"
+      :aria-expanded="!isCollapsed('Setup')"
+      :title="isCollapsed('Setup') ? 'Show' : 'Fold away'"
+      @click="toggleCollapsed('Setup')"
+      @keydown.enter.self.prevent="toggleCollapsed('Setup')"
+      @keydown.space.self.prevent="toggleCollapsed('Setup')"
+    >
       <span class="sec-title">Setup</span>
       <span class="spacer" />
       <button class="link" @click.stop="specOpen = true"><i class="mdi mdi-code-json" /> Full spec</button>

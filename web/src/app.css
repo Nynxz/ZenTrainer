@@ -267,6 +267,20 @@ textarea {
   flex: 1 1 120px;
   min-width: 70px;
 }
+/* a phone: the controls wrap onto a second row rather than past the edge (the search, the side
+   panel's button) */
+@media (max-width: 720px) {
+  .page-toolbar {
+    height: auto;
+    min-height: 47px;
+    padding: 8px 10px;
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .page-toolbar .search {
+    flex-basis: 100%;
+  }
+}
 
 /* a dialog or the lightbox open: the page behind it stays put (its own lists still scroll) */
 body:has(.zen-modal, .zlb) .shell > .main > .scroll-area.content > .viewport {

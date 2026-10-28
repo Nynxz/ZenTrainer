@@ -45,7 +45,8 @@ downloading off its Comfy-Org Hugging Face repo. The family's turbo build is off
 previews, with the sampler settings ComfyUI's own template uses. The **Models** page lists
 every family, what you have of it, and the rest.
 
-Start from a recipe (**Recipes**, top right): ours for each model (a character, a style), or one
+Start from a recipe (the model field opens the models, each with its recipes; **Recipes** is the
+dialog's other tab): ours for each model (a character, a style), or one
 you saved from a run that went well with **Save as recipe**. Each shows what it would change before
 it's applied, and keeps your run's name, dataset, trigger word and captions. The form warns you
 about what usually goes wrong: no trigger word, sample prompts that never use it, a learning rate

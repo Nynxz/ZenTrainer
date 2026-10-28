@@ -59,7 +59,17 @@ async function copy(text: string) {
 
 <template>
   <section class="card">
-    <header class="sec-head fold" :class="{ folded: isCollapsed('Checkpoints') }" :title="isCollapsed('Checkpoints') ? 'Show' : 'Fold away'" @click="toggleCollapsed('Checkpoints')">
+    <header
+      class="sec-head fold"
+      :class="{ folded: isCollapsed('Checkpoints') }"
+      role="button"
+      tabindex="0"
+      :aria-expanded="!isCollapsed('Checkpoints')"
+      :title="isCollapsed('Checkpoints') ? 'Show' : 'Fold away'"
+      @click="toggleCollapsed('Checkpoints')"
+      @keydown.enter.self.prevent="toggleCollapsed('Checkpoints')"
+      @keydown.space.self.prevent="toggleCollapsed('Checkpoints')"
+    >
       <span class="sec-title"><ZenTip text="The LoRA saved along the way. Best: the highest likeness when faces are scored (a character), else the lowest validation loss. Hover a row to test it, train more from it, download it or copy its name">Checkpoints</ZenTip></span>
       <span class="sec-sub">{{ saveLine }}</span>
       <span class="spacer" />
