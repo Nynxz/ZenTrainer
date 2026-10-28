@@ -443,7 +443,7 @@ class TrainSpec:
         if isinstance(self.network.targets, str):
             _choice("network.targets", self.network.targets, ("attn", "mlp", "attn_mlp", "all"))
         elif not any(str(p).strip() for p in self.network.targets) and not self.network.train_bias_norm \
-                and not d.control_sets:
+                and not (d.edit and d.edit_method == "concat" and d.control_sets):  # channel inputs train
             # nothing would train: it failed only once the model had loaded ("no layers matched")
             raise SpecError('network.targets has no patterns: add the layers to train (regexes), or use "attn", '
                             '"mlp", "attn_mlp" or "all"')

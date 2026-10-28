@@ -24,3 +24,14 @@ def test_custom_targets_need_a_pattern():
 
 def test_an_empty_list_still_trains_biases_and_norms():
     TrainSpec.from_dict(_spec(targets=[], train_bias_norm=True)).validate()
+
+
+def test_an_empty_list_passes_only_with_channel_inputs():
+    def edit(method):
+        s = _spec(targets=[])
+        s["dataset"].update(edit=True, edit_method=method, control_sets=["inputs"])
+        return TrainSpec.from_dict(s)
+
+    edit("concat").validate()  # the widened input layer trains
+    with pytest.raises(SpecError, match="no patterns"):
+        edit("index").validate()  # references: nothing would train
