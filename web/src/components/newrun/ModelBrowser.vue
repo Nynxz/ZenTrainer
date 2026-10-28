@@ -163,7 +163,6 @@ function recipe(id: string) {
               <dd v-else>{{ shown.missing.length }} to download{{ missingSize(shown) ? ` · ${fmtBytes(missingSize(shown))}` : '' }}</dd>
             </div>
             <div><dt>Loads as</dt><dd>{{ shown.kind === 'checkpoint' ? 'one checkpoint' : 'model + text encoder + VAE' }}</dd></div>
-            <div><dt>From</dt><dd>{{ shown.source === 'templates' ? "ComfyUI's templates" : 'its Hugging Face repo' }}</dd></div>
             <div v-if="shown.profile"><dt>Settings</dt><dd>{{ shown.profile.status === 'verified' ? 'tuned for it' : 'suggested' }}</dd></div>
           </dl>
           <p v-if="shown.gated" class="small warn"><i class="mdi mdi-lock-outline" /> Its repo asks you to accept a license (and set a Hugging Face token) before it downloads.</p>

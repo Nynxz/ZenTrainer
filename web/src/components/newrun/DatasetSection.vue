@@ -49,10 +49,11 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   <h2><span class="num">2</span> Dataset</h2>
   <ZenField label="Folder" stack>
     <button type="button" class="ds-field" :class="{ empty: !dataset }" @click="pickerOpen = true">
-      <span class="ds-thumb"><img v-if="dataset && firstThumb(dataset)" :src="firstThumb(dataset)" alt="" /><i v-else class="mdi mdi-image-multiple-outline" /></span>
+      <span class="ds-thumb" :class="{ blank: !dataset }"><img v-if="dataset && firstThumb(dataset)" :src="firstThumb(dataset)" alt="" /><i v-else :class="dataset ? 'mdi mdi-image-multiple-outline' : 'mdi mdi-plus'" /></span>
       <span class="ds-text">
-        <b>{{ dataset?.folder ?? spec.dataset.folder ?? 'Pick a dataset…' }}</b>
+        <b>{{ dataset?.folder ?? (spec.dataset.folder || 'Choose a dataset') }}</b>
         <span v-if="dataset" class="muted small">{{ dataset.images }} pictures · {{ dataset.captioned }} captioned</span>
+        <span v-else class="muted small">A folder of pictures in ComfyUI's input</span>
       </span>
       <span class="ds-change">{{ dataset ? 'Change' : 'Pick' }} <i class="mdi mdi-chevron-right" /></span>
     </button>
@@ -285,9 +286,12 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ds-field.empty .ds-text b {
-  color: var(--zen-muted);
-  font-weight: 500;
+.ds-field.empty {
+  border-style: dashed;
+}
+.ds-thumb.blank {
+  color: var(--zen-accent);
+  font-size: 18px;
 }
 .ds-change {
   font-size: 12px;

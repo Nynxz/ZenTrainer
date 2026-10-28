@@ -298,13 +298,15 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
 <template>
   <div class="fp">
     <button v-if="props.browse" type="button" class="fam-field" :class="{ empty: !fam && famId !== CUSTOM }" @click="emit('browse')">
-      <span class="fam-logo">
+      <!-- a maker's logo on white (its own colours); otherwise a tile in the app's own -->
+      <span class="fam-logo" :class="{ blank: !(fam && makerLogo(fam.id)) }">
         <img v-if="fam && makerLogo(fam.id)" :src="makerLogo(fam.id)!.src" :class="{ mono: makerLogo(fam.id)!.mono }" alt="" />
-        <i v-else :class="famId === CUSTOM ? 'mdi mdi-file-cog-outline' : 'mdi mdi-cube-outline'" />
+        <i v-else :class="famId === CUSTOM ? 'mdi mdi-file-cog-outline' : fam ? 'mdi mdi-cube-outline' : 'mdi mdi-plus'" />
       </span>
       <span class="fam-text">
-        <b>{{ fam?.name ?? (famId === CUSTOM ? 'Custom: your own files' : 'Choose a model…') }}</b>
+        <b>{{ fam?.name ?? (famId === CUSTOM ? 'Custom: your own files' : 'Choose a model') }}</b>
         <span v-if="fam" class="muted small">{{ fam.missing.length ? `${statusOf(fam)} to download` : 'installed' }}</span>
+        <span v-else-if="famId !== CUSTOM" class="muted small">The models in your ComfyUI, with their recipes</span>
       </span>
       <span class="fam-change">{{ fam || famId === CUSTOM ? 'Change' : 'Choose' }} <i class="mdi mdi-chevron-right" /></span>
     </button>
@@ -704,9 +706,13 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.fam-field.empty .fam-text b {
-  color: var(--zen-muted);
-  font-weight: 500;
+.fam-field.empty {
+  border-style: dashed;
+}
+.fam-logo.blank {
+  background: var(--zen-surface-2);
+  color: var(--zen-accent);
+  font-size: 18px;
 }
 .fam-change {
   font-size: 12px;
