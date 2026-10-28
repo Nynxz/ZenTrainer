@@ -258,6 +258,7 @@ async function savePromptSet(name: string) {
       <div class="inline">
         <ZenCombo :model-value="spec.samples.turbo_lora ?? ''" :items="[{ value: '', label: 'None' }, ...items(choices.loras)]" :pinned="['']" :item-height="30" @update:model-value="spec.samples.turbo_lora = String($event) || null" />
         <ZenNumber v-if="spec.samples.turbo_lora" :model-value="spec.samples.turbo_strength ?? 0.75" :min="0" :max="1.5" :step="0.05" :precision="2" @update:model-value="spec.samples.turbo_strength = $event" />
+        <button v-if="spec.samples.turbo_lora" type="button" class="clear" title="Sample without a turbo LoRA" @click="spec.samples.turbo_lora = null"><i class="mdi mdi-close" /></button>
       </div>
     </ZenField>
     <ZenField label="Steps / CFG" stack>
@@ -354,5 +355,17 @@ async function savePromptSet(name: string) {
 }
 .suggest > span:not(.muted) {
   flex: 1;
+}
+.inline > .clear {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--zen-muted);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 16px;
+}
+.inline > .clear:hover {
+  color: var(--zen-text);
 }
 </style>
