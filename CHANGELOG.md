@@ -126,6 +126,29 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **The adapter list is LoRA and LoKr.** LoHa and OFT aren't ready (LoHa can't train on an int8
   base), so the form no longer offers them; a run that already uses one keeps it, and specs still
   take them.
+- **The adapter's rank is labelled,** and resuming a run locks the adapter and its rank with the
+  rest of the network (its saved state is that adapter at that rank).
+- **The optimizer list is the ones that can run:** those needing a package that isn't installed
+  are one line at its end (how many, which, and the pip line that adds them); a run that already
+  uses one keeps it.
+- **Resume states set to None says what it costs,** in Settings and on New run: a stopped or
+  crashed run can't be continued. It's remembered from the last run's choice, so it's worth seeing.
+- **Mask editor: Save & next** (Ctrl+→) beside Previous and Next, and the one Save button beside
+  it. It saves only what changed, so an untouched picture keeps the mask it has. Its side panel
+  goes in the order you work (Tools, Find it, Mask, This size), and its list filters round as the
+  theme does.
+- **Holding Shift over a dataset thumbnail peeks at a sharp copy,** not the tile's small one; it
+  doesn't peek in the lightbox or over the mask editor's canvas, and a Shift-click (selecting a
+  range) doesn't pop it up.
+- **The Datasets page has the picker's stars** (starred first, whatever the sort) and a sort for
+  the cards as well as the table, remembered like the view.
+- **Settings is tidier:** a General section (Interface, Experimental pages), then Training, then
+  Appearance (Light or dark, Motion, eight theme packs until Show all). A web-only update
+  rebuilds from Versions.
+- **A paused queue resumes from the sidebar:** its line reads Paused, with a play button beside it.
+  The update button lines up with Settings, its icon centred.
+- **Fixed: one NaN step blanked a stretch of a long run's loss chart.** Thinning averaged it in;
+  it's left out now.
 - **Fixed: an edit sample's input picture didn't show when it was given as a full path** (one on
   another drive, say): training found it, but the run page asked for a dataset named after the
   path's first part ("bad dataset name"). A run now hands the page each
