@@ -118,6 +118,22 @@ const shown = computed(() => {
   return [...list].sort((a, b) => star(b) - star(a) || (val(a) < val(b) ? -1 : val(a) > val(b) ? 1 : 0) * sortDir.value)
 })
 
+// what's here, as Jobs says it: how many, their pictures, the masked ones, the space they take
+const summary = computed(() => {
+  const ds = datasets.value ?? []
+  const n = (k: (d: DatasetInfo) => number) => ds.reduce((t, d) => t + k(d), 0)
+  const pics = n((d) => d.images)
+  const masked = n((d) => (d.masked ? 1 : 0))
+  const bytes = n((d) => d.bytes ?? 0)
+  return [
+    `${ds.length} dataset${ds.length === 1 ? '' : 's'}`,
+    `${pics.toLocaleString()} picture${pics === 1 ? '' : 's'}`,
+    masked && `${masked} with masks`,
+    bytes && fmtBytes(bytes),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+})
 const link = (d: DatasetInfo) => `/datasets/${encodeURIComponent(d.folder)}`
 const thumb = (d: DatasetInfo, t: DatasetInfo['thumbs'][number], size = 256) =>
   thumbUrl(d.folder, t.path ?? t.subfolder.split('/').slice(1).concat(t.filename).join('/'), size)
@@ -138,7 +154,7 @@ const ago = (t?: number) => {
     <div class="page-head">
       <div class="titles">
         <h1>Datasets</h1>
-        <p v-if="datasets?.length" class="lede">{{ datasets.length }} in ComfyUI's input folder</p>
+        <p v-if="datasets?.length" class="lede">{{ summary }}</p>
       </div>
       <form v-if="creating" class="create" @submit.prevent="create">
         <ZenInput v-model="newName" placeholder="dataset name" />
