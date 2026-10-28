@@ -327,6 +327,12 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Fixed: compiled blocks recompiled every graph after a run's first sample** on a card where
+  ComfyUI unloads part of the model for the render and loads it back (16 GB and the like): a cluster
+  of slow steps after each sample and save, 7–8 s each with a warm kernel cache on an RX 7800 XT,
+  which made a compiled run slower than an uncompiled one. The graphs stay valid across that round
+  trip now: the steps after a sample under a 10 GB budget went from 3.4 and 2.2 s spikes to a flat
+  0.6 s (MOSS, RTX 5090).
 - **Faster steps when the card has room: Keep last blocks is now Auto.** Gradient checkpointing
   recomputes every block in the backward; with the model all on the card, ZenTrainer now measures
   what a block keeps over the first steps and leaves as many blocks un-checkpointed as the free

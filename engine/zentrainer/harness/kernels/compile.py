@@ -97,6 +97,15 @@ def compiled_blocks(diffusion_model, enabled: bool):
             and "forward" not in sub.__dict__]
     for sub in mlps:
         sub.forward = _swiglu_out_of_place(sub)
+    # ComfyUI's layers read comfy_cast_weights, a class attribute until a low-VRAM round trip
+    # (samples on a card the model doesn't fit beside) sets it on the instance and puts it back
+    # as one. The graphs guard on its absence from the instance, so that round trip invalidated
+    # every graph after the run's first sample (a cluster of slow steps, every graph again).
+    # Set on the instance now, the guard is on its value, which the round trip restores.
+    casts = [sub for b in blocks for sub in b.modules()
+             if hasattr(sub, "comfy_cast_weights") and "comfy_cast_weights" not in sub.__dict__]
+    for sub in casts:
+        sub.comfy_cast_weights = sub.comfy_cast_weights
     done = []
     for m in blocks:
         if "forward" in m.__dict__:  # already wrapped by someone else: leave it
@@ -109,6 +118,8 @@ def compiled_blocks(diffusion_model, enabled: bool):
     finally:
         for m in done + mlps:
             m.__dict__.pop("forward", None)
+        for sub in casts:
+            sub.__dict__.pop("comfy_cast_weights", None)
         if cache_was is not None:
             functorch_config.enable_autograd_cache = cache_was
 

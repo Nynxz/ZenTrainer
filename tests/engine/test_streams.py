@@ -474,15 +474,21 @@ def test_w8a8_kernels_match_torch():
 def test_compiled_blocks_are_undone():
     from zentrainer.harness.kernels.compile import compiled_blocks
 
+    class Linear(torch.nn.Linear):
+        comfy_cast_weights = False  # as ComfyUI's layers: a class attribute until a low-VRAM round trip
+
     class Net(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.blocks = torch.nn.ModuleList(torch.nn.Linear(4, 4) for _ in range(3))
+            self.blocks = torch.nn.ModuleList(Linear(4, 4) for _ in range(3))
 
     net = Net()
     with compiled_blocks(net, True) as n:
         assert n == 3 and all("forward" in b.__dict__ for b in net.blocks)
+        # on the instance while compiled, so the graphs guard on its value, not on its absence
+        assert all(b.__dict__.get("comfy_cast_weights") is False for b in net.blocks)
     assert not any("forward" in b.__dict__ for b in net.blocks)  # the cached model is left as it was
+    assert not any("comfy_cast_weights" in b.__dict__ for b in net.blocks)
 
 
 def test_failed_run_frames_let_go_of_their_tensors():
