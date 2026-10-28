@@ -7,7 +7,7 @@ import { ZenLotus } from '@nynxz/zenkit-ui'
 import ScrollArea from './ScrollArea.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { activeRuns, latest, lossTrail, queue } from '@/stores/runs'
+import { activeRuns, latest, lossTrail, queue, refreshQueue, refreshRuns } from '@/stores/runs'
 import { activeCaptions, startCaptionSync } from '@/stores/captions'
 import { settings } from '@/stores/settings'
 import { comfyBehind, comfyOld, engineStale, restartEngine, restarting, startStatusSync, webBuildable, webNewer, webStale, ztBehind, ztVersion } from '@/stores/status'
@@ -62,6 +62,20 @@ const waiting = computed(() => {
   const order = queue.value.items.map((i) => i.run_id)
   return live.value.filter((r) => r.status === 'queued').sort((a, b) => order.indexOf(a.run_id) - order.indexOf(b.run_id))
 })
+
+// a paused queue: resume it from here, as Jobs' Resume queue does
+const resuming = ref(false)
+async function resumeQueue() {
+  resuming.value = true
+  try {
+    await engine.editQueue({ action: 'resume' })
+    await Promise.all([refreshQueue(), refreshRuns()])
+  } catch (e) {
+    alert(String((e as Error).message ?? e))
+  } finally {
+    resuming.value = false
+  }
+}
 
 function spark(values: number[] | undefined): string {
   if (!values || values.length < 2) return ''
@@ -237,16 +251,27 @@ onUnmounted(() => {
           </span>
         </span>
       </RouterLink>
-      <RouterLink
-        v-if="waiting.length"
-        to="/jobs"
-        class="live-next"
-        :title="`Queued, in order:\n${waiting.map((w, i) => `${i + 1}. ${w.name}`).join('\n')}`"
-        @click="emit('navigate')"
-      >
-        <span class="ic"><i class="mdi mdi-tray-full" /><span class="q-count">{{ waiting.length }}</span></span>
-        <span class="lbl next-body"><span class="muted">Next</span><span class="ellipsis">{{ waiting[0]!.name }}</span><span v-if="waiting.length > 1" class="mono muted">+{{ waiting.length - 1 }}</span></span>
-      </RouterLink>
+      <div v-if="waiting.length" class="next-row">
+        <RouterLink
+          to="/jobs"
+          class="live-next"
+          :class="{ paused: queue.paused }"
+          :title="`${queue.paused ? 'Queue paused. ' : ''}Queued, in order:\n${waiting.map((w, i) => `${i + 1}. ${w.name}`).join('\n')}`"
+          @click="emit('navigate')"
+        >
+          <span class="ic"><i :class="queue.paused ? 'mdi mdi-pause-circle-outline' : 'mdi mdi-tray-full'" /><span class="q-count">{{ waiting.length }}</span></span>
+          <span class="lbl next-body"><span class="muted">{{ queue.paused ? 'Paused' : 'Next' }}</span><span class="ellipsis">{{ waiting[0]!.name }}</span><span v-if="waiting.length > 1" class="mono muted">+{{ waiting.length - 1 }}</span></span>
+        </RouterLink>
+        <button
+          v-if="queue.paused && (!collapsed || mobileOpen)"
+          class="sq sq-s"
+          :disabled="resuming"
+          title="Resume the queue: queued runs start again"
+          @click="resumeQueue"
+        >
+          <i :class="resuming ? 'mdi mdi-loading mdi-spin' : 'mdi mdi-play'" />
+        </button>
+      </div>
     </div>
 
 
@@ -657,10 +682,25 @@ nav {
   color: var(--sb-muted);
   font-size: 11px;
 }
-.live-run + .live-next {
+.live-run + .next-row {
   border-top: 1px solid var(--sb-border);
 }
-.collapsed .live-next {
+.next-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.next-row > .live-next {
+  flex: 1;
+  min-width: 0;
+}
+.next-row .sq-s {
+  margin-right: 4px;
+}
+.live-next.paused .ic {
+  color: var(--zen-warn);
+}
+.collapsed .next-row {
   border-top-color: transparent;
 }
 .live-next:hover {
@@ -800,6 +840,7 @@ nav {
 /* Settings, and beside it (open sidebar only) a square for housekeeping: an update to load */
 .foot-row {
   display: flex;
+  align-items: center;
   gap: 4px;
 }
 .foot-row > .item {
@@ -818,6 +859,17 @@ nav {
   background: none;
   color: var(--sb-primary);
   cursor: pointer;
+}
+/* the glyph's own line box sat it a little high in the square */
+.sq > i {
+  display: block;
+  line-height: 1;
+}
+.sq-s {
+  width: 26px;
+  height: 26px;
+  font-size: 15px;
+  border-radius: var(--r-sm);
 }
 .sq:hover:not(:disabled) {
   background: color-mix(in srgb, var(--sb-accent) 60%, transparent);
