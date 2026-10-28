@@ -480,6 +480,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **Fixed: compiled blocks ran an int8 layer's training path outside the compiled graph,** split
   at every layer, because of the counters behind the profile command's path list. They now
   compile whole.
+- **Fixed: on Windows, training could spill out of VRAM into system RAM and crawl.** Past the card's
+  own memory the NVIDIA driver doesn't run out, it carries on in "shared GPU memory", many times
+  slower, so the fit that keeps blocks un-checkpointed (or weights on the card) never saw the
+  out-of-VRAM step it backs off from: a later, bigger bucket could take it over the edge and keep
+  it there. A step that went past the card now backs off the same way, and the log says so.
 
 ## 0.3.0 (2026-10-25)
 
