@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // The rail's Setup card: what the run is, as label/value lines that wrap rather than cut off,
 // and the full spec behind a link.
-import { ZenModal } from '@nynxz/zenkit-ui'
 import { computed, ref } from 'vue'
 import RunDatasetLightbox from './RunDatasetLightbox.vue'
+import RunSpecModal from './RunSpecModal.vue'
 import { isCollapsed, toggleCollapsed } from './collapse'
 import { fmtLr, useRunContext } from './context'
 
@@ -86,9 +86,7 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
       </div>
     </dl>
   </section>
-  <ZenModal v-if="detail" v-model:open="specOpen" title="Spec" width="760px">
-    <pre class="mono spec">{{ JSON.stringify(detail.spec, null, 2) }}</pre>
-  </ZenModal>
+  <RunSpecModal v-if="detail" v-model:open="specOpen" :spec="detail.spec as unknown as Record<string, unknown>" :name="detail.run.name" />
   <RunDatasetLightbox v-if="showData" :name="showData.name" :set="showData.set" @close="showData = null" />
 </template>
 
@@ -163,10 +161,5 @@ dd {
   outline: 1px solid var(--zen-accent);
   outline-offset: 2px;
   border-radius: 2px;
-}
-.spec {
-  margin: 0;
-  font-size: 12px;
-  white-space: pre-wrap;
 }
 </style>

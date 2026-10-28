@@ -11,6 +11,7 @@ import type { Preset, TrainSpec } from '@/api/engine'
 import ScrollArea from '@/components/ScrollArea.vue'
 import { makerLogo } from '@/lib/makers'
 import { BIG_DATASET, RECIPES, applyTo, changes, plan, type Plan, type Recipe } from '@/lib/recipes'
+import { SECTIONS, fmt, full, label } from '@/lib/specText'
 import { fmtBytes } from '@/stores/downloads'
 import { merge, useRunFormContext } from './form'
 
@@ -198,10 +199,6 @@ const files = computed<{ key: string; name: string | null; download: { size: num
     .map(([key, name]) => ({ key: key!, name: name ?? null, download: null }))
 })
 
-const SECTIONS: Record<string, string> = {
-  model: 'Model', dataset: 'Dataset', network: 'LoRA', optim: 'Training', objective: 'Noise and loss',
-  samples: 'Samples', validation: 'Validation', memory: 'Memory', output: 'Saving', slider: 'Slider',
-}
 const grouped = computed(() => {
   const out: { section: string; rows: { label: string; from: string; to: string; full: string }[] }[] = []
   if (!next.value) return out
@@ -210,21 +207,12 @@ const grouped = computed(() => {
     const section = SECTIONS[head!] ?? head!
     let g = out.find((x) => x.section === section)
     if (!g) out.push((g = { section, rows: [] }))
-    g.rows.push({ label: (rest.length ? rest.join(' · ') : head!).replace(/_/g, ' '), from: fmt(c.from), to: fmt(c.to), full: `${c.key}: ${full(c.from)} → ${full(c.to)}` })
+    g.rows.push({ label: label(rest, head!), from: fmt(c.from), to: fmt(c.to), full: `${c.key}: ${full(c.from)} → ${full(c.to)}` })
   }
   return out
 })
 const changeCount = computed(() => grouped.value.reduce((n, g) => n + g.rows.length, 0))
 
-function fmt(v: unknown): string {
-  if (v === null || v === undefined || v === '') return '—'
-  if (Array.isArray(v)) return v.length ? v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') : '—'
-  if (typeof v === 'boolean') return v ? 'on' : 'off'
-  if (typeof v === 'object') return JSON.stringify(v)
-  const s = String(v)
-  return s.length > 48 ? `${s.slice(0, 46)}…` : s
-}
-const full = (v: unknown) => (v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v))
 function short(name: string | null | undefined) {
   return name?.split('/').pop() ?? '—'
 }
@@ -256,7 +244,7 @@ function apply() {
         <button v-if="phone && step === 'detail'" class="back" @click="step = 'list'"><i class="mdi mdi-chevron-left" /> Recipes</button>
         <div v-else class="head-text">
           <b class="zt-title">Recipes</b>
-          <span class="muted">Ours, from runs we trained and checked, and yours. Sized to your dataset</span>
+          <span class="muted">Settings for each model, sized to your dataset</span>
         </div>
         <div v-if="!(phone && step === 'detail')" class="recipe-search">
           <i class="mdi mdi-magnify" />
@@ -633,13 +621,12 @@ function apply() {
 .detail-in {
   padding: 0 24px 24px;
 }
+/* a compact band: the recipe's name bottom left, its icon large and faint on the right */
 .hero {
   position: relative;
   margin: 0 -24px;
-  height: 200px;
+  height: 128px;
   overflow: hidden;
-  display: grid;
-  place-items: center;
 }
 .hero img {
   position: absolute;
@@ -655,9 +642,13 @@ function apply() {
   background: linear-gradient(to top, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0) 60%);
 }
 .hero-icon {
-  font-size: 64px;
-  color: rgba(255, 255, 255, 0.85);
-  margin-bottom: 30px;
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 92px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.28);
 }
 .hero-text {
   position: absolute;

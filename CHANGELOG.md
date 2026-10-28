@@ -78,6 +78,10 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   buttons on the right (New dataset there), then the same sticky toolbar and view switch.
 - **A grad norm or loss that blew up reads short** (6.3e16, the whole number on hover) instead of
   running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
+- **A run's full spec reads like Recipes:** every setting by part, in words, or the JSON, and
+  it copies or downloads as JSON (`zt train` takes it, and a New run page takes it pasted).
+- **Recipes reads more cleanly:** a shorter header over each recipe, and its changes in words (a
+  resolution stage reads "768 px for the first 60%", not its JSON).
 - **Crop to the card works in the table view too:** off, its thumbnails show the whole picture.
 - **Mask editor on the dataset page:** a button beside Add files (and Masks with a selection) opens
   it on the first selected picture, or the first one.
