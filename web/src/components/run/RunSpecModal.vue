@@ -83,7 +83,7 @@ function download() {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
   column-gap: 12px;
   border: 1px solid var(--zen-border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   overflow: hidden;
   font-size: 12px;
 }

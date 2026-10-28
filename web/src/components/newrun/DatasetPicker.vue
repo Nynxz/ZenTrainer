@@ -234,7 +234,7 @@ function use(folder = picked.value) {
   width: 100%;
   padding: 6px 8px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--zen-text);
   font: inherit;
@@ -255,14 +255,14 @@ function use(folder = picked.value) {
   top: 8px;
   bottom: 8px;
   width: 3px;
-  border-radius: 2px;
+  border-radius: var(--r-sm);
   background: var(--zen-accent);
 }
 .thumb {
   width: 40px;
   height: 40px;
   flex: none;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -307,7 +307,7 @@ function use(folder = picked.value) {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 4px;
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   overflow: hidden;
   background: var(--zen-surface-2);
 }
@@ -388,7 +388,7 @@ function use(folder = picked.value) {
 }
 .facts > div {
   border: 1px solid var(--zen-border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 8px 10px;
 }
 .facts dt {

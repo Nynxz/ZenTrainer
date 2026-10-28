@@ -439,7 +439,7 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
   width: 22px;
   height: 22px;
   flex: none;
-  border-radius: 5px;
+  border-radius: var(--r-md);
   object-fit: contain;
 }
 /* black-on-transparent marks: white on dark themes (the whole selector inside :global, or Vue
@@ -682,7 +682,7 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
   width: 36px;
   height: 36px;
   flex: none;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   display: grid;
   place-items: center;
   background: #fff;

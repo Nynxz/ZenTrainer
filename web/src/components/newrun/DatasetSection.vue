@@ -262,7 +262,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   width: 36px;
   height: 36px;
   flex: none;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   overflow: hidden;
   display: grid;
   place-items: center;

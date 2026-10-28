@@ -264,7 +264,7 @@ function details(id: string | null) {
   gap: 10px;
   width: 100%;
   padding: 7px 8px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   color: var(--zen-text);
   cursor: pointer;
   position: relative;
@@ -282,14 +282,14 @@ function details(id: string | null) {
   top: 8px;
   bottom: 8px;
   width: 3px;
-  border-radius: 2px;
+  border-radius: var(--r-sm);
   background: var(--zen-accent);
 }
 .logo {
   width: 30px;
   height: 30px;
   flex: none;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   display: grid;
   place-items: center;
   background: #fff;
@@ -307,7 +307,7 @@ function details(id: string | null) {
 .logo.big {
   width: 48px;
   height: 48px;
-  border-radius: 10px;
+  border-radius: var(--r-lg);
 }
 .item-text {
   display: flex;
@@ -358,7 +358,7 @@ function details(id: string | null) {
 }
 .facts > div {
   border: 1px solid var(--zen-border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 8px 10px;
 }
 .facts dt {
@@ -388,7 +388,7 @@ h4 {
   gap: 10px;
   padding: 8px;
   border: 1px solid var(--zen-border);
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   background: none;
   color: var(--zen-text);
   font: inherit;
@@ -402,7 +402,7 @@ h4 {
   width: 40px;
   height: 40px;
   flex: none;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   display: grid;
   place-items: center;
   color: #fff;
@@ -431,7 +431,7 @@ h4 {
   padding: 0 5px;
   border: 1px dashed var(--zen-warn, #d9a400);
   color: var(--zen-warn, #d9a400);
-  border-radius: 4px;
+  border-radius: var(--r-md);
 }
 .r-details {
   border: none;

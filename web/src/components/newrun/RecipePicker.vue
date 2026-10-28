@@ -472,7 +472,7 @@ function apply() {
 .g-head img {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--r-md);
   background: #fff;
 }
 .here {
@@ -490,7 +490,7 @@ function apply() {
   width: 100%;
   padding: 6px 8px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--zen-text);
   font: inherit;
@@ -511,14 +511,14 @@ function apply() {
   top: 8px;
   bottom: 8px;
   width: 3px;
-  border-radius: 0 3px 3px 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
   background: var(--a);
 }
 .thumb {
   flex: none;
   width: 52px;
   height: 40px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -674,7 +674,7 @@ function apply() {
   flex-direction: column;
   gap: 2px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: 1px solid var(--zen-border);
   background: var(--zen-surface-2);
 }
@@ -748,7 +748,7 @@ h4 {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto minmax(0, 1fr);
   column-gap: 10px;
   border: 1px solid var(--zen-border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   overflow: hidden;
   font-size: 12px;
 }
