@@ -1262,30 +1262,22 @@ def test_clearing_all_caches_takes_every_datasets_and_leaves_the_shared_ones(tmp
     assert not list((cache / "text").glob("*/*.pt")) and freed == expect
 
 
-def test_a_step_that_spills_into_shared_memory_backs_off_like_running_out(monkeypatch):
-    # Windows' driver spills past the card into system RAM instead of running out: a step whose
-    # reservation went past the card's VRAM (bar other processes') checkpoints kept blocks again
+def test_windows_caps_the_allocator_at_the_card(monkeypatch):
+    # Windows' driver spills past the card into system RAM instead of running out: there PyTorch's
+    # allocator is capped at the card bar what other processes hold, so a step that would spill
+    # runs out instead, and the out-of-VRAM back-off handles it as on Linux
     from zentrainer.harness import trainer as tr
 
     gb = 1024 ** 3
     t = object.__new__(tr.Trainer)
-    t._others, t._peak, t._keep_auto, t._keep_cost = 1 * gb, 0, True, {0: gb // 2}
-    kept = []
-    t._ckpt = types.SimpleNamespace(kept=10, keep=lambda n: kept.append(n) or n)
-    t._kept = lambda n: t._ckpt.keep(n)
-    t._auto_vram = lambda: False
+    t.device = torch.device("cuda", 0)
+    capped = []
+    monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (6 * gb, 24 * gb))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 16 * gb)
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction", lambda f, d=None: capped.append((f, d)))
     monkeypatch.setattr(tr.os, "name", "nt")
-    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda d: types.SimpleNamespace(total_memory=24 * gb))
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
-    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
-    reserved = {"v": 22 * gb}
-    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda: reserved["v"])
-    t._check_spill()
-    assert kept == []  # 22 of the 23 GB this process can have: nothing spilled
-    reserved["v"] = 27 * gb
-    t._check_spill()
-    assert kept == [8] and t._keep_ceiling == 8  # 1 GB margin / 0.575 GB a block: 2 checkpointed again
+    assert t._card() == (24 * gb, 2 * gb)  # 24 - 6 free - 16 ours: 2 GB is the desktop's and others'
+    assert capped == [(22 / 24, t.device)]
     monkeypatch.setattr(tr.os, "name", "posix")
-    t._check_spill()
-    assert kept == [8]  # Linux runs out instead: the out-of-VRAM back-off handles it
+    assert t._card() == (24 * gb, 2 * gb)
+    assert capped == [(22 / 24, t.device)]  # Linux runs out by itself: no cap

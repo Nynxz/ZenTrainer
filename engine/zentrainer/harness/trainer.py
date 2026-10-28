@@ -314,6 +314,8 @@ class Trainer:
                         overlap(False)
                         guard_backward(False)
                         watch_pins(False)
+                        if os.name == "nt" and torch.cuda.is_available():
+                            torch.cuda.set_per_process_memory_fraction(1.0, self.device)  # the step cap (see _card)
                         if getattr(self, "_compiled", 0):
                             torch.compiler.set_stance("default")  # the final samples left it eager
             except BaseException as e:
@@ -812,8 +814,7 @@ class Trainer:
         self._times = []
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
-            free, card = vram.mem_get_info()
-            self._others = max(0, card - free - torch.cuda.memory_reserved())
+            self._card()  # Windows: the allocator's cap, before the first step
         while self.step < total:
             self._handle_commands()
             t0 = time.perf_counter()
@@ -843,7 +844,6 @@ class Trainer:
                     self.dataset = final[1]  # validation and samples use the run's own resolution
             if torch.cuda.is_available():
                 self._peak = max(self._peak, torch.cuda.max_memory_reserved())
-                self._check_spill()
                 self._warm += 1
                 trial = getattr(self, "_trial", None)
                 if trial and self._warm >= trial["at"] + TRIAL_STEPS[1]:
@@ -950,6 +950,19 @@ class Trainer:
             logging.info("[ZenTrainer] pinned copies of %d offloaded weights (%.1f GB): they copy to the GPU without "
                          "blocking, under the previous layer's compute", n, size / 1024 ** 3)
 
+    def _card(self) -> tuple[int, int]:
+        """(the card's VRAM, what the CUDA context, the desktop and other processes hold of it): the
+        rest is this process's. On Windows the NVIDIA driver doesn't run out past the card, it spills
+        into system RAM ("shared GPU memory"), many times slower, and the out-of-VRAM back-off would
+        never fire: so there PyTorch's allocator is capped at the rest, and a step that would spill
+        runs out instead, before the driver is asked (lifted when the run ends). Linux drivers have
+        no such fallback: a step there runs out by itself."""
+        free, total = vram.mem_get_info()
+        others = max(0, total - free - torch.cuda.memory_reserved())
+        if os.name == "nt":
+            torch.cuda.set_per_process_memory_fraction((total - others) / total, self.device)
+        return total, others
+
     def _tighten(self) -> None:
         """With weights offloaded, everything training wasn't seen to use (bar a margin) holds
         model weights: fewer of them cross PCIe each step. The peak counts PyTorch's whole
@@ -960,9 +973,7 @@ class Trainer:
         if not self._auto_vram():
             return
         torch.cuda.empty_cache()  # the weights go into clean space, not between cached fragments
-        free, total = vram.mem_get_info()
-        others = total - free - torch.cuda.memory_reserved()
-        self._others = max(0, others)
+        total, others = self._card()
         spare = total - others - self._peak - TIGHTEN_MARGIN
         patcher = self.models.patcher
         have = patcher.loaded_size()
@@ -1041,9 +1052,7 @@ class Trainer:
             if cost <= 0:
                 return
             torch.cuda.empty_cache()
-            free, total = vram.mem_get_info()
-            others = total - free - torch.cuda.memory_reserved()
-            self._others = max(0, others)
+            total, others = self._card()
             spare = total - others - self._peak - TIGHTEN_MARGIN
             ceiling = getattr(self, "_keep_ceiling", len(ck.all))
             want = max(0, min(ceiling, 2 * ck.kept, ck.kept + int(spare // cost)))
@@ -1057,7 +1066,7 @@ class Trainer:
         self._peak = 0
         torch.cuda.reset_peak_memory_stats()
 
-    def _back_off_kept(self, why: str = "out of VRAM", retry: bool = True) -> bool:
+    def _back_off_kept(self) -> bool:
         """An out-of-VRAM step with blocks kept: the margin's worth of them checkpointed again, and
         never more kept than that."""
         ck = getattr(self, "_ckpt", None)
@@ -1067,8 +1076,7 @@ class Trainer:
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
         self._keep_ceiling = self._kept(max(0, was - drop))
-        logging.warning("[ZenTrainer] %s: blocks un-checkpointed %d -> %d%s", why, was, ck.kept,
-                        ", retrying the step" if retry else "")
+        logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
         return True
 
     def _back_off(self, e: BaseException) -> bool:
@@ -1096,53 +1104,19 @@ class Trainer:
         del e
         self.optimizer.zero_grad(set_to_none=True)
         self._backoffs = getattr(self, "_backoffs", 0) + 1
-        if not self._fewer_weights("out of VRAM", retry=True):
-            return False
-        mm.soft_empty_cache()
-        self._peak = 0
-        torch.cuda.reset_peak_memory_stats()
-        return True
-
-    def _fewer_weights(self, why: str, retry: bool = False) -> bool:
-        """The margin's worth of model weights off the card, and never more on it than that."""
         patcher = self.models.patcher
         have = patcher.loaded_size()
         if have <= 0:
             return False  # nothing left on the card to move off
         self._resident = self._ceiling = max(0, have - TIGHTEN_MARGIN)
         self._fit_weights()
-        self._recompile_if_moved(f"{why}: fewer weights on the card")
-        logging.warning("[ZenTrainer] %s: model on the card %.1f -> %.1f GB%s", why, have / 1024 ** 3,
-                        patcher.loaded_size() / 1024 ** 3, ", retrying the step" if retry else "")
-        return True
-
-    def _check_spill(self) -> None:
-        """Windows: past the card's own VRAM the NVIDIA driver doesn't run out, it spills into system
-        RAM ("shared GPU memory"), many times slower, so the out-of-VRAM back-off never fires. A step
-        whose reservation went past the card (bar what other processes hold) backs off the same way:
-        fewer kept blocks, or fewer weights on the card, and its cache let go. Linux drivers have
-        no such fallback: a step there runs out instead."""
-        if os.name != "nt":
-            return
-        card = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
-        over = torch.cuda.max_memory_reserved() - (card - getattr(self, "_others", 0))
-        if over <= 0:
-            return
-        gb = 1024 ** 3
-        why = f"past the card's VRAM into shared system memory ({over / gb:.1f} GB over)"
-        if self._auto_vram():
-            shrunk = self._fewer_weights(why)
-        else:
-            shrunk = self._back_off_kept(why, retry=False)
-        if not shrunk and not getattr(self, "_spill_warned", False):
-            self._spill_warned = True
-            logging.warning("[ZenTrainer] %s, with nothing left to take off the card: steps run from system RAM "
-                            "until it fits. Lower the resolution or turn on offloading; NVIDIA Control Panel's "
-                            "CUDA Sysmem Fallback Policy set to Prefer No Sysmem Fallback makes it a plain "
-                            "out-of-VRAM error instead", why)
-        torch.cuda.empty_cache()  # let the spilled cache go
+        self._recompile_if_moved("out of VRAM: fewer weights on the card")
+        mm.soft_empty_cache()
         self._peak = 0
         torch.cuda.reset_peak_memory_stats()
+        logging.warning("[ZenTrainer] out of VRAM: model on the card %.1f -> %.1f GB, retrying the step",
+                        have / 1024 ** 3, patcher.loaded_size() / 1024 ** 3)
+        return True
 
     def _profiled_step(self) -> None:
         """One training step under torch.profiler ("profile" command): a table of where the GPU
