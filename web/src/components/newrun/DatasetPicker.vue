@@ -8,6 +8,7 @@ import { thumbUrl, type DatasetInfo } from '@/api/engine'
 import CaptionRing from '@/components/CaptionRing.vue'
 import ScrollArea from '@/components/ScrollArea.vue'
 import StarButton from '@/components/StarButton.vue'
+import RunDatasetLightbox from '@/components/run/RunDatasetLightbox.vue'
 import { isDatasetStarred } from '@/stores/favorites'
 
 const props = defineProps<{ datasets: DatasetInfo[]; current: string }>()
@@ -40,6 +41,9 @@ const groups = computed(() => {
   ]
 })
 const shown = computed(() => props.datasets.find((d) => d.folder === picked.value) ?? null)
+// its pictures in the lightbox, over the picker: '' opens on the first, a path on that one
+const gallery = ref<string | null>(null)
+const relPath = (t: DatasetInfo['thumbs'][number]) => t.path ?? t.subfolder.split('/').slice(1).concat(t.filename).join('/')
 
 const thumb = (d: DatasetInfo, t: DatasetInfo['thumbs'][number], size = 256) =>
   thumbUrl(d.folder, t.path ?? t.subfolder.split('/').slice(1).concat(t.filename).join('/'), size)
@@ -122,7 +126,9 @@ function use(folder = picked.value) {
       <ScrollArea class="detail">
         <article v-if="shown" class="detail-in">
           <div class="mosaic" :class="`n${Math.min(shown.thumbs.length, 8)}`">
-            <img v-for="t in shown.thumbs.slice(0, 8)" :key="t.filename" :src="thumb(shown, t, 320)" alt="" loading="lazy" />
+            <button v-for="t in shown.thumbs.slice(0, 8)" :key="t.filename" type="button" class="pic" title="See it big, with its caption" @click="gallery = relPath(t)">
+              <img :src="thumb(shown, t, 320)" alt="" loading="lazy" />
+            </button>
             <span v-if="!shown.thumbs.length" class="none"><i class="mdi mdi-image-off-outline" /></span>
           </div>
           <div class="title-row">
@@ -131,6 +137,7 @@ function use(folder = picked.value) {
               <CaptionRing :done="shown.captioned" :total="shown.images" :scores="shown.health?.scores" :size="34" />
             </span>
             <span class="spacer" />
+            <button type="button" class="open" @click="gallery = ''"><i class="mdi mdi-image-multiple-outline" /> Browse all {{ shown.images }}</button>
             <RouterLink :to="`/datasets/${encodeURIComponent(shown.folder)}`" class="open" @click="open = false">View dataset <i class="mdi mdi-arrow-right" /></RouterLink>
           </div>
           <dl class="facts">
@@ -140,6 +147,7 @@ function use(folder = picked.value) {
         </article>
         <div v-else class="empty muted small">Pick a dataset on the left.</div>
       </ScrollArea>
+      <RunDatasetLightbox v-if="gallery !== null && shown" :name="shown.folder" :set="shown.sets[0] ?? 'default'" :start="gallery || undefined" @close="gallery = null" />
     </div>
 
     <template #footer>
@@ -301,11 +309,22 @@ function use(folder = picked.value) {
   background: var(--zen-surface-2);
   min-height: 120px;
 }
+.mosaic .pic {
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+}
 .mosaic img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   display: block;
+  transition: filter 0.12s ease;
+}
+.mosaic .pic:hover img {
+  filter: brightness(1.12);
 }
 .mosaic.n1,
 .mosaic.n2,
@@ -331,6 +350,11 @@ function use(folder = picked.value) {
   font-size: 22px;
 }
 .open {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
   font-size: 12px;
   color: var(--zen-accent);
   display: inline-flex;

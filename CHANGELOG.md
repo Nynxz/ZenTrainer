@@ -80,7 +80,8 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
 - **New run's dataset picker is a dialog like Recipes:** the datasets on the left (starred first,
   a search, by recent, name or size) and the one highlighted on the right, eight of its pictures,
-  its health and what's in it, before Use. Stars follow you, as starred models do. The pickers
+  its health and what's in it, before Use; a picture (or Browse all) opens the dataset in the
+  lightbox with its captions. Stars follow you, as starred models do. The pickers
   close with ✕ or Esc: no Cancel button.
 - **A run's full spec reads like Recipes:** every setting by part, in words, or the JSON, and
   it copies or downloads as JSON (`zt train` takes it, and a New run page takes it pasted).
