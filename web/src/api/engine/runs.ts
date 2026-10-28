@@ -62,6 +62,8 @@ export interface MetricRow {
   loss: number | null
   lr: number | null
   grad_norm?: number | null
+  /** objective.preserve: the class-word pass's loss (the adapter's prediction against the base model's) */
+  preserve_loss?: number | null
   epoch?: number
   elapsed: number
   train_time?: number

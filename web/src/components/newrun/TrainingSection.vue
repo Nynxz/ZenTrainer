@@ -2,8 +2,8 @@
 // 3 Training: steps, optimizer, LR, rank, schedule and where the LoRAs go; under Advanced the
 // optimizer's finer settings, the network, and the objective (with Focus for flow models).
 import { ZenCombo, ZenField, ZenInput, ZenNumber, ZenSwitch, ZenTip } from '@nynxz/zenkit-ui'
-import { computed, reactive } from 'vue'
-import type { OptimizerInfo } from '@/api/engine'
+import { computed, reactive, ref, watch } from 'vue'
+import { engine, type OptimizerInfo } from '@/api/engine'
 import FocusField from '@/components/FocusField.vue'
 import { fmtBytes } from '@/stores/downloads'
 import { setSetting } from '@/stores/settings'
@@ -16,6 +16,30 @@ const heldOutItems = computed(() => [
   { value: '', label: 'From the training set' },
   ...datasets.value.filter((d) => d.folder !== spec.dataset.folder).map((d) => ({ value: d.folder, label: d.folder })),
 ])
+
+// Preserve classes: turning it on fills in what the dataset's captions call the subject and its
+// counterpart (a woman's LoRA bleeds into men too), or woman, man, person
+const classes = ref<{ captions: number; words: { word: string; count: number }[]; suggest: string[] } | null>(null)
+let classTicket = 0
+watch(() => spec.dataset.folder, async (folder) => {
+  const ticket = ++classTicket
+  classes.value = null
+  if (!folder) return
+  try {
+    const got = await engine.datasetClassWords(folder)
+    if (ticket === classTicket) classes.value = got
+  } catch {
+    /* no suggestion: the field still takes words by hand */
+  }
+}, { immediate: true })
+// on/off of its own, so emptying the words to retype them doesn't switch it off under the cursor;
+// a spec arriving with words (a recipe, a copied run) turns it on
+const preserveOn = ref(!!spec.objective.preserve?.trim())
+watch(() => spec.objective.preserve, (v) => { if (v?.trim()) preserveOn.value = true })
+function setPreserve(on: boolean) {
+  preserveOn.value = on
+  spec.objective.preserve = on ? classes.value?.suggest.join(', ') || 'woman, man, person' : ''
+}
 
 const advanced = reactive({ training: false })
 // LoRA and LoKr: LoHa and OFT aren't ready (LoHa can't train on an int8 base). A run that already
@@ -328,6 +352,21 @@ const patterns = computed({
           <ZenNumber v-model="spec.objective.shift" :min="0" :max="10" :step="0.5" :precision="1" />
         </ZenField>
         <ZenField label="Loss" stack><ZenCombo v-model="spec.objective.loss" :items="items(['mse', 'l1', 'huber', 'smooth_l1'])" :searchable="false" :sorted="false" /></ZenField>
+        <ZenField v-if="!spec.slider?.kind" label="Preserve classes" stack tip="AI Toolkit's differential output preservation. Each step also trains its caption with a class word (woman, man…) in place of the trigger to give what the base model gives, so the LoRA changes only what the trigger asks for: “a man” stays a man instead of turning into your character. Needs a trigger word. On every 2nd step (the default) a run takes about 1.7x as long">
+          <div class="sw-row"><ZenSwitch :model-value="preserveOn" @update:model-value="setPreserve" /><span class="sw-state">{{ preserveOn ? 'On' : 'Off' }}</span></div>
+        </ZenField>
+        <ZenField v-if="preserveOn" label="Class words" stack tip="Comma-separated: what the captions call your subject, and what it shouldn't leak into. Filled in from the dataset's captions when you turn it on">
+          <ZenInput :model-value="spec.objective.preserve ?? ''" placeholder="woman, man, person" @update:model-value="spec.objective.preserve = String($event)" />
+        </ZenField>
+        <ZenField v-if="preserveOn" label="Preserve weight / every" stack tip="The preservation loss's weight beside the training loss (1 = as strong), and how often it runs: every Nth step. 2 (the default) held the class as well as every step at 1.7x the time, against 2.3x">
+          <div class="inline">
+            <ZenNumber :model-value="spec.objective.preserve_weight ?? 1" :min="0.05" :max="10" :step="0.25" :precision="2" @update:model-value="spec.objective.preserve_weight = $event" />
+            <ZenNumber :model-value="spec.objective.preserve_every ?? 2" :min="1" :max="50" :step="1" :precision="0" @update:model-value="spec.objective.preserve_every = $event" />
+          </div>
+        </ZenField>
+        <ZenField v-if="preserveOn" label="Plain prompts (%)" stack tip="The share of preservation passes on a plain prompt (“a photo of a woman”) at heavy noise, instead of the step's own caption with the class word in. The captions hold prompts that describe the picture; the plain ones hold the short prompts people write, where a picture made from noise can still drift toward your character. 0 = the captions only">
+          <ZenNumber :model-value="Math.round((spec.objective.preserve_plain ?? 0) * 100)" :min="0" :max="100" :step="10" :precision="0" @update:model-value="spec.objective.preserve_plain = $event / 100" />
+        </ZenField>
         <ZenField label="Validation every" stack tip="Fixed-noise loss for a smooth curve; 0 = off">
           <ZenNumber v-model="spec.validation.every" :min="0" :step="50" :precision="0" />
         </ZenField>

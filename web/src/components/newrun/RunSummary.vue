@@ -19,6 +19,7 @@ const warnings = computed(() => {
   if (spec.slider?.kind === 'text' && !(spec.slider.positive.trim() && spec.slider.negative.trim())) w.push('A slider needs both ends: Positive and Negative.')
   if (spec.slider?.kind === 'pairs' && !spec.slider.pair_set) w.push("An image slider needs its pairs: pick the other end's picture set.")
   if (!slider && !spec.dataset.trigger) w.push('No trigger word: the likeness has nothing specific to attach to.')
+  if (!slider && !spec.dataset.trigger && spec.objective.preserve?.trim()) w.push('Preserve classes swaps the trigger for a class word: it needs a trigger word to swap.')
   const masked = dataset.value?.masked ?? 0
   if (masked && !spec.dataset.masked_loss)
     w.push(`${masked} picture${masked === 1 ? ' has a mask' : 's have masks'}, but Masked training is off: the parts the masks leave out train too.`)
