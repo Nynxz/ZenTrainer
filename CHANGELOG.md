@@ -84,6 +84,10 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   applied at once with its model (Undo takes it back). Recipes is the same dialog's other view
   (every recipe, yours too, with what it changes), and a recipe's Details go to it there; Pick
   the files yourself and Re-list are in its footer.
+- **The adapter and its rank together:** LoRA or LoKr is a switch beside the rank at the top of
+  Training, not a field in Advanced.
+- **Masked training says when it disagrees with the dataset:** a dataset with masks and the
+  switch off (or the reverse) is pointed out under it.
 - **Other LoRAs, in one list:** a LoRA to train more on, to sit under the new one, or to be on only
   while training (a de-distillation adapter) is one row each, its file and how it's used,
   instead of three fields (Continue from, Base LoRA, Training adapter). The settings are the same.

@@ -148,8 +148,14 @@ const patterns = computed({
     <ZenField label="Learning rate" stack>
       <ZenNumber v-model="spec.optim.learning_rate" :min="0" :step="0.00001" :precision="6" />
     </ZenField>
-    <ZenField label="Rank" stack tip="8–16 for a character, 16–32 for a style">
-      <ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" />
+    <!-- what trains and its size together: the rank means a different thing for each -->
+    <ZenField label="Adapter" stack tip="LoRA, or LoKr (smaller files, often as good). Rank: 8–16 for a character, 16–32 for a style as a LoRA; 4–8 as a LoKr">
+      <div class="adapter-row">
+        <div class="view-switch text" role="radiogroup" aria-label="Adapter">
+          <button v-for="a in algorithms" :key="a" role="radio" :aria-checked="spec.network.algorithm === a" :class="{ on: spec.network.algorithm === a }" @click="spec.network.algorithm = a">{{ a }}</button>
+        </div>
+        <ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" title="Rank" />
+      </div>
     </ZenField>
     <ZenField label="Schedule" stack>
       <ZenCombo v-model="spec.optim.lr_scheduler" :items="items(['constant', 'linear', 'cosine'])" :searchable="false" :sorted="false" />
@@ -228,7 +234,6 @@ const patterns = computed({
     <div class="subgroup" :class="{ locked: resuming }">
       <div class="sub-title">Network</div>
       <div class="grid-2">
-        <ZenField label="Algorithm" stack><ZenCombo v-model="spec.network.algorithm" :items="items(algorithms)" :searchable="false" :sorted="false" /></ZenField>
         <ZenField label="Layers" stack>
           <ZenCombo v-model="targets" :items="items(['attn', 'mlp', 'attn_mlp', 'all', 'custom'], { attn: 'Attention', mlp: 'MLP', attn_mlp: 'Attention + MLP', all: 'Every layer', custom: 'Custom' })" :searchable="false" :sorted="false" />
         </ZenField>
@@ -378,5 +383,16 @@ const patterns = computed({
 }
 .opt-row.off {
   opacity: 0.5;
+}
+
+/* the adapter and its rank on one line */
+.adapter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.adapter-row > :last-child {
+  flex: 1;
+  min-width: 0;
 }
 </style>

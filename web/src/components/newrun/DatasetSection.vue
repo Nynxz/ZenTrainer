@@ -33,6 +33,13 @@ function toggleSet(st: string) {
   spec.dataset.caption_mix = next.length > 1 ? next : []
 }
 const pickerOpen = ref(false)
+// masked training against the dataset's masks: says so when the two don't agree
+const maskHint = computed(() => {
+  const n = dataset.value?.masked ?? 0
+  if (n && !spec.dataset.masked_loss) return `${n} of ${dataset.value!.images} pictures have masks: turn it on to train only where they're white`
+  if (!n && spec.dataset.masked_loss) return 'This dataset has no masks: nothing to mask'
+  return n ? `${n} of ${dataset.value!.images} pictures masked` : ''
+})
 // the dataset's name as a trigger word, one click away: lower case, spaces and dashes as _
 const nameTrigger = computed(() => (spec.dataset.folder || '').toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, ''))
 const firstThumb = (d: DatasetInfo) => {
@@ -175,7 +182,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
     <ZenField label="Cache on disk" stack tip="Each picture's latents (and its own conditioning) in a file of its own, read as training uses them, in bf16: for picture datasets bigger than RAM, such as thousands of edit pairs with the encoder seeing the input">
       <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.disk_cache" @update:model-value="spec.dataset.disk_cache = $event" /><span class="sw-state">{{ spec.dataset.disk_cache ? 'On' : 'Off' }}</span></div>
     </ZenField>
-    <ZenField label="Masked training" stack tip="Masked images learn only where it's white"><div class="sw-row"><ZenSwitch v-model="spec.dataset.masked_loss" /><span class="sw-state">{{ spec.dataset.masked_loss ? 'On' : 'Off' }}</span></div></ZenField>
+    <ZenField label="Masked training" stack tip="Masked images learn only where it's white" :hint="maskHint"><div class="sw-row"><ZenSwitch v-model="spec.dataset.masked_loss" /><span class="sw-state">{{ spec.dataset.masked_loss ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField v-if="spec.dataset.masked_loss" label="Unmasked weight" stack tip="0 ignores the rest; 0.1 learns it lightly">
       <ZenNumber v-model="spec.dataset.unmasked_weight" :min="0" :max="1" :step="0.05" :precision="2" />
     </ZenField>
