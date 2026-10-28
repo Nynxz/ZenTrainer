@@ -167,3 +167,25 @@ def test_tensors_it_does_not_suit_go_to_the_triton_path_inside_the_op(monkeypatc
         out = w8a8_cuda.input_grad(g, q, s, seed, rotate)
         assert out.dtype == torch.bfloat16 and out.shape == (64, 512)
         assert ((out.double() - want).norm() / want.norm()).item() < 2e-2  # int8 rounding, then bf16
+
+
+def test_the_fused_lora_skips_the_input_gradient_nothing_needs(monkeypatch):
+    # the block's first layer: its input needs no gradient, so the int8 one isn't computed
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(1)
+    base = torch.randn(48, 32, dtype=torch.float64)
+    calls = []
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: calls.append(1) or g @ base + residual)
+    x = torch.randn(2, 5, 32, dtype=torch.float64)  # no grad
+    down = torch.randn(4, 32, dtype=torch.float64, requires_grad=True)
+    up = torch.randn(48, 4, dtype=torch.float64, requires_grad=True)
+    out = ib._LoRAInt8.apply(x, down, up, 0.75, None, None)
+    want = x @ base.t() + (x @ down.t()) @ up.t() * 0.75
+    g = torch.randn_like(want)
+    got = torch.autograd.grad(out, (down, up), g)
+    ref = torch.autograd.grad(want, (down, up), g)
+    assert not calls
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)

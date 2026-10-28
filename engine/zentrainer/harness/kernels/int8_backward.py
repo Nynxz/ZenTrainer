@@ -209,6 +209,19 @@ class _Int8Linear(torch.autograd.Function):
         return gi.to(grad_out.dtype).reshape(ctx.in_shape), None, None
 
 
+# programming errors propagate; anything else from the w8a8 path (NVRTC, Triton, a launch) falls back
+_BUGS = (TypeError, AttributeError, NameError, AssertionError, IndexError, KeyError, ValueError)
+_failed_once = False
+
+
+def _kernel_failed(e: Exception) -> None:
+    global _failed_once
+    if not _failed_once:
+        _failed_once = True
+        logging.warning("[ZenTrainer] the w8a8 input gradient failed (%s: %s): int8 layers use the dequantized "
+                        "matmul instead", type(e).__name__, e)
+
+
 def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
     """A frozen int8 layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
     from comfy.ops import CastBiasWeightContext
@@ -221,7 +234,10 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
             if _mode == "w8a8" and g.is_cuda:
                 try:
                     gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
-                except Exception:
+                except _BUGS:  # a mistake in the code, not the kernel: don't hide it behind the fallback
+                    raise
+                except Exception as e:  # a kernel that fails to compile or launch here: dequantize
+                    _kernel_failed(e)
                     gi = None
             _count("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized")
             if gi is not None:
@@ -268,10 +284,10 @@ class _LoRAInt8(torch.autograd.Function):
         gz = g @ b  # (M, rank): the gradient at the LoRA's middle, its scale in b
         d_up = (g.t() @ z) * ctx.scale
         d_down = gz.t() @ x2
-        gi = _layer_input_grad(ctx.m, g, gz @ a)
+        # the int8 input gradient only when something before the layer needs it
+        gi = _layer_input_grad(ctx.m, g, gz @ a).to(grad_out.dtype).reshape(ctx.in_shape) if ctx.needs_input_grad[0] else None
         ctx.m = None
-        return (gi.to(grad_out.dtype).reshape(ctx.in_shape), d_down.to(ctx.dtypes[0]), d_up.to(ctx.dtypes[1]),
-                None, None, None)
+        return gi, d_down.to(ctx.dtypes[0]), d_up.to(ctx.dtypes[1]), None, None, None
 
 
 def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor | None:
