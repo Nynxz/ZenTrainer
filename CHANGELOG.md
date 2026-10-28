@@ -337,6 +337,19 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   anywhere on the page. The file leaves out what's only yours (the dataset, where LoRAs are saved, a
   LoRA to continue from, edit samples' pictures) and says which model files aren't installed here.
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
+- **Trim checkpoints** (System → Storage, per run or every finished run): keeps each run's final
+  LoRA, its best checkpoint (by likeness, else validation loss, else the newest), its newest save
+  and saves made by hand or at a stop, and deletes the other checkpoints with their resume states.
+  It's the same choice a run's Keep setting makes while it trains. On one install with 455
+  checkpoints, it would free 36.9 GB from 59 runs.
+- **Clear all caches** (System → Storage → Datasets): every dataset's training caches at once, a
+  deleted or renamed dataset's too (those weren't listed anywhere before, so nothing could clear
+  them). The samples' prompt encodings stay.
+- **System's cleanups show what they'll delete first,** in a dialog: each run's or dataset's files
+  with their sizes (and, for checkpoints, why each goes), the total, and what stays. Nothing goes
+  until Delete there, and Delete removes only what the dialog listed: what changed meanwhile (a
+  new save, a score landing, a new cache) is left alone. "Dataset images" is "Datasets" now: the folders hold videos, captions and
+  masks too.
 
 ### Training
 - **Fixed: an open ZenTrainer page cost training about 13% of its speed.** Progress bars and the

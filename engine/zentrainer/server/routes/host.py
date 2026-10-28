@@ -97,10 +97,30 @@ def register(server) -> None:
                         "inside_install": rp.is_relative_to(base)})
         return web.json_response({"loras": out})
 
+    # what a cleanup's dialog listed, sent back with its Delete: nothing outside it is removed
+    def _only_ids(b: dict) -> set | None:
+        o = b.get("only")
+        return None if o is None else {str(x) for x in o}
+
+    def _only_folders(b: dict) -> set | None:
+        o = b.get("only")
+        return None if o is None else {None if x is None else str(x) for x in o}
+
+    def _only_checkpoints(b: dict) -> set | None:
+        o = b.get("only")
+        return None if o is None else {(str(x["run_id"]), int(x["step"]), str(x["file"])) for x in o}
+
     @routes.post("/zentrainer/api/storage/clean")
     async def clean_storage(request):
         """{"kind": "states", "run_id"} | {"kind": "states_all"} | {"kind": "cache", "folder"}:
-        returns {"freed": bytes} ("runs" too for states_all: how many it cleaned)."""
+        returns {"freed": bytes} ("runs" too for states_all: how many it cleaned).
+        {"kind": "cache_all", "only": [folders]}: those datasets' caches (a deleted dataset's too; null
+        for caches that never recorded theirs). states_all takes "only": [run ids] the same way, and a
+        trim that isn't a dry run "only": [{run_id, step, file}] from its dry run: nothing outside
+        what was listed is ever removed.
+        {"kind": "checkpoints", "run_id", "keep"?: 1, "dry_run"?: true} | {"kind": "checkpoints_all", ...}:
+        trims finished runs' checkpoints to their best (runs/disk.py trim_checkpoints); a dry run
+        (the default) only says what would go."""
         from ...datasets import folders as datasets
         from ...runs import disk as storage
 
@@ -109,12 +129,27 @@ def register(server) -> None:
             if b.get("kind") == "states":
                 freed = await asyncio.to_thread(storage.clean_states, state.store(), str(b.get("run_id", "")))
             elif b.get("kind") == "states_all":
-                freed, runs = await asyncio.to_thread(storage.clean_all_states, state.store())
+                if b.get("only") is None:
+                    return _bad("this deletes only the runs its dialog listed: send their ids as \"only\"")
+                freed, runs = await asyncio.to_thread(storage.clean_all_states, state.store(), _only_ids(b))
                 return web.json_response({"freed": freed, "runs": runs})
+            elif b.get("kind") in ("checkpoints", "checkpoints_all"):
+                keep, dry = int(b.get("keep", 1)), b.get("dry_run", True) is not False
+                only = _only_checkpoints(b)
+                if not dry and only is None:
+                    return _bad("a trim deletes only what its dry run listed: send that list as \"only\"")
+                if b["kind"] == "checkpoints":
+                    out = await asyncio.to_thread(storage.trim_checkpoints, state.store(), str(b.get("run_id", "")), keep, dry, only)
+                    return web.json_response({**out, "runs": [out] if out["remove"] else []})
+                return web.json_response(await asyncio.to_thread(storage.trim_all_checkpoints, state.store(), keep, dry, only))
+            elif b.get("kind") == "cache_all":
+                if b.get("only") is None:
+                    return _bad("this clears only the datasets its dialog listed: send their folders as \"only\"")
+                freed = await asyncio.to_thread(storage.clean_all_caches, state.store(), _only_folders(b))
             elif b.get("kind") == "cache":
                 freed = await asyncio.to_thread(storage.clean_cache, state.store(), str(b.get("folder", "")))
             else:
-                return _bad("kind must be states or cache")
+                return _bad("kind must be states, states_all, checkpoints, checkpoints_all, cache or cache_all")
         except (storage.StorageError, datasets.DatasetError, ValueError) as e:
             return _bad(str(e))
         except FileNotFoundError:

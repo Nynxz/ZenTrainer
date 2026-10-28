@@ -3,6 +3,7 @@ import { ZenButton, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref } from 'vue'
 import { engine, type Health, type StorageReport } from '@/api/engine'
 import { fmtBytes } from '@/stores/downloads'
+import CleanupDialog, { type Cleanup } from '@/components/CleanupDialog.vue'
 import MemChart from '@/components/MemChart.vue'
 import { RAM_SERIES as RAM, VRAM_SERIES as VRAM } from '@/lib/memSeries'
 import { gb, memLatest, samples, startSystemSync } from '@/stores/system'
@@ -40,7 +41,7 @@ const usage = computed(() => {
     { label: 'LoRA checkpoints', bytes: sum((r) => r.checkpoints) },
     { label: 'Resume states', bytes: sum((r) => r.states), hint: 'Optimizer state saved with every checkpoint; only stopped runs need it' },
     { label: 'Samples', bytes: sum((r) => r.samples) },
-    { label: 'Dataset images', bytes: st.datasets.reduce((n, d) => n + d.images, 0) },
+    { label: 'Datasets', bytes: st.datasets.reduce((n, d) => n + d.images, 0), hint: 'Your dataset folders: pictures, videos, captions and masks' },
     { label: 'Dataset caches', bytes: st.datasets.reduce((n, d) => n + d.cache, 0), hint: 'Latents and text embeddings training made from your datasets: rebuilt when needed' },
     { label: 'App outputs', bytes: st.apps },
   ]
@@ -79,25 +80,102 @@ const runRows = computed(() => {
   return emptyShown.value ? [...top, ...runsListed.value.filter((r) => !runSize(r))] : top
 })
 const kept = computed(() => (store.value?.runs ?? []).filter((r) => r.states && RESUMABLE.includes(r.status)))
-function cleanAllStates() {
-  const bytes = sweepable.value.reduce((n, r) => n + r.states, 0)
-  const keep = kept.value.length
-    ? `\n\nKept: ${kept.value.length} stopped or failed run${kept.value.length === 1 ? '' : 's'} (${kept.value.map((r) => r.name).join(', ')}) still need theirs to resume.`
-    : ''
-  clean(
-    { kind: 'states_all' },
-    `Delete the resume states of ${sweepable.value.length} finished run${sweepable.value.length === 1 ? '' : 's'} (${fmtBytes(bytes)})`,
-    `Every LoRA checkpoint and sample stays. Finished runs can't be resumed from their checkpoints afterwards (Train more starts fresh anyway).${keep}`,
-  )
+// every cleanup lists what it deletes in a dialog first (components/CleanupDialog.vue): nothing goes
+// until Delete there
+const cleanup = ref<Cleanup | null>(null)
+async function freed(p: Promise<{ freed: number; runs?: number | unknown[] }>) {
+  const r = await p
+  const runs = Array.isArray(r.runs) ? r.runs.length : r.runs
+  note.value = `Freed ${fmtBytes(r.freed)}` + (runs != null ? ` from ${runs} run${runs === 1 ? '' : 's'}` : '')
+  await loadStorage()
 }
-async function clean(body: { kind: 'states'; run_id: string } | { kind: 'states_all' } | { kind: 'cache'; folder: string }, what: string, warning: string) {
-  if (!confirm(`${what}?\n\n${warning}`)) return
+const STATES_KEEP = "Every LoRA checkpoint and sample stays. Finished runs can't be resumed from their checkpoints afterwards (Train more starts fresh anyway)."
+function cleanStates(r: StoredRun) {
+  cleanup.value = {
+    title: `Delete ${r.name}'s resume states`,
+    groups: [{ name: r.name, items: [{ label: 'Resume states (optimizer, for resuming)', bytes: r.states }] }],
+    keeps: STATES_KEEP,
+    unit: 'run',
+    action: 'Delete',
+    run: () => freed(engine.cleanStorage({ kind: 'states', run_id: r.run_id })),
+  }
+}
+function cleanAllStates() {
+  const shown = [...sweepable.value] // what the dialog lists is all that's deleted
+  const held = kept.value.length
+    ? ` Kept: ${kept.value.length} stopped or failed run${kept.value.length === 1 ? '' : 's'} (${kept.value.map((r) => r.name).join(', ')}), which still need theirs to resume.`
+    : ''
+  cleanup.value = {
+    title: `Delete the resume states of ${sweepable.value.length} finished run${sweepable.value.length === 1 ? '' : 's'}`,
+    groups: shown.map((r) => ({ name: r.name, items: [{ label: 'Resume states', bytes: r.states }] })),
+    keeps: STATES_KEEP + held,
+    unit: 'run',
+    action: 'Delete',
+    run: () => freed(engine.cleanStorage({ kind: 'states_all', only: shown.map((r) => r.run_id) })),
+  }
+}
+function cleanCache(d: { folder: string; cache: number }) {
+  cleanup.value = {
+    title: `Clear ${d.folder}'s caches`,
+    groups: [{ name: d.folder, items: [{ label: 'Training caches (latents, text embeddings)', bytes: d.cache }] }],
+    keeps: 'Your pictures, videos and captions stay. The next run on this dataset encodes them again, which takes a little longer.',
+    unit: 'dataset',
+    action: 'Clear',
+    run: () => freed(engine.cleanStorage({ kind: 'cache', folder: d.folder })),
+  }
+}
+// every dataset's caches, a deleted dataset's too: the next run on each builds its own again
+const allCaches = computed(() => [
+  ...(store.value?.datasets ?? []).filter((d) => d.cache).map((d) => ({ folder: d.folder as string | null, name: d.folder, bytes: d.cache })),
+  ...(store.value?.orphan_caches ?? []).map((o) => ({ folder: o.folder, name: o.folder ? `${o.folder} (no longer a dataset)` : 'Older caches (their dataset not recorded)', bytes: o.cache })),
+])
+function cleanAllCaches() {
+  const shown = [...allCaches.value] // what the dialog lists is all that's cleared
+  cleanup.value = {
+    title: `Clear the caches of ${allCaches.value.length} dataset${allCaches.value.length === 1 ? '' : 's'}`,
+    groups: shown.map((c) => ({ name: c.name, items: [{ label: 'Training caches (latents, text embeddings)', bytes: c.bytes }] })),
+    keeps: "Your pictures, videos and captions stay, and so do the samples' prompt encodings. The next run on each dataset encodes it again, which takes a little longer.",
+    unit: 'dataset',
+    action: 'Clear',
+    run: () => freed(engine.cleanStorage({ kind: 'cache_all', only: shown.map((c) => c.folder) })),
+  }
+}
+// checkpoints trimmed to each run's best: a dry run lists them, nothing goes until Delete
+const RULE = { likeness: 'best likeness', val_loss: 'lowest validation loss', latest: 'newest saves' } as const
+let trimTicket = 0 // the latest trim asked for: an older dry run's answer, or one for a closed dialog, is dropped
+async function trim(run?: { run_id: string; name: string }) {
   note.value = ''
+  const target = run ? { kind: 'checkpoints' as const, run_id: run.run_id } : { kind: 'checkpoints_all' as const }
+  // open now, with a spinner: the dry run reads every run's checkpoints, a second or two on a long history
+  const finding: Cleanup = { title: run ? `Trim ${run.name}'s checkpoints` : 'Trim checkpoints', groups: [], keeps: '', unit: 'run',
+                             action: 'Delete', run: async () => {}, loading: run ? 'Finding what to trim…' : "Finding what to trim in every finished run…" }
+  cleanup.value = finding
+  const ticket = ++trimTicket
+  // (not cleanup.value === finding: a ref hands back a reactive proxy of what was put in)
+  const waiting = () => ticket === trimTicket && !!cleanup.value?.loading
   try {
-    const r = await engine.cleanStorage(body)
-    note.value = `Freed ${fmtBytes(r.freed)}` + (r.runs != null ? ` from ${r.runs} run${r.runs === 1 ? '' : 's'}` : '')
-    await loadStorage()
+    const plan = await engine.trimCheckpoints({ ...target, dry_run: true })
+    if (!waiting()) return  // closed while it looked
+    if (!plan.runs.length) {
+      cleanup.value = null
+      note.value = run ? `${run.name}: nothing to trim` : 'Nothing to trim'
+      return
+    }
+    const files = plan.runs.reduce((n, r) => n + r.remove.length, 0)
+    cleanup.value = {
+      title: `Trim ${files} checkpoint${files === 1 ? '' : 's'} from ${plan.runs.length} run${plan.runs.length === 1 ? '' : 's'}`,
+      groups: plan.runs.map((r) => ({
+        name: `${r.name} · by ${RULE[r.rule]}`,
+        items: r.remove.map((c) => ({ label: `step ${c.step} · ${c.file}`, bytes: c.bytes, note: c.reason })),
+      })),
+      keeps: "Each run keeps its final LoRA, its best checkpoint, its newest save (what a resume continues from) and saves made by hand or at a stop. The deleted ones' resume states go too, and the run page lists them as removed.",
+      unit: 'run',
+      action: 'Delete',
+      // the delete names exactly what this dialog lists: the server removes nothing else
+      run: () => freed(engine.trimCheckpoints({ ...target, dry_run: false, only: plan.runs.flatMap((r) => r.remove.map((c) => ({ run_id: r.run_id, step: c.step, file: c.file }))) })),
+    }
   } catch (e) {
+    if (waiting()) cleanup.value = null
     note.value = String((e as Error).message ?? e)
   }
 }
@@ -209,6 +287,15 @@ async function restart() {
             >
               <i class="mdi mdi-broom" /> Delete all finished runs' states · {{ fmtBytes(sweepable.reduce((n, r) => n + r.states, 0)) }}
             </button>
+            <button
+              v-if="store.runs.some((r) => r.checkpoint_count > 1)"
+              class="chip-btn quiet"
+              :disabled="anyActive"
+              :title="anyActive ? 'Wait for training to finish' : 'Keep each run\'s best, newest and final checkpoints and delete the rest (shows what first)'"
+              @click="trim()"
+            >
+              <i class="mdi mdi-content-cut" /> Trim checkpoints
+            </button>
           </div>
           <div class="tbl-scroll"><table class="tbl runs-tbl">
             <thead>
@@ -229,15 +316,31 @@ async function restart() {
                 <td class="mono">{{ r.samples ? fmtBytes(r.samples) : '–' }}</td>
                 <td class="mono">{{ runSize(r) ? fmtBytes(runSize(r)) : '–' }}</td>
                 <td class="act">
+                  <div class="acts">
+                  <!-- two fixed slots, so each button lines up down the table: one that doesn't apply keeps its space -->
                   <button
-                    v-if="r.states"
                     class="chip-btn quiet"
+                    :class="{ absent: !r.states }"
+                    :aria-hidden="!r.states || undefined"
+                    :tabindex="r.states ? undefined : -1"
                     :disabled="anyActive || RESUMABLE.includes(r.status)"
                     :title="RESUMABLE.includes(r.status) ? 'This run can still be resumed: it needs these' : anyActive ? 'Wait for training to finish' : 'Delete the optimizer states; the LoRAs stay'"
-                    @click="clean({ kind: 'states', run_id: r.run_id }, `Delete ${r.name}'s resume states (${fmtBytes(r.states)})`, 'The LoRA checkpoints and samples stay. The run can no longer be resumed from its checkpoints (it is finished, so that only matters for Train more, which starts fresh anyway).')"
+                    @click="cleanStates(r)"
                   >
                     Delete states
                   </button>
+                  <button
+                    class="chip-btn quiet"
+                    :class="{ absent: r.checkpoint_count <= 1 }"
+                    :aria-hidden="r.checkpoint_count <= 1 || undefined"
+                    :tabindex="r.checkpoint_count > 1 ? undefined : -1"
+                    :disabled="anyActive"
+                    :title="anyActive ? 'Wait for training to finish' : 'Keep its best, newest and final checkpoints and delete the rest (shows what first)'"
+                    @click="trim(r)"
+                  >
+                    Trim
+                  </button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -257,7 +360,19 @@ async function restart() {
         </div>
 
         <div class="card">
-          <div class="tbl-head"><span class="eyebrow">Datasets</span></div>
+          <div class="tbl-head">
+            <span class="eyebrow">Datasets</span>
+            <span class="spacer" />
+            <button
+              v-if="allCaches.length"
+              class="chip-btn quiet"
+              :disabled="anyActive"
+              :title="anyActive ? 'Wait for training to finish' : 'Delete every dataset\'s training caches, a deleted dataset\'s too (shows what first)'"
+              @click="cleanAllCaches"
+            >
+              <i class="mdi mdi-broom" /> Clear all caches · {{ fmtBytes(allCaches.reduce((n, c) => n + c.bytes, 0)) }}
+            </button>
+          </div>
           <div class="tbl-scroll"><table class="tbl">
             <thead>
               <tr><th>Dataset</th><th>Images</th><th>Caches</th><th /></tr>
@@ -269,11 +384,13 @@ async function restart() {
                 <td class="mono">{{ d.cache ? fmtBytes(d.cache) : '–' }}</td>
                 <td class="act">
                   <button
-                    v-if="d.cache"
                     class="chip-btn quiet"
+                    :class="{ absent: !d.cache }"
+                    :aria-hidden="!d.cache || undefined"
+                    :tabindex="d.cache ? undefined : -1"
                     :disabled="anyActive"
                     :title="anyActive ? 'Wait for training to finish' : 'Delete the latents and text embeddings training cached from this dataset'"
-                    @click="clean({ kind: 'cache', folder: d.folder }, `Clear ${d.folder}'s caches (${fmtBytes(d.cache)})`, 'Your images and captions stay. The next run on this dataset re-encodes them, which takes a little longer.')"
+                    @click="cleanCache(d)"
                   >
                     Clear caches
                   </button>
@@ -287,6 +404,7 @@ async function restart() {
 
     <div v-if="restarting" class="overlay"><i class="mdi mdi-loading mdi-spin" /> Restarting ComfyUI…</div>
   </div>
+  <CleanupDialog :cleanup="cleanup" @close="cleanup = null" />
 </template>
 
 <style scoped>
@@ -475,6 +593,17 @@ async function restart() {
 .tbl .act {
   text-align: right;
   width: 1%;
+}
+.acts {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  justify-content: end;
+  gap: 6px;
+}
+/* a slot whose button doesn't apply to this row: its space kept, so the others line up */
+.chip-btn.absent {
+  visibility: hidden;
 }
 .chip-btn {
   height: 28px;

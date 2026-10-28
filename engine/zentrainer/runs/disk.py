@@ -133,7 +133,21 @@ def report(store) -> dict:
         cache = _cache_bytes(_caches(d["folder"]))
         sets.append({"folder": d["folder"], "count": d["images"], "images": size(datasets.root() / d["folder"]), "cache": cache})
     sets.sort(key=lambda d: -(d["images"] + d["cache"]))
-    return {"disks": disks(), "runs": runs, "datasets": sets, "apps": size(roots["apps"])}
+    return {"disks": disks(), "runs": runs, "datasets": sets, "apps": size(roots["apps"]),
+            "orphan_caches": _orphan_caches({d["folder"] for d in sets})}
+
+
+def _orphan_caches(folders: set[str]) -> list[dict]:
+    """Dataset caches no listed dataset owns (deleted or renamed, or from before caches recorded
+    theirs): [{folder (None: unknown), cache}] by size. Only "Clear all caches" reaches them."""
+    from ..harness.data import cache_folder
+
+    root = _roots()["cache"]
+    by: dict = {}
+    for p in root.iterdir() if root.is_dir() else []:
+        if p.is_dir() and (p / "dataset.pt").is_file() and cache_folder(p) not in folders:
+            by.setdefault(cache_folder(p), []).append(p)
+    return sorted(({"folder": f, "cache": _cache_bytes(ps)} for f, ps in by.items()), key=lambda d: -d["cache"])
 
 
 def _no_active(store) -> None:
@@ -160,19 +174,90 @@ def clean_states(store, run_id: str) -> int:
     return freed
 
 
-def clean_all_states(store) -> tuple[int, int]:
-    """Every finished run's resume states. Runs that can still be resumed keep theirs.
-    Returns (bytes freed, runs cleaned)."""
+def clean_all_states(store, only: set | None = None) -> tuple[int, int]:
+    """Every finished run's resume states. Runs that can still be resumed keep theirs. `only`: the
+    run ids that were listed; no other run's are touched. Returns (bytes freed, runs cleaned)."""
     _no_active(store)
     freed = runs = 0
     for meta in store.list():
-        if meta.get("status") in RESUMABLE:
+        if meta.get("status") in RESUMABLE or (only is not None and meta["run_id"] not in only):
             continue
         n = clean_states(store, meta["run_id"])
         if n:
             freed += n
             runs += 1
     return freed, runs
+
+
+def clean_all_caches(store, only: set | None = None) -> int:
+    """Every dataset's training caches, a deleted dataset's too, and the captions' encodings only
+    they used; the next run on a dataset rebuilds its own. The shared sample-prompt encodings and
+    the LoRA thumbnails stay. `only`: the dataset folders that were listed (None in it: the caches
+    that never recorded theirs); a cache built for any other since is left alone. Returns the bytes
+    freed."""
+    from ..harness.data import cache_folder, prune_text
+
+    _no_active(store)
+    root = _roots()["cache"]
+    freed = 0
+    for p in list(root.iterdir()) if root.is_dir() else []:
+        if p.is_dir() and (p / "dataset.pt").is_file() and (only is None or cache_folder(p) in only):
+            freed += size(p)
+            shutil.rmtree(p)
+    return freed + (prune_text(root, grace=0) if root.is_dir() else 0)
+
+
+def trim_checkpoints(store, run_id: str, keep: int = 1, dry_run: bool = True, only: set | None = None) -> dict:
+    """A finished run's scheduled checkpoints, trimmed by its own score (harness/keep.py best_rule:
+    likeness, else validation loss, else the latest) to the best `keep`, with what Keep always
+    leaves: the final LoRA, the newest save (a resume's), saves by hand or at a stop, and saves
+    not scored yet. dry_run: only what it would remove. Returns {run_id, name, rule, remove:
+    [{step, file, bytes, reason}], freed}; removed ones move to the run's "pruned" stream.
+    `only`: the (run_id, step, file) a dry run showed; a real run removes nothing outside it, so
+    what's deleted is never more than what was listed, whatever changed since (a score landing,
+    a new save)."""
+    from ..harness import keep as kp
+
+    _no_active(store)
+    meta = store.meta(run_id)  # raises for an unknown run
+    if keep < 1:
+        raise StorageError("keep at least one checkpoint")
+    rows = store.read(run_id, "checkpoints")
+    validation, likeness = store.read(run_id, "validation"), store.read(run_id, "likeness")
+    rule = kp.best_rule(validation, likeness)
+    gone = [(row, why) for row, why in kp.to_prune(rows, rule, keep, validation, likeness) if kp.own(row, run_id)
+            and (only is None or (run_id, row["step"], Path(row["path"]).name) in only)]
+    states = _roots()["states"] / run_id
+
+    def nbytes(row) -> int:
+        n = Path(row["path"]).stat().st_size if Path(row["path"]).is_file() else 0
+        st = Path(row["state"]).resolve() if row.get("state") else None  # as keep.remove decides
+        return n + (st.stat().st_size if st and st.is_file() and st.parent == states.resolve() else 0)
+
+    plan = [{"step": row["step"], "file": Path(row["path"]).name, "bytes": nbytes(row), "reason": why} for row, why in gone]
+    out = {"run_id": run_id, "name": meta.get("name", run_id), "rule": rule, "remove": plan,
+           "freed": sum(r["bytes"] for r in plan)}
+    if not dry_run and gone:
+        at = max((c["step"] for c in rows), default=0)
+        removed = kp.apply(store, run_id, gone, states, at)
+        done = {row["step"] for row, _, _ in removed}
+        out["remove"] = [r for r in plan if r["step"] in done]
+        out["freed"] = sum(n for _, _, n in removed)
+    return out
+
+
+def trim_all_checkpoints(store, keep: int = 1, dry_run: bool = True, only: set | None = None) -> dict:
+    """trim_checkpoints over every run with something to remove. {runs: [...], freed}. `only` as
+    trim_checkpoints: a real run touches no run, and no checkpoint, the dry run didn't list."""
+    _no_active(store)
+    runs = []
+    for meta in store.list():
+        if only is not None and not any(o[0] == meta["run_id"] for o in only):
+            continue
+        r = trim_checkpoints(store, meta["run_id"], keep, dry_run, only)
+        if r["remove"]:
+            runs.append(r)
+    return {"runs": runs, "freed": sum(r["freed"] for r in runs)}
 
 
 def clean_cache(store, folder: str) -> int:
