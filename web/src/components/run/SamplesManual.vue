@@ -120,6 +120,8 @@ async function applyToRun() {
   }
 }
 const ownSampling = computed(() => Object.keys(sampling()).length > 0)
+// the LoRA under samples' strength the next try renders with (0: without it)
+const turboNow = computed(() => tuned.turbo ?? run.value?.turbo_strength ?? 0.75)
 // what the next try renders with, its own settings or the run's
 const samplingSummary = computed(() => {
   const own = tune.value
@@ -131,7 +133,7 @@ const samplingSummary = computed(() => {
   const turbo = (own && tuned.turbo != null ? tuned.turbo : run.value?.turbo_strength) ?? 0.75
   return `${sampler} · ${sched} · ${steps} steps · cfg ${cfg}${run.value?.turbo_lora ? turboText(turbo) : ''}`
 })
-const turboText = (s: number) => (s ? ` · turbo ${s}` : ' · no turbo')
+const turboText = (s: number) => (s ? ` · sample LoRA ${s}` : ' · no sample LoRA')
 const samplingText = (x: SampleRow) =>
   x.sampling
     ? ` · ${x.sampling.sampler} / ${x.sampling.scheduler} · ${x.sampling.steps} steps · cfg ${x.sampling.cfg}${x.sampling.turbo_strength != null ? turboText(x.sampling.turbo_strength) : ''}`
@@ -206,6 +208,7 @@ const tileOf = (x: SampleRow | null | undefined) => {
         <ZenButton size="sm" variant="primary" icon="mdi mdi-creation-outline" :disabled="(status !== 'training' && !sampleCkpt) || !tryPrompt.trim() || !!sigmaError" :title="status === 'training' ? 'Queues it (Ctrl+Enter). One prompt per line queues several' : sampleCkpt ? `Renders with the step ${sampleCkpt.step} checkpoint (Ctrl+Enter). One prompt per line for several` : 'Only while it trains, or once it has a checkpoint'" @click="renderTry">Render</ZenButton>
       </div>
       <div v-if="tune" class="try-tune">
+        <div class="tune-fields">
         <label class="f"><span class="lbl">Sampler</span><ZenCombo v-model="tuned.sampler" :items="samplerItems" :sorted="false" size="sm" /></label>
         <label class="f"><span class="lbl">Scheduler</span><ZenCombo v-model="tuned.scheduler" :items="schedulerItems" :sorted="false" size="sm" /></label>
         <label v-if="tuned.scheduler === 'custom'" class="f wide">
@@ -214,11 +217,22 @@ const tileOf = (x: SampleRow | null | undefined) => {
         </label>
         <label v-else class="f num"><span class="lbl">Steps</span><ZenNumber :model-value="tuned.steps ?? run?.steps ?? 20" :min="1" :max="200" :step="1" :precision="0" size="sm" @update:model-value="tuned.steps = $event" /></label>
         <label class="f num"><span class="lbl">CFG</span><ZenNumber :model-value="tuned.cfg ?? run?.cfg ?? 1" :min="0" :max="30" :step="0.5" :precision="1" size="sm" @update:model-value="tuned.cfg = $event" /></label>
-        <label v-if="run?.turbo_lora" class="f num" :title="`${run.turbo_lora}'s strength under the render; 0 renders without it (your LoRA alone, so raise the steps and CFG to match)`">
-          <span class="lbl">Turbo LoRA</span><ZenNumber :model-value="tuned.turbo ?? run.turbo_strength ?? 0.75" :min="0" :max="1.5" :step="0.05" :precision="2" size="sm" @update:model-value="tuned.turbo = $event" />
-        </label>
-        <button v-if="ownSampling" class="link small" title="Back to the run's own sample settings" @click="Object.assign(tuned, untuned)">Use the run's settings</button>
-        <button v-if="ownSampling && status === 'training'" class="link small" :disabled="applying || !!sigmaError" title="The run's own samples (and the likeness they're scored on) use these from its next one, and its settings keep them" @click="applyToRun">Use for the run's samples</button>
+        </div>
+        <!-- the run's LoRA under samples: its strength, or off (it loaded with the run, so it can't be swapped here) -->
+        <div v-if="run?.turbo_lora" class="tune-lora" :class="{ off: turboNow === 0 }">
+          <span class="lbl">LoRA under samples</span>
+          <span class="lora-name mono" :title="run.turbo_lora">{{ run.turbo_lora }}</span>
+          <template v-if="turboNow">
+            <label class="strength"><span class="lbl">Strength</span><ZenNumber :model-value="turboNow" :min="0.05" :max="1.5" :step="0.05" :precision="2" size="sm" @update:model-value="tuned.turbo = $event" /></label>
+            <button type="button" class="remove" title="Render without it: your LoRA alone (a turbo one needs more steps and CFG then)" @click="tuned.turbo = 0"><i class="mdi mdi-close" /></button>
+          </template>
+          <button v-else type="button" class="link small" @click="tuned.turbo = run.turbo_strength || 0.75">Off · put it back</button>
+        </div>
+        <div v-if="ownSampling" class="tune-foot">
+          <button class="link small" title="Back to the run's own sample settings" @click="Object.assign(tuned, untuned)">Reset to the run's</button>
+          <span class="grow" />
+          <ZenButton v-if="status === 'training'" size="sm" :disabled="applying || !!sigmaError" title="The run's own samples (and the likeness they're scored on) use these from its next one, and its settings keep them" @click="applyToRun">Use for the run's samples</ZenButton>
+        </div>
       </div>
     </div>
     <div v-if="!manualGroups.length && !waitingCards.length" class="muted small empty-manual">
@@ -354,13 +368,61 @@ const tileOf = (x: SampleRow | null | undefined) => {
 }
 .try-tune {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 10px 12px;
+  flex-direction: column;
+  gap: 10px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--zen-surface) 60%, transparent);
+}
+.tune-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+}
+.tune-lora {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
+}
+.tune-lora .lora-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.tune-lora.off .lora-name {
+  color: var(--zen-muted);
+  text-decoration: line-through;
+}
+.tune-lora .strength {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 150px;
+  flex: none;
+}
+.remove {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--zen-muted);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 16px;
+}
+.remove:hover {
+  color: var(--zen-text);
+}
+.tune-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .f {
   display: flex;

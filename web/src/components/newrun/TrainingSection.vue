@@ -186,7 +186,7 @@ const patterns = computed({
         {{ dataset!.folder }} has Check faces off, so its samples get no likeness to rank by: turn it on on the dataset's page (Settings), or keep another way.
       </p>
       <p v-else-if="keepOnTurbo" class="warn-note">
-        Samples ride on the turbo LoRA, so likeness is scored on few-step turbo renders rather than on your LoRA alone. Set its strength to 0 in Samples to score without it.
+        Samples render with a LoRA under them, so likeness is scored on those renders rather than on your LoRA alone. Set its strength to 0 in Samples to score without it.
       </p>
     </ZenField>
     <ZenField label="Save LoRAs to" stack class="span-2" :tip="loraPlaceHint">
