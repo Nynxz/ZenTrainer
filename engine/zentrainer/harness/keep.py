@@ -45,7 +45,8 @@ def to_prune(checkpoints: list[dict], rule: str, count: int, validation: list[di
     scheduled = [c for c in saves if SCHEDULED.search(c.get("path", ""))]
     if rule == "latest":
         ranked = sorted(scheduled, key=lambda c: -c["step"])
-        return [(c, f"older than the {count} kept") for c in ranked[count:] if c["step"] != newest]
+        return [(c, "older than the newest kept" if count == 1 else f"older than the {count} kept") for c in ranked[count:]
+                if c["step"] != newest]
     metric = rule.removesuffix("_new_best")
     if metric not in ("val_loss", "likeness"):
         raise ValueError(f"unknown output.keep {rule!r}")
@@ -55,8 +56,9 @@ def to_prune(checkpoints: list[dict], rule: str, count: int, validation: list[di
         return _not_new_bests(scheduled, score, low, newest)
     ranked = sorted((c for c in scheduled if score[c["step"]] is not None), key=lambda c: score[c["step"]],
                     reverse=not low)
-    say = "validation loss {:.4f}; the {} lowest kept" if low else "likeness {:.2f}; the {} highest kept"
-    return [(c, say.format(score[c["step"]], count)) for c in ranked[count:] if c["step"] != newest]
+    best = ("lowest" if low else "highest") if count == 1 else f"{count} {'lowest' if low else 'highest'}"
+    say = f"validation loss {{:.4f}}; the {best} kept" if low else f"likeness {{:.2f}}; the {best} kept"
+    return [(c, say.format(score[c["step"]])) for c in ranked[count:] if c["step"] != newest]
 
 
 def _not_new_bests(scheduled: list[dict], score: dict, low: bool, newest: int) -> list[tuple[dict, str]]:
@@ -88,13 +90,19 @@ def faces_missing(spec) -> str | None:
     return None
 
 
+def own(row: dict, run_id: str) -> bool:
+    """Whether a checkpoint row's LoRA is one of this run's scheduled saves: only those are removed."""
+    lora = Path(row["path"]).resolve()
+    return lora.parent.name == run_id and lora.parent.parent.name == "checkpoints" and bool(SCHEDULED.search(lora.name))
+
+
 def remove(row: dict, run_id: str, states_dir: Path) -> int | None:
     """Delete one pruned checkpoint's LoRA and resume state, or None when its LoRA isn't one of
     this run's scheduled saves (<loras>/.../checkpoints/<run_id>/..._stepNNNNNN.safetensors, wherever
     output.lora_dir had it): then nothing is deleted. A state only from this run's state folder.
     Returns the bytes freed."""
     lora = Path(row["path"]).resolve()
-    if lora.parent.name != run_id or lora.parent.parent.name != "checkpoints" or not SCHEDULED.search(lora.name):
+    if not own(row, run_id):
         logging.warning("[ZenTrainer] keep: left %s alone, it isn't one of this run's checkpoints", lora)
         return None
     freed = 0
@@ -104,3 +112,31 @@ def remove(row: dict, run_id: str, states_dir: Path) -> int | None:
             freed += f.stat().st_size
             f.unlink()
     return freed
+
+
+def best_rule(validation: list[dict], likeness: list[dict]) -> str:
+    """The rule a finished run is trimmed by (storage's "trim checkpoints"): its own score, likeness
+    when its samples were scored, else validation loss, else just the latest saves."""
+    if any(r.get("score") is not None and not r.get("manual") for r in likeness):
+        return "likeness"
+    if any(r.get("val_loss") is not None for r in validation):
+        return "val_loss"
+    return "latest"
+
+
+def apply(store, run_id: str, gone: list[tuple[dict, str]], states_dir: Path, at_step: int) -> list[tuple[dict, str, int]]:
+    """Remove what to_prune chose: each LoRA and state (remove), into the run's "pruned" stream with
+    the reason, and out of its checkpoints. [(row, reason, bytes freed)] for what was removed."""
+    rows = store.read(run_id, "checkpoints")
+    removed = []
+    for row, why in gone:
+        freed = remove(row, run_id, states_dir)
+        if freed is None:
+            continue
+        removed.append((row, why, freed))
+        store.append(run_id, "pruned", {**row, "reason": why, "at_step": at_step})
+        logging.info("[ZenTrainer] removed the step %d checkpoint (%.0f MB): %s", row["step"], freed / 1024 ** 2, why)
+    if removed:
+        paths_gone = {row["path"] for row, _, _ in removed}
+        store.rewrite(run_id, "checkpoints", [c for c in rows if c.get("path") not in paths_gone])
+    return removed

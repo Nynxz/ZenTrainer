@@ -702,18 +702,7 @@ class Keep(Callback):
                              t.store.read(t.run_id, "likeness"))
         if not gone:
             return []
-        removed = []
-        for row, why in gone:
-            freed = keep.remove(row, t.run_id, state_dir(t.run_id))
-            if freed is None:
-                continue
-            removed.append((row, why))
-            t.store.append(t.run_id, "pruned", {**row, "reason": why, "at_step": t.step})
-            logging.info("[ZenTrainer] removed the step %d checkpoint (%.0f MB): %s", row["step"], freed / 1024 ** 2,
-                         why)
-        paths_gone = {row["path"] for row, _ in removed}
-        t.store.rewrite(t.run_id, "checkpoints", [c for c in rows if c.get("path") not in paths_gone])
-        return removed
+        return [(row, why) for row, why, _ in keep.apply(t.store, t.run_id, gone, state_dir(t.run_id), t.step)]
 
 
 def _prompt_cache(t, prompts: list[str], negative: str):

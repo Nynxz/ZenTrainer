@@ -3,6 +3,15 @@
 import { call } from './client'
 import type { RunStatus } from './runs'
 
+/** one run's trim: what goes (or went), by the rule its score gives */
+export interface TrimRun {
+  run_id: string
+  name: string
+  rule: 'likeness' | 'val_loss' | 'latest'
+  remove: { step: number; file: string; bytes: number; reason: string }[]
+  freed: number
+}
+
 export interface MemSample {
   t: number
   ram_total?: number
@@ -33,6 +42,8 @@ export interface StorageReport {
   runs: { run_id: string; name: string; status: RunStatus; created: number; checkpoints: number; checkpoint_count: number; states: number; samples: number }[]
   datasets: { folder: string; count: number; images: number; cache: number }[]
   apps: number
+  /** caches no listed dataset owns: a deleted or renamed one's (folder null: from before caches recorded it) */
+  orphan_caches?: { folder: string | null; cache: number }[]
 }
 
 export interface ComfyVersion {
@@ -117,8 +128,12 @@ export const hostApi = {
   system: (since = 0) => call<{ interval: number; samples: MemSample[] }>(`/system?since=${since}`),
   storage: () => call<StorageReport>('/storage'),
   disks: () => call<Pick<StorageReport, 'disks'>>('/storage?disks=1').then((r) => r.disks),
-  cleanStorage: (body: { kind: 'states'; run_id: string } | { kind: 'states_all' } | { kind: 'cache'; folder: string }) =>
+  cleanStorage: (body: { kind: 'states'; run_id: string } | { kind: 'states_all'; only: string[] } | { kind: 'cache'; folder: string } | { kind: 'cache_all'; only: (string | null)[] }) =>
     call<{ freed: number; runs?: number }>('/storage/clean', { method: 'POST', body: JSON.stringify(body) }),
+  /** finished runs' checkpoints trimmed to their best (engine runs/disk.py trim_checkpoints); a dry
+   *  run says what would go */
+  trimCheckpoints: (body: ({ kind: 'checkpoints'; run_id: string } | { kind: 'checkpoints_all' }) & { keep?: number; dry_run: boolean; only?: { run_id: string; step: number; file: string }[] }) =>
+    call<{ freed: number; runs: TrimRun[] }>('/storage/clean', { method: 'POST', body: JSON.stringify(body) }),
   loadedModels: () => call<{ models: LoadedModel[] }>('/system/models').then((r) => r.models),
   version: (check = false) => call<ZtVersion>(`/version${check ? '?check=1' : ''}`),
   comfyui: (check = false) => call<ComfyVersion>(`/comfyui${check ? '?check=1' : ''}`),

@@ -665,6 +665,12 @@ def test_storage_sizes_and_safe_cleanup(tmp_path, monkeypatch):
         (states / rid / "s.pt").write_bytes(b"x" * 1000)
     monkeypatch.setattr(storage, "_roots", lambda: {"states": states, "loras": tmp_path, "samples": tmp_path / "s", "apps": tmp_path / "x"})
     store = Store()
+    store.metas["c"] = {"run_id": "c", "name": "c", "status": "done"}
+    (states / "c").mkdir(parents=True)
+    (states / "c" / "s.pt").write_bytes(b"x" * 1000)
+    freed, runs = storage.clean_all_states(store, only={"c"})  # listed: c only
+    assert (freed, runs) == (1000, 1) and (states / "a").is_dir() and not (states / "c").exists()
+    del store.metas["c"]
     assert storage.size(states) == 2000
     assert storage.clean_states(store, "a") == 1000 and not (states / "a").exists()
     with pytest.raises(storage.StorageError, match="resuming"):
@@ -1128,3 +1134,129 @@ def test_without_selective_checkpointing_attention_falls_back_to_plain(monkeypat
     net = Net()
     with memory.gradient_checkpointing(net, True, 1, False, save="attention"):
         assert plain == list(net.blocks) and not kept
+
+
+def test_trimming_a_finished_runs_checkpoints_keeps_its_best_newest_and_own_saves(tmp_path, monkeypatch):
+    from zentrainer.runs import disk as storage
+
+    rid = "r1"
+    ck, states = tmp_path / "loras" / "checkpoints" / rid, tmp_path / "states"
+    ck.mkdir(parents=True)
+    (states / rid).mkdir(parents=True)
+    rows = []
+    for step in (250, 500, 750, 1000):
+        lora, st = ck / f"x_step{step:06d}.safetensors", states / rid / f"step{step:06d}.pt"
+        lora.write_bytes(b"l" * 100)
+        st.write_bytes(b"s" * 10)
+        rows.append({"step": step, "path": str(lora), "state": str(st)})
+    manual = ck / "x_manual-step000600.safetensors"
+    manual.write_bytes(b"m" * 100)
+    rows.append({"step": 600, "path": str(manual)})
+    final = tmp_path / "loras" / "x.safetensors"
+    final.write_bytes(b"f" * 100)
+    rows.append({"step": 1000, "path": str(final), "final": True})
+    elsewhere = tmp_path / "theirs_step000300.safetensors"  # a row whose LoRA isn't in this run's folder
+    elsewhere.write_bytes(b"o")
+    rows.append({"step": 300, "path": str(elsewhere)})
+    likeness = [{"step": s, "score": v} for s, v in ((250, 0.4), (300, 0.1), (500, 0.6), (750, 0.5), (1000, 0.3))]
+
+    class Store:
+        def __init__(self):
+            self.metas = {rid: {"run_id": rid, "name": "x", "status": "done"}}
+            self.streams = {"checkpoints": list(rows), "likeness": likeness, "validation": [], "pruned": []}
+
+        def list(self):
+            return list(self.metas.values())
+
+        def meta(self, r):
+            return self.metas[r]
+
+        def read(self, r, s):
+            return list(self.streams.get(s, []))
+
+        def append(self, r, s, row):
+            self.streams.setdefault(s, []).append(row)
+
+        def rewrite(self, r, s, rs):
+            self.streams[s] = list(rs)
+
+    monkeypatch.setattr(storage, "_roots", lambda: {"states": states, "loras": tmp_path / "loras", "samples": tmp_path / "s", "apps": tmp_path / "a"})
+    store = Store()
+    plan = storage.trim_checkpoints(store, rid)  # a dry run by default
+    assert plan["rule"] == "likeness" and sorted(r["step"] for r in plan["remove"]) == [250, 750]
+    assert plan["freed"] == 220 and all(Path(r["path"]).is_file() for r in rows)  # nothing touched yet
+    done = storage.trim_checkpoints(store, rid, dry_run=False)
+    assert done["freed"] == 220 and sorted(r["step"] for r in done["remove"]) == [250, 750]
+    left = {Path(c["path"]).name for c in store.streams["checkpoints"]}
+    # the best (500), the newest (1000, what a resume continues from), the manual save, the final LoRA,
+    # and the one outside the run's folder (never removed, so never offered)
+    assert left == {"x_step000500.safetensors", "x_step001000.safetensors", "x_manual-step000600.safetensors", "x.safetensors",
+                    "theirs_step000300.safetensors"}
+    assert not (ck / "x_step000250.safetensors").exists() and not (states / rid / "step000250.pt").exists()
+    assert manual.is_file() and final.is_file() and elsewhere.is_file()
+    assert sorted(p["step"] for p in store.streams["pruned"]) == [250, 750]
+    assert storage.trim_checkpoints(store, rid)["remove"] == []  # nothing more to trim
+
+    # a delete removes only what its dry run listed: a save that became prunable since stays
+    lora, st = ck / "x_step001250.safetensors", states / rid / "step001250.pt"
+    lora.write_bytes(b"l" * 100)
+    st.write_bytes(b"s" * 10)
+    store.streams["checkpoints"].append({"step": 1250, "path": str(lora), "state": str(st)})
+    store.streams["likeness"].append({"step": 1250, "score": 0.2})
+    shown = storage.trim_checkpoints(store, rid)  # listed: step 1000 (1250 is the newest now)
+    assert [r["step"] for r in shown["remove"]] == [1000]
+    store.streams["likeness"].append({"step": 1250, "score": 0.0})  # meanwhile: a new score, and a new newest save
+    lora2 = ck / "x_step001500.safetensors"
+    lora2.write_bytes(b"l" * 100)
+    store.streams["checkpoints"].append({"step": 1500, "path": str(lora2)})
+    store.streams["likeness"].append({"step": 1500, "score": 0.1})
+    only = {(rid, r["step"], r["file"]) for r in shown["remove"]}
+    done = storage.trim_checkpoints(store, rid, dry_run=False, only=only)
+    assert [r["step"] for r in done["remove"]] == [1000]  # 1250 is prunable now too, but wasn't listed
+    assert lora.is_file() and lora2.is_file() and not (ck / "x_step001000.safetensors").exists()
+    store.metas[rid]["status"] = "training"
+    with pytest.raises(storage.StorageError, match="active"):
+        storage.trim_checkpoints(store, rid)
+
+
+def test_clearing_all_caches_takes_every_datasets_and_leaves_the_shared_ones(tmp_path, monkeypatch):
+    import json as _json
+
+    from zentrainer.runs import disk as storage
+
+    cache = tmp_path / "cache"
+
+    def dataset_cache(name, folder, caption):
+        d = cache / name
+        d.mkdir(parents=True)
+        (d / "dataset.pt").write_bytes(b"d" * 100)
+        if folder is not None:
+            (d / "source.json").write_text(_json.dumps({"folder": folder, "text": "t1", "captions": [caption]}))
+        (cache / "text" / "t1").mkdir(parents=True, exist_ok=True)
+        (cache / "text" / "t1" / f"{caption}.pt").write_bytes(b"c" * 10)
+
+    dataset_cache("a1", "a", "ca")  # a dataset that's there
+    dataset_cache("g1", "gone", "cg")  # one deleted since
+    dataset_cache("u1", None, "cu")  # from before caches recorded their dataset
+    (cache / "prompts").mkdir()
+    (cache / "prompts" / "p.pt").write_bytes(b"p")  # the samples' prompt encodings: shared, they stay
+    (cache / "lora_thumbs").mkdir()
+    (cache / "lora_thumbs" / "x.jpg").write_bytes(b"j")
+    monkeypatch.setattr(storage, "_roots", lambda: {"cache": cache, "states": tmp_path / "s", "loras": tmp_path / "l",
+                                                    "samples": tmp_path / "m", "apps": tmp_path / "x"})
+
+    class Store:
+        def list(self):
+            return [{"run_id": "r", "status": "done"}]
+
+    orphans = storage._orphan_caches({"a"})
+    # the deleted dataset's (its cache and its caption's encoding), then the one that never said whose it is
+    assert [(o["folder"], o["cache"]) for o in orphans] == [("gone", storage.size(cache / "g1") + 10), (None, storage.size(cache / "u1"))]
+    storage.clean_all_caches(Store(), only={"gone"})  # listed: the deleted dataset's only
+    assert (cache / "a1").is_dir() and (cache / "u1").is_dir() and not (cache / "g1").exists()
+    # (that also dropped the encodings no cache uses: the deleted one's, and the unrecorded cache's)
+    expect = sum(storage.size(cache / n) for n in ("a1", "u1")) + 10
+    freed = storage.clean_all_caches(Store(), only={"a", None})
+    assert not any((cache / n).exists() for n in ("a1", "g1", "u1"))
+    assert (cache / "prompts" / "p.pt").is_file() and (cache / "lora_thumbs" / "x.jpg").is_file()
+    assert not list((cache / "text").glob("*/*.pt")) and freed == expect
