@@ -23,8 +23,8 @@ const def = <T>(d: SettingDef<T>) => d
 
 export const SETTINGS = {
   mode: def<'simple' | 'advanced'>({
-    category: 'Appearance',
-    label: 'Mode',
+    category: 'General',
+    label: 'Interface',
     description: 'Simple: train from ready-made recipes and see just the progress. Advanced: every setting, the loss, the captions.',
     default: 'advanced',
     options: [
@@ -44,7 +44,7 @@ export const SETTINGS = {
     ],
   }),
   experimental: def<boolean>({
-    category: 'Appearance',
+    category: 'General',
     label: 'Experimental pages',
     description: "Apps, Tools and Gallery: they work, but they're still being finished. A run's Try buttons open Apps either way.",
     default: false,

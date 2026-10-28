@@ -196,7 +196,7 @@ const patterns = computed({
         </template>
       </ZenCombo>
     </ZenField>
-    <ZenField label="Resume states" stack tip="Optimizer state for resuming a stopped run; often bigger than the LoRA">
+    <ZenField label="Resume states" stack tip="Optimizer state for resuming a stopped run; often bigger than the LoRA" :hint="spec.output.keep_states === 'none' ? 'A stopped or crashed run can’t be continued, only started over' : undefined">
       <ZenCombo
         v-model="spec.output.keep_states"
         :items="[{ value: 'latest', label: 'Latest only' }, { value: 'all', label: 'Every checkpoint' }, { value: 'none', label: 'None (no resuming)' }]"
