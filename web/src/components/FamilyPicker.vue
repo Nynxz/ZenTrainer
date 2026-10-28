@@ -33,7 +33,11 @@ const emit = defineEmits<{
   profile: [ModelProfile | null, boolean]
   /** the picked family's id (null: none, or custom files) */
   family: [string | null]
+  /** browse mode: the field was clicked (New run opens its model browser) */
+  browse: []
 }>()
+/** browse: a field showing the model that opens a dialog (New run's), instead of the dropdown */
+const props = defineProps<{ browse?: boolean }>()
 
 const CUSTOM = '__custom'
 const families = ref<ModelFamily[]>([])
@@ -288,12 +292,24 @@ onMounted(() => {
   loadFamilies()
   void loadOnDisk()
 })
-defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick })
+defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTOM })
 </script>
 
 <template>
   <div class="fp">
+    <button v-if="props.browse" type="button" class="fam-field" :class="{ empty: !fam && famId !== CUSTOM }" @click="emit('browse')">
+      <span class="fam-logo">
+        <img v-if="fam && makerLogo(fam.id)" :src="makerLogo(fam.id)!.src" :class="{ mono: makerLogo(fam.id)!.mono }" alt="" />
+        <i v-else :class="famId === CUSTOM ? 'mdi mdi-file-cog-outline' : 'mdi mdi-cube-outline'" />
+      </span>
+      <span class="fam-text">
+        <b>{{ fam?.name ?? (famId === CUSTOM ? 'Custom: your own files' : 'Choose a model…') }}</b>
+        <span v-if="fam" class="muted small">{{ fam.missing.length ? `${statusOf(fam)} to download` : 'installed' }}</span>
+      </span>
+      <span class="fam-change">{{ fam || famId === CUSTOM ? 'Change' : 'Choose' }} <i class="mdi mdi-chevron-right" /></span>
+    </button>
     <ZenCombo
+      v-else
       :model-value="famId"
       :items="familyItems"
       placeholder="Choose a model…"
@@ -640,5 +656,62 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick })
   .p-label {
     grid-column: 1 / -1;
   }
+}
+
+/* browse mode's field: the model, as New run's dataset field shows its dataset */
+.fam-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px 6px 6px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md);
+  background: var(--zen-surface);
+  color: var(--zen-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.fam-field:hover {
+  border-color: color-mix(in srgb, var(--zen-accent) 50%, var(--zen-border));
+}
+.fam-logo {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  overflow: hidden;
+  color: #555;
+}
+.fam-logo img {
+  width: 70%;
+  height: 70%;
+  object-fit: contain;
+}
+.fam-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.fam-text b {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fam-field.empty .fam-text b {
+  color: var(--zen-muted);
+  font-weight: 500;
+}
+.fam-change {
+  font-size: 12px;
+  color: var(--zen-accent);
+  display: inline-flex;
+  align-items: center;
 }
 </style>

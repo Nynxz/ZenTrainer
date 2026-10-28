@@ -28,6 +28,23 @@ async function load() {
 }
 onMounted(() => families.value.length || load())
 
+// the model makers' Hugging Face repos listed again, for models added since the cache
+const relisting = ref(false)
+const relistNote = ref<string | null>(null)
+async function relist() {
+  relisting.value = true
+  relistNote.value = null
+  try {
+    const r = await engine.relistFamilies()
+    await load()
+    relistNote.value = r.new.length ? `New: ${r.new.join(', ')}` : 'Up to date'
+  } catch (e) {
+    relistNote.value = String((e as Error).message ?? e)
+  } finally {
+    relisting.value = false
+  }
+}
+
 const query = ref('')
 const only = ref<'all' | 'ready'>('all')
 const picked = ref<string>('')
@@ -64,8 +81,8 @@ function use(id = picked.value) {
   emit('pick', id)
   open.value = false
 }
+// a recipe brings its own model: applied over the form, it picks the family too
 function recipe(id: string) {
-  if (shown.value && shown.value.id !== props.current) emit('pick', shown.value.id)
   emit('recipe', id)
   open.value = false
 }
@@ -153,7 +170,7 @@ function recipe(id: string) {
 
           <h4>Recipes</h4>
           <div v-if="recipes.length" class="recipes">
-            <button v-for="r in recipes" :key="r.id" type="button" class="recipe" :title="`See what ${r.title} changes before applying it`" @click="recipe(r.id)">
+            <button v-for="r in recipes" :key="r.id" type="button" class="recipe" :title="`Use ${r.title}: its model and settings (Undo takes it back)`" @click="recipe(r.id)">
               <span class="cover" :style="{ background: `linear-gradient(135deg, ${r.cover.from}, ${r.cover.to})` }"><i :class="r.cover.icon" /></span>
               <span class="r-text">
                 <span class="r-title">{{ KINDS[r.kind] ?? r.kind }}<span v-if="!r.validated" class="draft">draft</span></span>
@@ -170,7 +187,11 @@ function recipe(id: string) {
 
     <template #footer>
       <div class="foot">
-        <span class="muted small">Double-click a model, or Enter twice, to use it</span>
+        <button type="button" class="foot-link" title="Pick the diffusion model, text encoder and VAE files yourself" @click="use('__custom')"><i class="mdi mdi-file-cog-outline" /> Pick the files yourself</button>
+        <button type="button" class="foot-link" :disabled="relisting" title="List the model makers' Hugging Face repos again: models they've added show up without waiting for the cache" @click="relist">
+          <i class="mdi mdi-refresh" :class="{ spin: relisting }" /> {{ relisting ? 'Re-listing…' : 'Re-list' }}
+        </button>
+        <span v-if="relistNote" class="muted small">{{ relistNote }}</span>
         <span class="spacer" />
         <ZenButton variant="primary" icon="mdi mdi-check" :disabled="!shown" @click="use()">{{ shown ? `Use ${shown.name}` : 'Use' }}</ZenButton>
       </div>
@@ -417,6 +438,29 @@ h4 {
 }
 .empty {
   padding: 20px;
+}
+.foot-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--zen-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.foot-link:hover:not(:disabled) {
+  color: var(--zen-text);
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 @media (max-width: 720px) {
   .picker {

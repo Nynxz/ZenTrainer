@@ -2,13 +2,14 @@
 // 1 Model: the family picker, its hand-picked recipe (applied when the family is picked, re-appliable
 // after edits), and the file-by-file pick for a custom model.
 import { ZenCombo, ZenField, ZenMenuItem, ZenPopover } from '@nynxz/zenkit-ui'
-import { computed, ref } from 'vue'
-import type { ModelProfile } from '@/api/engine'
+import { computed, ref, toRaw } from 'vue'
+import type { ModelProfile, TrainSpec } from '@/api/engine'
 import FamilyPicker from '@/components/FamilyPicker.vue'
+import { RECIPES, applyTo, plan } from '@/lib/recipes'
 import ModelBrowser from './ModelBrowser.vue'
 import { items, merge, useRunFormContext } from './form'
 
-const { spec, choices, modelMissing, sampleSuggestion, profile, familyId, resuming } = useRunFormContext()
+const { spec, choices, modelMissing, sampleSuggestion, profile, familyId, resuming, applyRecipe } = useRunFormContext()
 
 const customModel = ref(false) // the picker's custom (file-by-file) mode
 function applyProfile(p: ModelProfile) {
@@ -32,8 +33,19 @@ const profileApplied = computed(() => {
   return same(p.train, spec as unknown as Record<string, unknown>) && same(p.samples as Record<string, unknown>, spec.samples as unknown as Record<string, unknown>)
 })
 const profileOpen = ref(false)
-// the model browser: a family picked there goes through the picker (its files, its downloads)
+// the model browser: a family picked there goes through the picker (its files, its downloads); a
+// recipe there is applied as Recipes applies it (its model with it, Undo to take it back). If its
+// files can't be worked out here, Recipes opens on it to say why
 const emit = defineEmits<{ recipe: [id: string] }>()
+async function useRecipe(id: string) {
+  const r = RECIPES.find((x) => x.id === id)
+  if (!r) return
+  try {
+    applyRecipe({ id: r.id, title: r.title }, applyTo(r, await plan(r), toRaw(spec) as TrainSpec))
+  } catch {
+    emit('recipe', id)
+  }
+}
 const picker = ref<InstanceType<typeof FamilyPicker> | null>(null)
 const browsing = ref(false)
 </script>
@@ -43,7 +55,6 @@ const browsing = ref(false)
   <div class="head-row">
     <h2><span class="num">1</span> Model</h2>
     <span class="grow" />
-    <button v-if="!resuming" class="add small" title="Every model, whether it's installed, and its recipes" @click="browsing = true"><i class="mdi mdi-view-grid-outline" /> Browse models</button>
     <!-- extras a run can add (a slider for now), so they don't sit in the form when unused -->
     <ZenPopover v-if="!resuming" placement="bottom-end">
       <template #trigger="{ toggle }">
@@ -61,10 +72,12 @@ const browsing = ref(false)
       </template>
     </ZenPopover>
   </div>
-  <ModelBrowser v-model:open="browsing" :current="familyId" @pick="picker?.pick($event)" @recipe="emit('recipe', $event)" />
+  <ModelBrowser v-model:open="browsing" :current="familyId" @pick="picker?.pick($event)" @recipe="useRecipe" />
   <FamilyPicker
     ref="picker"
     v-model="spec.model"
+    browse
+    @browse="browsing = true"
     @missing="modelMissing = $event"
     @sample-suggestion="sampleSuggestion = $event"
     @custom="customModel = $event"
