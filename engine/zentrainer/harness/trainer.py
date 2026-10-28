@@ -318,7 +318,10 @@ class Trainer:
                             torch.compiler.set_stance("default")  # the final samples left it eager
             except BaseException as e:
                 interrupted = type(e).__name__ == "InterruptProcessingException"
-                self._status("interrupted" if interrupted else "error", message=str(e) or type(e).__name__)
+                # out of VRAM before the loop (the model's load, under Windows' cap): the advice, not the
+                # allocator's text about a "user-supplied memory fraction"
+                message = _oom_advice(self.spec, self.step) if isinstance(e, torch.OutOfMemoryError) else str(e) or type(e).__name__
+                self._status("interrupted" if interrupted else "error", message=message)
                 _release_frames(e)
                 raise
             finally:
@@ -398,6 +401,8 @@ class Trainer:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if getattr(self, "_capped", False):
+            torch.cuda.set_per_process_memory_fraction(1.0, self.device)  # the cap _card set: the card itself
 
     def setup(self) -> None:
         import comfy.model_management as mm
@@ -430,6 +435,8 @@ class Trainer:
         elif n8 := int8_backward.weight_only(patcher.model):
             logging.info("[ZenTrainer] int8 weights dequantized to bf16 for every matmul on %d layers", n8)
         self.device = patcher.load_device
+        if torch.cuda.is_available():
+            self._card()  # Windows: the allocator's cap, before anything loads or encodes
         self.train_dtype = _DTYPES[s.memory.training_dtype]
 
         encoder_id = repr((s.model.kind, s.model.ckpt_name, s.model.clip_name, s.model.clip_type, s.model.vae_name))
@@ -947,6 +954,21 @@ class Trainer:
             logging.info("[ZenTrainer] pinned copies of %d offloaded weights (%.1f GB): they copy to the GPU without "
                          "blocking, under the previous layer's compute", n, size / 1024 ** 3)
 
+    def _card(self) -> tuple[int, int]:
+        """(the card's VRAM, what the CUDA context, the desktop and other processes hold of it): the
+        rest is this process's. On Windows the NVIDIA driver doesn't run out past the card, it spills
+        into system RAM ("shared GPU memory"), many times slower, and the out-of-VRAM back-off would
+        never fire: so there PyTorch's allocator is capped at the rest, and a step that would spill
+        runs out instead, before the driver is asked. The run's end lifts it to the card itself
+        (PyTorch keeps a cap once set). Linux drivers have no such fallback: a step there runs out
+        by itself."""
+        free, total = vram.mem_get_info()
+        others = max(0, total - free - torch.cuda.memory_reserved())
+        if os.name == "nt" and self.device.type == "cuda":
+            torch.cuda.set_per_process_memory_fraction((total - others) / total, self.device)
+            self._capped = True
+        return total, others
+
     def _tighten(self) -> None:
         """With weights offloaded, everything training wasn't seen to use (bar a margin) holds
         model weights: fewer of them cross PCIe each step. The peak counts PyTorch's whole
@@ -957,8 +979,7 @@ class Trainer:
         if not self._auto_vram():
             return
         torch.cuda.empty_cache()  # the weights go into clean space, not between cached fragments
-        free, total = vram.mem_get_info()
-        others = total - free - torch.cuda.memory_reserved()
+        total, others = self._card()
         spare = total - others - self._peak - TIGHTEN_MARGIN
         patcher = self.models.patcher
         have = patcher.loaded_size()
@@ -1037,8 +1058,7 @@ class Trainer:
             if cost <= 0:
                 return
             torch.cuda.empty_cache()
-            free, total = vram.mem_get_info()
-            others = total - free - torch.cuda.memory_reserved()
+            total, others = self._card()
             spare = total - others - self._peak - TIGHTEN_MARGIN
             ceiling = getattr(self, "_keep_ceiling", len(ck.all))
             want = max(0, min(ceiling, 2 * ck.kept, ck.kept + int(spare // cost)))

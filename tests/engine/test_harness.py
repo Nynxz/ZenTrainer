@@ -1260,3 +1260,32 @@ def test_clearing_all_caches_takes_every_datasets_and_leaves_the_shared_ones(tmp
     assert not any((cache / n).exists() for n in ("a1", "g1", "u1"))
     assert (cache / "prompts" / "p.pt").is_file() and (cache / "lora_thumbs" / "x.jpg").is_file()
     assert not list((cache / "text").glob("*/*.pt")) and freed == expect
+
+
+def test_windows_caps_the_allocator_at_the_card(monkeypatch):
+    # Windows' driver spills past the card into system RAM instead of running out: there PyTorch's
+    # allocator is capped at the card bar what other processes hold, so a step that would spill
+    # runs out instead, and the out-of-VRAM back-off handles it as on Linux
+    from zentrainer.harness import trainer as tr
+
+    gb = 1024 ** 3
+    t = object.__new__(tr.Trainer)
+    t.device = torch.device("cuda", 0)
+    capped = []
+    monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (6 * gb, 24 * gb))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 16 * gb)
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction", lambda f, d=None: capped.append((f, d)))
+    monkeypatch.setattr(tr.os, "name", "nt")
+    assert t._card() == (24 * gb, 2 * gb)  # 24 - 6 free - 16 ours: 2 GB is the desktop's and others'
+    assert capped == [(22 / 24, t.device)]
+    assert t._capped
+    monkeypatch.setattr(tr.os, "name", "posix")
+    assert t._card() == (24 * gb, 2 * gb)
+    assert capped == [(22 / 24, t.device)]  # Linux runs out by itself: no cap
+    monkeypatch.setattr(tr.os, "name", "nt")
+    t.device = torch.device("cpu")
+    assert t._card() == (24 * gb, 2 * gb)
+    assert len(capped) == 1  # ComfyUI --cpu: nothing of ours on the card to cap
+    t.device = torch.device("cuda", 0)
+    t._release()
+    assert capped[-1] == (1.0, t.device)  # a run's end, however it ends, lifts the cap to the card
