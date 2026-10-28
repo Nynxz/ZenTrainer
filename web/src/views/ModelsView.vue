@@ -202,6 +202,25 @@ onMounted(() => {
 .star-slot {
   padding-left: 12px;
 }
+/* a phone: the name and its tags on the first line, whether it's ready (or what it downloads) on
+   a second, rather than running off the edge; the date it was added goes */
+@media (max-width: 720px) {
+  .fam-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding: 10px 12px;
+  }
+  .fam-head .spacer {
+    flex-basis: 100%;
+    height: 0;
+  }
+  .fam-head .added {
+    display: none;
+  }
+  .fam-head .status {
+    margin-left: 26px; /* under the name, past the chevron */
+  }
+}
 .fam-head {
   flex: 1;
   min-width: 0;
