@@ -131,12 +131,12 @@ function use(folder = picked.value) {
               <CaptionRing :done="shown.captioned" :total="shown.images" :scores="shown.health?.scores" :size="34" />
             </span>
             <span class="spacer" />
-            <RouterLink :to="`/datasets/${encodeURIComponent(shown.folder)}`" class="open" @click="open = false">Open it <i class="mdi mdi-arrow-right" /></RouterLink>
+            <RouterLink :to="`/datasets/${encodeURIComponent(shown.folder)}`" class="open" @click="open = false">View dataset <i class="mdi mdi-arrow-right" /></RouterLink>
           </div>
           <dl class="facts">
             <div v-for="f in facts" :key="f.k"><dt>{{ f.k }}</dt><dd class="mono">{{ f.v }}</dd></div>
           </dl>
-          <p v-if="shown.captioned < shown.images" class="small warn"><i class="mdi mdi-alert-outline" /> {{ shown.images - shown.captioned }} pictures have no caption: open it to auto-caption them first.</p>
+          <p v-if="shown.captioned < shown.images" class="small warn"><i class="mdi mdi-alert-outline" /> {{ shown.images - shown.captioned }} pictures have no caption yet: auto-caption them on the dataset's page first.</p>
         </article>
         <div v-else class="empty muted small">Pick a dataset on the left.</div>
       </ScrollArea>
