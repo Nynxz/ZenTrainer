@@ -374,7 +374,6 @@ async function save() {
   height: 100%;
   border-radius: 99px;
   background: color-mix(in srgb, var(--zen-text) 30%, transparent);
-  transition: width 0.25s ease;
 }
 .lv.on .fill {
   background: var(--zen-accent);

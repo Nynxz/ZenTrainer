@@ -217,7 +217,6 @@ async function act(action: 'cancel' | 'undo') {
 .bar div {
   height: 100%;
   background: var(--zen-accent);
-  transition: width var(--zen-dur) ease;
 }
 .cols {
   display: grid;

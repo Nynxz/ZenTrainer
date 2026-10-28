@@ -327,6 +327,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Fixed: an open ZenTrainer page cost training about 13% of its speed.** Progress bars and the
+  sidebar's job ring eased every change, but a run updates them every step, faster than the easing
+  ends, so the page redrew 60 times a second for the whole run, on the GPU training uses: MOSS at
+  768 px trained at 5.2 it/s with a run page open against 6.0 with Motion set to Reduced. Progress
+  now jumps to each value (one redraw a step), so Motion no longer matters to training.
 - **Fixed: a run with Targets on Custom and no patterns** loaded its model for a couple of minutes
   and then failed ("no layers matched network.targets=[]"). It's refused when you start it now,
   and the form says so under the patterns box.
@@ -343,6 +348,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   1.12 → 1.05 s a step, MOSS 0.69 → 0.60, the same losses. They compile when a run first needs them
   (about 2 s, with what PyTorch ships: no CUDA toolkit); other cards and shapes use the Triton
   kernels as before.
+- **A LoRA on an int8 layer trains fused with it.** Its output is added inside the int8 matmul
+  (comfy_kitchen's epilogue, as ComfyUI does for a block's residual when generating) and its input
+  gradient inside the CUDA backward, instead of in passes of their own over the whole activation:
+  Krea 2 at 1024 px 1.05 → 1.01 s a step, the same losses. Plain LoRAs on int8 bases; others, and
+  sampling, as before.
 - **Validation on a held-out dataset** (Advanced training → Validate on, or `validation.dataset`):
   the validation loss is measured on another dataset folder, prepared like the training one (edit
   pairs and their inputs, masks, captions), instead of on training pictures. The curve then shows

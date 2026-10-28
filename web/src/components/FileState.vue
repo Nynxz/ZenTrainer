@@ -81,7 +81,6 @@ async function start() {
 .bar div {
   height: 100%;
   background: var(--zen-accent);
-  transition: width 0.4s ease;
 }
 .pct {
   min-width: 4ch;
