@@ -77,7 +77,35 @@ def open_browser(url: str) -> None:
 # ---- questions ----------------------------------------------------------------------------------
 
 def interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    return (sys.stdin.isatty() and sys.stdout.isatty()) or _mintty()
+
+
+def _mintty() -> bool:
+    """Git Bash's mintty: a terminal, but to a Windows program its stdin and stdout are pipes
+    (\\msys-…-pty0-from-master, …-to-master), so isatty is false. Told apart from a script's pipes
+    by those names, as go-isatty's IsCygwinTerminal does."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class NameInfo(ctypes.Structure):
+        _fields_ = [("length", wintypes.DWORD), ("name", wintypes.WCHAR * 260)]
+
+    def pty(stream) -> bool:
+        info = NameInfo()
+        try:
+            handle = msvcrt.get_osfhandle(stream.fileno())
+        except (OSError, ValueError):
+            return False
+        if not ctypes.windll.kernel32.GetFileInformationByHandleEx(handle, 2, ctypes.byref(info), ctypes.sizeof(info)):
+            return False  # 2: FileNameInfo
+        name = info.name[: info.length // 2]
+        return (name.startswith(("\\msys-", "\\cygwin-")) and "-pty" in name
+                and ("-from-master" in name or "-to-master" in name))
+
+    return pty(sys.stdin) and pty(sys.stdout)
 
 
 def _style():
@@ -88,55 +116,119 @@ def _style():
                               ("selected", f"fg:{ACCENT} noreverse"), ("instruction", "fg:#888888")])
 
 
-def _answer(q):
+# A terminal that isn't a Windows console (Git Bash's mintty, some IDE consoles) has no console screen
+# buffer for prompt_toolkit to draw in: it raises NoConsoleScreenBufferError as the question is built.
+# There every question is asked as plain lines instead, typed and Enter; in mintty, from the start.
+_plain = False
+
+
+def _no_console() -> type[BaseException] | tuple[()]:
+    if sys.platform != "win32":
+        return ()  # prompt_toolkit.output.win32 only imports on Windows; nothing to catch elsewhere
+    from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
+
+    return NoConsoleScreenBufferError
+
+
+def _answer(build, plain):
+    """The answer to build()'s questionary question, or plain()'s where it can't be drawn."""
+    global _plain
     if not interactive():
         die("no terminal to answer in; stopping. Run it in a terminal, or use the commands (zt --help)")
-    ans = q.ask()
-    if ans is None:  # Ctrl-C
-        raise KeyboardInterrupt
-    return ans
+    if not _plain and _mintty():
+        _plain = True
+    if not _plain:
+        try:
+            q = build()
+        except _no_console():
+            _plain = True
+        else:
+            ans = q.ask()
+            if ans is None:  # Ctrl-C
+                raise KeyboardInterrupt
+            return ans
+    try:
+        return plain()
+    except EOFError:
+        raise KeyboardInterrupt from None
+
+
+def _line(question: str, hint: str = "") -> str:
+    return input(f"? {question}{f' {hint}' if hint else ''} ")
+
+
+def _plain_confirm(question: str, default: bool) -> bool:
+    while True:
+        a = _line(question, "[Y/n]" if default else "[y/N]").strip().lower()
+        if not a:
+            return default
+        if a[0] in "yn":
+            return a[0] == "y"
+
+
+def _plain_pick(question: str, titles: list[str], start: int = 0, many: bool = False) -> list[int]:
+    for i, t in enumerate(titles, 1):
+        print(f"  {i}. {t}")
+    while True:
+        hint = "(numbers, comma-separated; Enter for none)" if many else f"[{start + 1}]"
+        a = _line(question, hint).strip()
+        if not a:
+            return [] if many else [start]
+        try:
+            picks = [int(x) - 1 for x in a.replace(" ", "").split(",") if x]
+        except ValueError:
+            continue
+        if picks and all(0 <= i < len(titles) for i in picks) and (many or len(picks) == 1):
+            return picks
 
 
 def ask(question: str, default: str = "") -> str:
     import questionary
 
-    return _answer(questionary.text(question, default=default, style=_style())).strip()
+    return _answer(lambda: questionary.text(question, default=default, style=_style()),
+                   lambda: _line(question, f"[{default}]" if default else "") or default).strip()
 
 
 def confirm(question: str, default: bool = True) -> bool:
     import questionary
 
-    return _answer(questionary.confirm(question, default=default, style=_style()))
+    return _answer(lambda: questionary.confirm(question, default=default, style=_style()),
+                   lambda: _plain_confirm(question, default))
 
 
 def choose(question: str, choices: list[tuple[str, str]], default: str | None = None) -> str:
     """One of (title, value), picked with the arrow keys; returns the value."""
     import questionary
 
-    from questionary.prompts.common import InquirerControl
+    start = next((i for i, (_, value) in enumerate(choices) if value == default), 0)
 
-    items = [questionary.Choice(title, value=value) for title, value in choices]
-    q = questionary.select(question, choices=items, style=_style())
-    # start on the default without passing it as `default`: questionary would draw that item as
-    # "selected" for good, so it'd look picked wherever the pointer went
-    start = next((i for i, c in enumerate(items) if c.value == default), 0)
-    for control in q.application.layout.find_all_controls():
-        if isinstance(control, InquirerControl):
-            control.pointed_at = start
-    return _answer(q)
+    def build():
+        from questionary.prompts.common import InquirerControl
+
+        q = questionary.select(question, choices=[questionary.Choice(t, value=v) for t, v in choices], style=_style())
+        # start on the default without passing it as `default`: questionary would draw that item as
+        # "selected" for good, so it'd look picked wherever the pointer went
+        for control in q.application.layout.find_all_controls():
+            if isinstance(control, InquirerControl):
+                control.pointed_at = start
+        return q
+
+    return _answer(build, lambda: choices[_plain_pick(question, [t for t, _ in choices], start)[0]][1])
 
 
 def checkboxes(question: str, options: list[str]) -> list[str]:
     import questionary
 
-    return _answer(questionary.checkbox(question, choices=options, style=_style()))
+    return _answer(lambda: questionary.checkbox(question, choices=options, style=_style()),
+                   lambda: [options[i] for i in _plain_pick(question, options, many=True)])
 
 
 def folder(question: str) -> str:
     """A folder path, completed as you type; "" to skip."""
     import questionary
 
-    return _answer(questionary.path(question, only_directories=True, style=_style())).strip()
+    return _answer(lambda: questionary.path(question, only_directories=True, style=_style()),
+                   lambda: _line(question)).strip()
 
 
 # ---- the logo -----------------------------------------------------------------------------------

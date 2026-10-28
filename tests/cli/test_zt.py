@@ -272,3 +272,54 @@ def test_train_refuses_a_bad_spec_before_reaching_the_server(real_repo, tmp_path
     monkeypatch.setattr(api.comfy, "background", lambda port: pytest.fail("started a server for a bad spec"))
     with pytest.raises(SystemExit):
         api.train(str(bad))
+
+
+def test_questions_fall_back_to_plain_lines_without_a_windows_console(monkeypatch):
+    # Git Bash's mintty and some IDE consoles pass isatty but have no console screen buffer:
+    # prompt_toolkit raises as the question is built, and zt asks in plain typed lines instead
+    pytest.importorskip("questionary")
+    import questionary
+
+    from zt import ui
+
+    class NoConsoleScreenBufferError(Exception):
+        pass
+
+    built = []
+
+    def no_console(*a, **k):
+        built.append(1)
+        raise NoConsoleScreenBufferError
+
+    for kind in ("select", "confirm", "text", "checkbox", "path"):
+        monkeypatch.setattr(questionary, kind, no_console)
+    monkeypatch.setattr(ui, "_no_console", lambda: NoConsoleScreenBufferError)
+    monkeypatch.setattr(ui, "interactive", lambda: True)
+    monkeypatch.setattr(ui, "_plain", False)
+    answers = iter(["", "2", "n", "", "1, 3", "x"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    pick = [("Start", "start"), ("Update", "update"), ("Quit", "quit")]
+    assert ui.choose("What now?", pick, default="update") == "update"  # Enter takes the default
+    assert ui.choose("What now?", pick) == "update"
+    assert ui.confirm("Install?") is False
+    assert ui.ask("Name?", default="zen") == "zen"
+    assert ui.checkboxes("Which?", ["a", "b", "c"]) == ["a", "c"]
+    assert ui.folder("Where?") == "x"
+    assert len(built) == 1  # plain from the first failure on: no later question tries to draw
+
+
+def test_any_other_error_building_a_question_still_raises(monkeypatch):
+    pytest.importorskip("questionary")
+    import questionary
+
+    from zt import ui
+
+    def broken(*a, **k):
+        raise RuntimeError("not a console problem")
+
+    monkeypatch.setattr(questionary, "confirm", broken)
+    monkeypatch.setattr(ui, "interactive", lambda: True)
+    monkeypatch.setattr(ui, "_plain", False)
+    with pytest.raises(RuntimeError):
+        ui.confirm("Install?")
+    assert ui._plain is False
