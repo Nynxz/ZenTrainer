@@ -26,8 +26,9 @@ provide(RUN_FORM, form)
 const { spec, editing, retrying, resuming, resumeStep } = form
 const { imported, exportSettings, copySettings, importSettings, recipeApplied, undoRecipe } = form
 const recipesOpen = ref(false)
-const recipeStart = ref<string | null>(null) // the model browser's recipe card: Recipes opens on it
-function openRecipe(id: string) {
+// Recipes opens from the model browser: on a recipe (its Details), or on the first (All recipes)
+const recipeStart = ref<string | null>(null)
+function openRecipe(id: string | null) {
   recipeStart.value = id
   recipesOpen.value = true
 }
@@ -94,9 +95,6 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
         </p>
       </div>
       <span v-if="copied" class="copied small"><i class="mdi mdi-check" /> Copied</span>
-      <button v-if="!resuming" class="bar-btn" title="Ready-made settings, ours and yours: applied here, sized to your dataset" @click="(recipeStart = null), (recipesOpen = true)">
-        <i class="mdi mdi-book-open-page-variant-outline" /> Recipes
-      </button>
       <ZenPopover placement="bottom-end">
         <template #trigger="{ toggle }">
           <button class="bar-btn icon" title="Save these settings as a recipe, share them, or load someone's" @click="toggle"><i class="mdi mdi-dots-horizontal" /></button>

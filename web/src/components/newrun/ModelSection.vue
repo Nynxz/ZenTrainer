@@ -36,7 +36,7 @@ const profileOpen = ref(false)
 // the model browser: a family picked there goes through the picker (its files, its downloads); a
 // recipe there is applied as Recipes applies it (its model with it, Undo to take it back). If its
 // files can't be worked out here, Recipes opens on it to say why
-const emit = defineEmits<{ recipe: [id: string] }>()
+const emit = defineEmits<{ recipe: [id: string | null] }>()
 async function useRecipe(id: string) {
   const r = RECIPES.find((x) => x.id === id)
   if (!r) return
@@ -72,7 +72,7 @@ const browsing = ref(false)
       </template>
     </ZenPopover>
   </div>
-  <ModelBrowser v-model:open="browsing" :current="familyId" @pick="picker?.pick($event)" @recipe="useRecipe" />
+  <ModelBrowser v-model:open="browsing" :current="familyId" @pick="picker?.pick($event)" @recipe="useRecipe" @details="emit('recipe', $event)" />
   <FamilyPicker
     ref="picker"
     v-model="spec.model"

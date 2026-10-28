@@ -15,7 +15,8 @@ import { isStarred } from '@/stores/favorites'
 import { familiesSeen } from '@/stores/lists'
 
 const props = defineProps<{ current: string | null }>()
-const emit = defineEmits<{ pick: [id: string]; recipe: [id: string] }>()
+/** recipe: apply it here; details: open Recipes on it (null: on them all, yours too) */
+const emit = defineEmits<{ pick: [id: string]; recipe: [id: string]; details: [id: string | null] }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const families = familiesSeen // the Models page's list too: shown at once, refreshed on open
@@ -84,6 +85,10 @@ function use(id = picked.value) {
 // a recipe brings its own model: applied over the form, it picks the family too
 function recipe(id: string) {
   emit('recipe', id)
+  open.value = false
+}
+function details(id: string | null) {
+  emit('details', id)
   open.value = false
 }
 </script>
@@ -169,14 +174,24 @@ function recipe(id: string) {
 
           <h4>Recipes</h4>
           <div v-if="recipes.length" class="recipes">
-            <button v-for="r in recipes" :key="r.id" type="button" class="recipe" :title="`Use ${r.title}: its model and settings (Undo takes it back)`" @click="recipe(r.id)">
+            <!-- a row, not a button: its Details is one -->
+            <div
+              v-for="r in recipes"
+              :key="r.id"
+              role="button"
+              tabindex="0"
+              class="recipe"
+              :title="`Use ${r.title}: its model and settings (Undo takes it back)`"
+              @click="recipe(r.id)"
+              @keydown.enter.prevent="recipe(r.id)"
+            >
               <span class="cover" :style="{ background: `linear-gradient(135deg, ${r.cover.from}, ${r.cover.to})` }"><i :class="r.cover.icon" /></span>
               <span class="r-text">
                 <span class="r-title">{{ KINDS[r.kind] ?? r.kind }}<span v-if="!r.validated" class="draft">draft</span></span>
                 <span class="r-meta">{{ r.spec.network?.algorithm ?? 'LoRA' }} · {{ r.photos.ideal }}</span>
               </span>
-              <i class="mdi mdi-chevron-right chev" />
-            </button>
+              <button type="button" class="r-details" :title="`Every setting ${r.title} changes, before applying it`" @click.stop="details(r.id)">Details</button>
+            </div>
           </div>
           <p v-else class="muted small">No recipe for it yet: its own settings are a start, and Save as recipe keeps yours.</p>
         </article>
@@ -186,6 +201,7 @@ function recipe(id: string) {
 
     <template #footer>
       <div class="foot">
+        <button type="button" class="foot-link" title="Every recipe, by model, and the ones you saved: each with what it changes" @click="details(null)"><i class="mdi mdi-book-open-page-variant-outline" /> All recipes</button>
         <button type="button" class="foot-link" title="Pick the diffusion model, text encoder and VAE files yourself" @click="use('__custom')"><i class="mdi mdi-file-cog-outline" /> Pick the files yourself</button>
         <button type="button" class="foot-link" :disabled="relisting" title="List the model makers' Hugging Face repos again: models they've added show up without waiting for the cache" @click="relist">
           <i class="mdi mdi-refresh" :class="{ spin: relisting }" /> {{ relisting ? 'Re-listing…' : 'Re-list' }}
@@ -432,8 +448,18 @@ h4 {
   color: var(--zen-warn, #d9a400);
   border-radius: 4px;
 }
-.chev {
+.r-details {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
   color: var(--zen-muted);
+  cursor: pointer;
+  flex: none;
+}
+.r-details:hover {
+  color: var(--zen-text);
 }
 .empty {
   padding: 20px;
