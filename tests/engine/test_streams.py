@@ -786,7 +786,7 @@ def test_a_fit_that_slows_the_steps_is_undone(monkeypatch):
     t.models = types.SimpleNamespace(patcher=Patcher())
     fits = []
     t._fit_weights = lambda: (fits.append(t._resident), setattr(t.models.patcher, "loaded", t._resident))
-    t._recompile_if_moved = lambda: None
+    t._recompile_if_moved = lambda why="": None
     stats = {"num_alloc_retries": 0}
     monkeypatch.setattr(torch.cuda, "memory_stats", lambda: dict(stats))
 
