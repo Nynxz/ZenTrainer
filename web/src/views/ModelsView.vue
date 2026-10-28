@@ -10,8 +10,9 @@ import StarButton from '@/components/StarButton.vue'
 import { isStarred, starred, starredFirst } from '@/stores/favorites'
 import { finished, fmtAdded, fmtBytes, hfToken, isNew, startDownloadSync, targets } from '@/stores/downloads'
 import StickyBar from '@/components/StickyBar.vue'
+import { familiesSeen } from '@/stores/lists'
 
-const families = ref<ModelFamily[]>([])
+const families = familiesSeen // last visit's list at once, refreshed in place
 const loaded = ref(false)
 const error = ref<string | null>(null)
 const query = ref('')
@@ -82,15 +83,15 @@ onMounted(() => {
     </div>
 
     <StickyBar>
-    <div class="toolbar card">
-      <div class="seg">
+    <div class="page-toolbar card">
+      <div class="view-switch text">
         <button :class="{ on: filter === 'all' }" @click="filter = 'all'">All {{ families.length }}</button>
         <button :class="{ on: filter === 'starred' }" @click="filter = 'starred'"><i class="mdi mdi-star-outline" /> Starred {{ starred.size }}</button>
         <button :class="{ on: filter === 'ready' }" @click="filter = 'ready'">Ready {{ counts.ready }}</button>
         <button :class="{ on: filter === 'missing' }" @click="filter = 'missing'">Not installed {{ counts.missing }}</button>
       </div>
       <span class="spacer" />
-      <div class="seg" title="Sort">
+      <div class="view-switch text" title="Sort">
         <button :class="{ on: sort === 'newest' }" @click="sort = 'newest'"><i class="mdi mdi-sort-calendar-descending" /> Newest</button>
         <button :class="{ on: sort === 'name' }" @click="sort = 'name'"><i class="mdi mdi-sort-alphabetical-ascending" /> A–Z</button>
       </div>
@@ -165,24 +166,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 10px;
+.page-toolbar .search {
+  flex: 0 1 260px;
 }
-.search {
-  width: 260px;
-}
-.seg {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--r-lg);
-  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
-}
-.seg button,
 .chip-btn {
   border: none;
   background: none;
@@ -196,14 +182,10 @@ onMounted(() => {
   align-items: center;
   gap: 5px;
 }
-.seg button.on,
 .chip-btn.on {
   background: var(--zen-selected-bg, var(--zen-surface-2));
   color: var(--zen-selected-text, var(--zen-text));
   border-color: var(--zen-selected, var(--zen-accent));
-}
-.seg button:hover {
-  color: var(--zen-text);
 }
 .list {
   display: flex;
@@ -219,6 +201,25 @@ onMounted(() => {
 }
 .star-slot {
   padding-left: 12px;
+}
+/* a phone: the name and its tags on the first line, whether it's ready (or what it downloads) on
+   a second, rather than running off the edge; the date it was added goes */
+@media (max-width: 720px) {
+  .fam-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding: 10px 12px;
+  }
+  .fam-head .spacer {
+    flex-basis: 100%;
+    height: 0;
+  }
+  .fam-head .added {
+    display: none;
+  }
+  .fam-head .status {
+    margin-left: 26px; /* under the name, past the chevron */
+  }
 }
 .fam-head {
   flex: 1;

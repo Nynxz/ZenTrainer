@@ -99,6 +99,15 @@ function onEsc(e: KeyboardEvent) {
   selected.clear()
 }
 
+// ---- masks: the editor opens on the first selected picture, else the first one ---------------
+const maskStart = computed(() => {
+  const pictures = items.value.filter((i) => i.kind !== 'video')
+  return pictures.find((i) => selected.has(i.path)) ?? pictures[0] ?? null
+})
+function openMasks() {
+  if (maskStart.value) router.push({ path: `/datasets/${encodeURIComponent(props.name)}/mask`, query: { path: maskStart.value.path } })
+}
+
 // ---- upload -------------------------------------------------------------------------------
 const dragging = ref(false)
 const uploading = ref(false)
@@ -153,27 +162,28 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page full ds-page">
-    <header class="ds-head">
-      <RouterLink to="/datasets" class="crumb">Datasets</RouterLink>
-      <h1>{{ name }}</h1>
-      <span class="lede">
-        {{ items.length - counts.videos }} image{{ items.length - counts.videos === 1 ? '' : 's' }}<template v-if="counts.videos"> · {{ counts.videos }} video{{ counts.videos === 1 ? '' : 's' }}</template>
-        <template v-if="counts.uncaptioned"> · <span class="warn">{{ counts.uncaptioned }} uncaptioned</span></template>
-        <template v-if="counts.mismatched"> · <span class="warn" title="A mask with a different shape from its image is stretched over it and won't line up">{{ counts.mismatched }} mask{{ counts.mismatched === 1 ? '' : 's' }} don't fit</span></template>
-      </span>
-      <span class="spacer" />
+  <div class="page full">
+    <div class="page-head">
+      <div class="titles">
+        <h1><RouterLink to="/datasets" class="crumb">Datasets</RouterLink> {{ name }}</h1>
+        <p class="lede">
+          {{ items.length - counts.videos }} image{{ items.length - counts.videos === 1 ? '' : 's' }}<template v-if="counts.videos"> · {{ counts.videos }} video{{ counts.videos === 1 ? '' : 's' }}</template>
+          <template v-if="counts.uncaptioned"> · <span class="warn">{{ counts.uncaptioned }} uncaptioned</span></template>
+          <template v-if="counts.mismatched"> · <span class="warn" title="A mask with a different shape from its image is stretched over it and won't line up">{{ counts.mismatched }} mask{{ counts.mismatched === 1 ? '' : 's' }} don't fit</span></template>
+        </p>
+      </div>
+      <ZenButton size="sm" icon="mdi mdi-vector-selection" :disabled="!maskStart" title="Paint or find (SAM3) where each picture trains; ←/→ moves between pictures" @click="openMasks">Mask editor</ZenButton>
       <ZenButton size="sm" icon="mdi mdi-upload" :disabled="uploading" @click="fileInput?.click()">Add files</ZenButton>
       <ZenButton size="sm" variant="primary" icon="mdi mdi-play" @click="router.push({ path: '/runs/new', query: { dataset: name } })">Train on this</ZenButton>
       <input ref="fileInput" type="file" multiple accept="image/*,video/*,.txt" hidden @change="upload([...(($event.target as HTMLInputElement).files ?? [])])" />
-    </header>
+    </div>
 
     <div v-if="error" class="card err mono">{{ error }}</div>
 
     <!-- one fixed-height row: nothing in it appears, disappears or wraps -->
     <StickyBar>
-    <div class="ds-toolbar card">
-      <div class="seg" role="tablist" aria-label="View">
+    <div class="page-toolbar card">
+      <div class="view-switch" role="tablist" aria-label="View">
         <button :class="{ on: layout === 'grid' }" title="Grid" @click="view = 'grid'"><i class="mdi mdi-view-grid-outline" /></button>
         <button :class="{ on: layout === 'list' }" title="Table" @click="view = 'list'"><i class="mdi mdi-view-list-outline" /></button>
         <button v-if="controlSets.length" :class="{ on: layout === 'pairs' }" :title="`Edit pairs: “${activeControl}” inputs → result, with the instruction`" @click="(activeControl ||= controlSets[0] ?? ''), (view = 'pairs')"><i class="mdi mdi-swap-horizontal" /></button>
@@ -230,6 +240,7 @@ onUnmounted(() => {
         <span class="sel-sep" />
         <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /> Mute</button>
         <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /> Unmute</button>
+        <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /> Masks</button>
         <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /> Delete</button>
         <span class="sel-sep" />
         <button class="chip-btn" title="Clear the selection (Esc)" @click="selected.clear()"><i class="mdi mdi-close" /></button>
@@ -261,14 +272,6 @@ onUnmounted(() => {
   color: var(--zen-danger);
   border-color: var(--zen-danger);
 }
-.seg {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--r-lg);
-  border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
-}
-.seg button,
 .chip-btn {
   border: none;
   background: none;
@@ -282,7 +285,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 5px;
 }
-.seg button.on,
 .chip-btn.on {
   background: var(--zen-selected-bg, var(--zen-surface-2));
   color: var(--zen-selected-text, var(--zen-text));
@@ -291,8 +293,7 @@ onUnmounted(() => {
 .chip-btn {
   border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
 }
-.chip-btn:hover,
-.seg button:hover {
+.chip-btn:hover {
   color: var(--zen-text);
 }
 .zoom {
@@ -345,49 +346,12 @@ onUnmounted(() => {
   color: var(--zen-accent);
 }
 /* ---- page layout: a slim header, one fixed toolbar, the pictures and a side panel ---- */
-.ds-page {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.ds-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-}
-.ds-head .crumb {
-  color: var(--zen-muted);
-  font-size: 14px;
-}
-.ds-head h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-}
-.ds-head .lede {
-  margin: 0 0 0 6px;
-  font-size: 13px;
-  color: var(--zen-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ds-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 46px;
-  padding: 0 8px;
-  flex-wrap: nowrap;
-  overflow: hidden;
-}
 /* everything gives way before anything is cut off: the side panel's button is always there */
-.ds-toolbar .zoom {
+.page-toolbar .zoom {
   flex: 0 1 150px;
   min-width: 70px;
 }
-.ds-toolbar .zoom.off {
+.page-toolbar .zoom.off {
   opacity: 0.35;
 }
 .tb-field {
@@ -401,10 +365,6 @@ onUnmounted(() => {
 .tb-field :deep(.zen-combo) {
   flex: 1;
   min-width: 0;
-}
-.ds-toolbar .search {
-  flex: 1 1 120px;
-  min-width: 70px;
 }
 .icon-btn {
   flex: none;
@@ -479,7 +439,7 @@ onUnmounted(() => {
   transform: translate(-50%, 8px);
 }
 @media (max-width: 900px) {
-  .ds-toolbar .zoom,
+  .page-toolbar .zoom,
   .tb-field > .mdi {
     display: none;
   }

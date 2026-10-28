@@ -72,7 +72,7 @@ def _oom_advice(spec: TrainSpec, step: int) -> str:
     tips = []
     if not m.gradient_checkpointing:
         tips.append("turn on gradient checkpointing")
-    elif m.grad_checkpoint_skip:
+    elif isinstance(m.grad_checkpoint_skip, int) and m.grad_checkpoint_skip:
         tips.append(f"keep fewer blocks un-checkpointed ({m.grad_checkpoint_skip} -> 0)")
     if not m.offloading:
         tips.append("turn on weight offloading")
@@ -177,6 +177,17 @@ TRIAL_STEPS = (4, 7)
 TRIAL_LONGEST = 16
 TRIAL_SLOWER = 1.08
 
+# memory.grad_checkpoint_skip "auto" (weights all on the card): after the first step one block runs
+# un-checkpointed (the biggest, the last first), and what it holds for backward is measured; at the later of these steps
+# (counted from the first, or from a resolution change) every block the spare VRAM holds, bar the
+# margin, is kept too, at most twice as many as before each time. Measured on an RTX 5090 at 1024
+# px: MOSS 0.69 -> 0.50 s a step keeping 40 of 44, Krea 2 1.12 -> 1.08 keeping 7 of 32. A kept
+# block is costed as the most any has held (x KEEP_SAFETY), and a bigger bucket later holds more:
+# MOSS's first measured 0.18 GB, its biggest 0.49. The doubling bounds that; an out-of-VRAM step
+# backs off blocks
+KEEP_AT = (1, 3, 6, 10, 15, 20, 30, 40)
+KEEP_SAFETY = 1.15
+
 # the run page's phase timings (data, forward, backward, optimizer) come from every this-many-th
 # step: timing them stalls the GPU at each phase's end
 PHASES_EVERY = 10
@@ -258,11 +269,14 @@ class Trainer:
                     compat.fused_qk_rope = False
                     logging.info("[ZenTrainer] fused q/k norm + rope off while the blocks run compiled: they fuse them already")
                 # compiled first, so checkpointing wraps the compiled forward
+                m = self.spec.memory
+                skip = m.grad_checkpoint_skip
                 with compiled_blocks(dm, compile_on) as self._compiled, \
-                        gradient_checkpointing(dm, self.spec.memory.gradient_checkpointing,
-                                               self.spec.memory.grad_checkpoint_depth, self.spec.memory.offloading,
-                                               self.spec.memory.grad_checkpoint_skip) as ckpt:
+                        gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
+                                               0 if skip == "auto" else skip) as ckpt:
                     self._input_grad = ckpt.input_grad
+                    self._ckpt = ckpt
+                    self._keep_auto = skip == "auto" and not m.offloading and bool(ckpt.all) and torch.cuda.is_available()
                     self.enter_training()
                     try:
                         for cb in self.callbacks:
@@ -288,6 +302,7 @@ class Trainer:
                                 cb.on_end(self, status)
                             except Exception:
                                 logging.exception("[ZenTrainer] callback on_end failed")
+                        self._unhook_kept()
                         self.network.eject(self.models.patcher)
                         self.models.patcher.cleanup()
                         _comfy_compiler(True)  # after on_end: its final samples run without it too
@@ -705,8 +720,9 @@ class Trainer:
         that VRAM holds weights instead, and is worth as much: measured on Krea 2 int8 at 1024 px,
         16 GB card, keeping 6 blocks cost 2 GB of weights on the card for no faster steps."""
         m = self.spec.memory
-        if m.offloading and m.gradient_checkpointing and m.grad_checkpoint_skip > 0:
-            logging.info("[ZenTrainer] keep last blocks %d -> 0: with weights offloaded, that VRAM holds weights instead", m.grad_checkpoint_skip)
+        if m.offloading and m.gradient_checkpointing and m.grad_checkpoint_skip != 0:
+            if m.grad_checkpoint_skip != "auto":
+                logging.info("[ZenTrainer] keep last blocks %d -> 0: with weights offloaded, that VRAM holds weights instead", m.grad_checkpoint_skip)
             m.grad_checkpoint_skip = 0
 
     def enter_training(self) -> None:
@@ -828,6 +844,10 @@ class Trainer:
                     self._judge()
                 if self._warm in TIGHTEN_AT:
                     self._tighten()
+                if getattr(self, "_keep_auto", False):
+                    self._keep_warm = getattr(self, "_keep_warm", 0) + 1
+                    if self._keep_warm in KEEP_AT:
+                        self._fit_kept()
             self.last_step_seconds = time.perf_counter() - t0
             self.train_seconds += self.last_step_seconds
             self.step += 1
@@ -871,6 +891,10 @@ class Trainer:
         """A higher resolution needs more room for activations: the weights go back to where the
         first load put them, and the VRAM fit measures again from there."""
         logging.info("[ZenTrainer] now training at %d px", res)
+        if getattr(self, "_keep_auto", False):
+            self._kept(0)  # more tokens a block: measured again
+            self._keep_warm, self._keep_cost = 0, {}
+            self.__dict__.pop("_keep_ceiling", None)
         if not self._auto_vram() or not getattr(self, "_first_resident", None):
             return
         self._trial = None
@@ -974,11 +998,89 @@ class Trainer:
         logging.info("[ZenTrainer] more of the model on the card was slower (%s): back to %.1f GB from %.1f, and no higher",
                      why, trial["prev"] / gb, have / gb)
 
+    def _kept(self, n: int) -> int:
+        """The last n blocks un-checkpointed (memory.grad_checkpoint_skip "auto"), each measured
+        while it runs that way: what it still holds after its forward is what it keeps for backward."""
+        ck = self._ckpt
+        hooks = getattr(self, "_keep_hooks", None)
+        if hooks is None:
+            self._keep_cost: dict[int, int] = {}
+            hooks = self._keep_hooks = []
+            for i, b in enumerate(ck.all):
+                def pre(mod, args, i=i):
+                    if torch.is_grad_enabled() and not hasattr(mod, "org_forward"):
+                        mod._zt_mem = torch.cuda.memory_allocated()
+
+                def post(mod, args, out, i=i):
+                    m0 = mod.__dict__.pop("_zt_mem", None)
+                    if m0 is not None:
+                        self._keep_cost[i] = max(self._keep_cost.get(i, 0), torch.cuda.memory_allocated() - m0)
+
+                hooks += [b.register_forward_pre_hook(pre), b.register_forward_hook(post)]
+        return ck.keep(n)
+
+    def _unhook_kept(self) -> None:
+        for h in getattr(self, "_keep_hooks", None) or []:
+            h.remove()
+        self._keep_hooks = None
+
+    def _fit_kept(self) -> None:
+        """Keep as many last blocks un-checkpointed as the measured spare VRAM holds (see KEEP_AT)."""
+        ck = self._ckpt
+        if self._keep_warm == KEEP_AT[0]:
+            self._kept(1)  # the probe: next steps measure what a kept block holds
+        else:
+            cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
+            if cost <= 0:
+                return
+            torch.cuda.empty_cache()
+            free, total = vram.mem_get_info()
+            others = total - free - torch.cuda.memory_reserved()
+            spare = total - others - self._peak - TIGHTEN_MARGIN
+            ceiling = getattr(self, "_keep_ceiling", len(ck.all))
+            want = max(0, min(ceiling, 2 * ck.kept, ck.kept + int(spare // cost)))
+            if want != ck.kept:
+                was = ck.kept
+                self._kept(want)
+                gb = 1024 ** 3
+                logging.info("[ZenTrainer] training peaked at %.1f GB of %.1f: blocks un-checkpointed %d -> %d "
+                             "of %d (%.2f GB each)", self._peak / gb, (total - others) / gb, was, want, len(ck.all),
+                             cost / gb)
+        self._peak = 0
+        torch.cuda.reset_peak_memory_stats()
+
+    def _back_off_kept(self) -> bool:
+        """An out-of-VRAM step with blocks kept: the margin's worth of them checkpointed again, and
+        never more kept than that."""
+        ck = getattr(self, "_ckpt", None)
+        if not getattr(self, "_keep_auto", False) or not ck or not ck.kept:
+            return False
+        cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
+        drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
+        was = ck.kept
+        self._keep_ceiling = self._kept(max(0, was - drop))
+        logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
+        return True
+
     def _back_off(self, e: BaseException) -> bool:
         """A step ran out of VRAM (a bigger bucket than the first steps saw, say): take the
-        margin's worth of weights off the card, never go above that again, and retry the step."""
-        if not self._auto_vram() or getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES:
+        margin's worth of weights off the card (or of kept blocks, with none offloaded), never go
+        above that again, and retry the step."""
+        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES:
             return False
+        if not self._auto_vram():
+            if not self._back_off_kept():
+                return False
+            import comfy.model_management as mm
+
+            _release_frames(e)
+            del e
+            self.optimizer.zero_grad(set_to_none=True)
+            self._backoffs = getattr(self, "_backoffs", 0) + 1
+            mm.soft_empty_cache()
+            self._peak = 0
+            torch.cuda.reset_peak_memory_stats()
+            return True
         import comfy.model_management as mm
 
         _release_frames(e)

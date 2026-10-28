@@ -28,7 +28,7 @@ function placeSide() {
 // wide one, overlaid instead: following the toolbar as the page scrolls (it sticks at the top)
 const drawerTop = ref(66)
 function placeDrawer() {
-  const bar = document.querySelector('.ds-toolbar')
+  const bar = document.querySelector('.page-toolbar')
   drawerTop.value = Math.max(12, Math.round((bar?.getBoundingClientRect().bottom ?? 56) + 10))
 }
 watch(

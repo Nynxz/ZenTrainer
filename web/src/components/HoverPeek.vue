@@ -4,6 +4,8 @@
 // mutes or unmutes, remembered). An element can name what to show with data-peek="url" (a still that
 // stands for a clip, a thumb for a full-size file). A picture that changes while it's peeked (a
 // sample's live preview, a frame each step) is followed, and a small one is scaled up to the screen.
+// A dataset thumbnail peeks as its biggest one. Not where the picture is large already (the
+// lightbox, the mask editor's canvas), and not for a Shift-click: that selects a range.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const src = ref<string | null>(null)
@@ -26,6 +28,8 @@ function toggleSound() {
   }
 }
 let shift = false
+// a click while Shift is down (selecting a range): no peek until Shift is let go
+let clicked = false
 let x = 0
 let y = 0
 // the picture under the pointer while peeking: told when its src changes (a live preview's next
@@ -44,20 +48,32 @@ function sized(e: Event) {
 }
 
 const VIDEO = /\.(mp4|webm|mov|mkv)([?&#]|$)/i  // also /files/view?filename=x.mp4&subfolder=...
+const LARGE = '.zlb, .mask-page .stage, [data-no-peek]'
+// a dataset thumbnail (…/thumb?path=…&size=160): the biggest the server makes
+function biggest(url: string) {
+  if (!url.includes('/zentrainer/api/datasets/') || !url.includes('/thumb?')) return url
+  const u = new URL(url, location.href)
+  u.searchParams.set('size', '1024')
+  return u.pathname + u.search
+}
 
 function under(): { url: string; video: boolean; time: number; img?: HTMLImageElement } | null {
   for (const el of document.elementsFromPoint(x, y)) {
     if (el.closest('.peek')) continue
+    if (el.closest(LARGE)) return null
     const tagged = (el as HTMLElement).closest<HTMLElement>('[data-peek]')
     if (tagged?.dataset.peek) return { url: tagged.dataset.peek, video: VIDEO.test(tagged.dataset.peek), time: 0 }
     if (el instanceof HTMLVideoElement && el.currentSrc) return { url: el.currentSrc, video: true, time: el.currentTime }
-    if (el instanceof HTMLImageElement && el.currentSrc && el.naturalWidth > 1) return { url: el.currentSrc, video: false, time: 0, img: el }
+    if (el instanceof HTMLImageElement && el.currentSrc && el.naturalWidth > 1) {
+      const url = biggest(el.currentSrc)
+      return { url, video: false, time: 0, img: url === el.currentSrc ? el : undefined }
+    }
   }
   return null
 }
 
 function update() {
-  const hit = shift ? under() : null
+  const hit = shift && !clicked ? under() : null
   if (hit?.img !== watched) {
     onChange.disconnect()
     watched = hit?.img ?? null
@@ -77,7 +93,13 @@ function onMove(e: PointerEvent) {
   x = e.clientX
   y = e.clientY
   shift = e.shiftKey
+  if (!shift) clicked = false
   if (shift || src.value) update()
+}
+function onDown(e: PointerEvent) {
+  if (!e.shiftKey) return
+  clicked = true
+  update()
 }
 function onKey(e: KeyboardEvent) {
   if (e.type === 'keydown' && src.value && video.value && (e.key === 'm' || e.key === 'M')) {
@@ -89,6 +111,7 @@ function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null
   if (e.type === 'keydown' && t?.closest('input, textarea, [contenteditable="true"]')) return // typing capitals
   shift = e.type === 'keydown'
+  if (!shift) clicked = false
   update()
 }
 function off() {
@@ -102,6 +125,7 @@ function start(e: Event) {
 
 onMounted(() => {
   window.addEventListener('pointermove', onMove, { passive: true })
+  window.addEventListener('pointerdown', onDown, { capture: true, passive: true })
   window.addEventListener('keydown', onKey)
   window.addEventListener('keyup', onKey)
   window.addEventListener('blur', off)
@@ -109,6 +133,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   onChange.disconnect()
   window.removeEventListener('pointermove', onMove)
+  window.removeEventListener('pointerdown', onDown, { capture: true })
   window.removeEventListener('keydown', onKey)
   window.removeEventListener('keyup', onKey)
   window.removeEventListener('blur', off)
