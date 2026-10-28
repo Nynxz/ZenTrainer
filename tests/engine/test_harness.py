@@ -1278,6 +1278,11 @@ def test_windows_caps_the_allocator_at_the_card(monkeypatch):
     monkeypatch.setattr(tr.os, "name", "nt")
     assert t._card() == (24 * gb, 2 * gb)  # 24 - 6 free - 16 ours: 2 GB is the desktop's and others'
     assert capped == [(22 / 24, t.device)]
+    assert t._capped
     monkeypatch.setattr(tr.os, "name", "posix")
     assert t._card() == (24 * gb, 2 * gb)
     assert capped == [(22 / 24, t.device)]  # Linux runs out by itself: no cap
+    monkeypatch.setattr(tr.os, "name", "nt")
+    t.device = torch.device("cpu")
+    assert t._card() == (24 * gb, 2 * gb)
+    assert len(capped) == 1  # ComfyUI --cpu: nothing of ours on the card to cap

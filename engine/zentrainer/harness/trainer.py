@@ -314,8 +314,8 @@ class Trainer:
                         overlap(False)
                         guard_backward(False)
                         watch_pins(False)
-                        if os.name == "nt" and torch.cuda.is_available():
-                            torch.cuda.set_per_process_memory_fraction(1.0, self.device)  # the step cap (see _card)
+                        if getattr(self, "_capped", False):
+                            torch.cuda.set_per_process_memory_fraction(1.0, self.device)  # the cap _card set
                         if getattr(self, "_compiled", 0):
                             torch.compiler.set_stance("default")  # the final samples left it eager
             except BaseException as e:
@@ -432,6 +432,8 @@ class Trainer:
         elif n8 := int8_backward.weight_only(patcher.model):
             logging.info("[ZenTrainer] int8 weights dequantized to bf16 for every matmul on %d layers", n8)
         self.device = patcher.load_device
+        if torch.cuda.is_available():
+            self._card()  # Windows: the allocator's cap, before anything loads or encodes
         self.train_dtype = _DTYPES[s.memory.training_dtype]
 
         encoder_id = repr((s.model.kind, s.model.ckpt_name, s.model.clip_name, s.model.clip_type, s.model.vae_name))
@@ -814,7 +816,6 @@ class Trainer:
         self._times = []
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
-            self._card()  # Windows: the allocator's cap, before the first step
         while self.step < total:
             self._handle_commands()
             t0 = time.perf_counter()
@@ -955,12 +956,14 @@ class Trainer:
         rest is this process's. On Windows the NVIDIA driver doesn't run out past the card, it spills
         into system RAM ("shared GPU memory"), many times slower, and the out-of-VRAM back-off would
         never fire: so there PyTorch's allocator is capped at the rest, and a step that would spill
-        runs out instead, before the driver is asked (lifted when the run ends). Linux drivers have
-        no such fallback: a step there runs out by itself."""
+        runs out instead, before the driver is asked. The run's end lifts it to the card itself
+        (PyTorch keeps a cap once set). Linux drivers have no such fallback: a step there runs out
+        by itself."""
         free, total = vram.mem_get_info()
         others = max(0, total - free - torch.cuda.memory_reserved())
-        if os.name == "nt":
+        if os.name == "nt" and self.device.type == "cuda":
             torch.cuda.set_per_process_memory_fraction((total - others) / total, self.device)
+            self._capped = True
         return total, others
 
     def _tighten(self) -> None:

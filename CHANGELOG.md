@@ -484,9 +484,10 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   own memory the NVIDIA driver doesn't run out, it carries on in "shared GPU memory", many times
   slower, so the fit that keeps blocks un-checkpointed (or weights on the card) never saw the
   out-of-VRAM step it backs off from: a later, bigger bucket could take it over the edge and keep
-  it there. Training now caps what it may take at the card's own memory (bar what other programs
-  hold): a step that would spill runs out instead, before the driver is asked, and backs off like
-  on Linux, with fewer blocks kept or fewer weights on the card, and the step retried.
+  it there. A run now caps what it may take at the card's own memory (bar what other programs
+  hold), from loading on: a step that would spill runs out instead, before the driver is asked,
+  and backs off like on Linux, with fewer blocks kept or fewer weights on the card, and the step
+  retried.
 
 ## 0.3.0 (2026-10-25)
 
