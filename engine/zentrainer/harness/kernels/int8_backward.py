@@ -41,6 +41,13 @@ _warned = False
 _flagged: list = []  # (layer, its _full_precision_mm before weight_only)
 
 
+def _count(path: str) -> None:
+    """Which path a layer took, for the profile command. Not while dynamo traces: a compiled,
+    checkpointed block can't mutate state outside it (the whole block fell back to eager)."""
+    if not torch.compiler.is_compiling():
+        stats[path] += 1
+
+
 def enable(mode: str | bool) -> None:
     """Pick the backward ("" = ComfyUI's), patching ComfyUI's QuantLinearFunc once."""
     global _mode
@@ -82,7 +89,7 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
     from . import w8a8_cuda
 
     if w8a8_cuda.supported(grad_2d, q, group):  # raw CUDA, the rotation inside (kernels/w8a8_cuda.py)
-        stats["w8a8: cuda"] += 1
+        _count("w8a8: cuda")
         seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
         return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256)
     try:
@@ -139,7 +146,7 @@ def _patch() -> None:
                 why = ("not quantized" if params is None else "not convrot" if not getattr(params, "convrot", False)
                        else "no int8 data" if getattr(weight, "_qdata", None) is None or weight._qdata.dtype != torch.int8
                        else "cpu" if not grad_output.is_cuda else "")
-                stats[why or _mode] += 1
+                _count(why or _mode)
                 if params is not None and getattr(params, "convrot", False) and getattr(weight, "_qdata", None) is not None \
                         and weight._qdata.dtype == torch.int8 and grad_output.is_cuda:
                     grad_2d = grad_output.flatten(0, -2)
@@ -200,11 +207,11 @@ class _Int8Linear(torch.autograd.Function):
                         gi = w8a8_input_grad(g, w._qdata, params.scale, group)
                     except Exception:
                         gi = None
-                stats["int8 layer: w8a8" if gi is not None else "int8 layer: dequantized"] += 1
+                _count("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized")
                 if gi is None:
                     gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
             else:
-                stats["int8 layer: plain weight"] += 1
+                _count("int8 layer: plain weight")
                 gi = torch.mm(g, w.to(g.dtype))
         ctx.m = None
         return gi.to(grad_out.dtype).reshape(ctx.in_shape), None, None
