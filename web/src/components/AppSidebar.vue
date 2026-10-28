@@ -704,11 +704,6 @@ nav {
   flex: 1;
   min-width: 0;
 }
-.nav-row > .sq {
-  width: 30px;
-  height: 30px;
-  font-size: 16px;
-}
 .live-next.paused .ic {
   color: var(--zen-warn);
 }
