@@ -1099,3 +1099,32 @@ def test_a_block_with_sharp_attention_keeps_nothing(monkeypatch):
     with memory.gradient_checkpointing(net, True, 1, False, save="attention"):
         assert plain == [net.blocks[0]]  # checkpointed as before
         assert kept == [net.blocks[1], net.blocks[2]]  # MOSS's sharpest is ~55: still kept
+
+
+def test_without_selective_checkpointing_attention_falls_back_to_plain(monkeypatch):
+    """torch before 2.4 has no create_selective_checkpoint_contexts: the default (attention) has to
+    checkpoint whole blocks, not fail at the first step."""
+    import sys
+
+    import torch.nn as nn
+
+    from zentrainer.harness import memory
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+    plain = []
+    mod.patch = lambda m, offloading=False: plain.append(m)
+    mod.unpatch = lambda m: None
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+    monkeypatch.delattr(torch.utils.checkpoint, "create_selective_checkpoint_contexts")
+    kept = []
+    monkeypatch.setattr(memory, "_patch_saving", kept.append)
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([nn.Linear(2, 2), nn.Linear(2, 2)])
+
+    net = Net()
+    with memory.gradient_checkpointing(net, True, 1, False, save="attention"):
+        assert plain == list(net.blocks) and not kept

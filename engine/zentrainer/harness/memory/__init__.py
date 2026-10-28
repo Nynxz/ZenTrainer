@@ -120,6 +120,10 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
         return
     from comfy_extras.nodes_train import patch, unpatch
 
+    if save == "attention" and not hasattr(__import__("torch").utils.checkpoint, "create_selective_checkpoint_contexts"):
+        # selective checkpointing is torch 2.4's: an older ComfyUI's torch checkpoints whole blocks
+        logging.info("[ZenTrainer] checkpoints keep nothing, not attention: this torch has no selective checkpointing (2.4+)")
+        save = "none"
     if save == "attention" and not offloading:  # (offloading checkpoints per layer: untested there)
         comfy_patch = patch
 
