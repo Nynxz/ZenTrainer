@@ -2,7 +2,7 @@
 // Every dataset folder in ComfyUI's input directory: as cards (a fixed-shape mosaic, so every
 // card is the same size) or as a table that sorts. The view is remembered per browser. Starred
 // ones (the same stars as New run's dataset picker) come first, whichever the sort.
-import { ZenButton, ZenEmpty, ZenInput } from '@nynxz/zenkit-ui'
+import { ZenButton, ZenCombo, ZenEmpty, ZenInput } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { engine, thumbUrl, type DatasetInfo } from '@/api/engine'
@@ -75,9 +75,31 @@ const kinds = (d: DatasetInfo) =>
     { icon: 'mdi-swap-horizontal', n: d.pairs ?? 0, tip: 'edit pairs' },
   ].filter((k) => k.n)
 
+// the sort, for cards and table alike (the table's headers set it too), remembered like the view
 type Key = 'name' | 'items' | 'captioned' | 'modified' | 'health'
-const sortKey = ref<Key>('modified')
-const sortDir = ref(-1)
+const SORTS: { value: Key; label: string }[] = [
+  { value: 'modified', label: 'Changed' },
+  { value: 'name', label: 'Name' },
+  { value: 'items', label: 'Items' },
+  { value: 'captioned', label: 'Captioned' },
+  { value: 'health', label: 'Health' },
+]
+const SORT = 'zentrainer.datasets.sort'
+const [savedKey, savedDir] = read(SORT, 'modified:-1').split(':')
+const sortKey = ref<Key>(SORTS.some((o) => o.value === savedKey) ? (savedKey as Key) : 'modified')
+const sortDir = ref(savedDir === '1' ? 1 : -1)
+watch([sortKey, sortDir], ([k, d]) => {
+  try {
+    localStorage.setItem(SORT, `${k}:${d}`)
+  } catch {
+    // storage blocked
+  }
+})
+function pickSort(k: Key) {
+  if (k === sortKey.value) return
+  sortKey.value = k
+  sortDir.value = k === 'name' ? 1 : -1
+}
 function sortBy(k: Key) {
   if (sortKey.value === k) sortDir.value = -sortDir.value
   else {
@@ -137,6 +159,12 @@ const ago = (t?: number) => {
             <button :class="{ on: view === 'table' }" title="Table" @click="view = 'table'"><i class="mdi mdi-view-list-outline" /></button>
           </div>
           <div class="search"><ZenInput v-model="query" placeholder="Search datasets" size="sm" /></div>
+          <div class="sort">
+            <ZenCombo :model-value="sortKey" :items="SORTS" :sorted="false" :searchable="false" size="sm" title="Sort by" @update:model-value="pickSort($event as Key)" />
+            <button class="dir" :title="sortDir > 0 ? 'Ascending: click for descending' : 'Descending: click for ascending'" @click="sortDir = -sortDir">
+              <i :class="sortDir > 0 ? 'mdi mdi-sort-ascending' : 'mdi mdi-sort-descending'" />
+            </button>
+          </div>
         </div>
       </StickyBar>
 
@@ -213,6 +241,33 @@ const ago = (t?: number) => {
 </template>
 
 <style scoped>
+.sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  width: 170px;
+}
+.sort > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.dir {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--zen-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.dir:hover {
+  color: var(--zen-text);
+}
 .create {
   display: flex;
   gap: 8px;
