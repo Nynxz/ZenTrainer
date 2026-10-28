@@ -23,8 +23,8 @@ const def = <T>(d: SettingDef<T>) => d
 
 export const SETTINGS = {
   mode: def<'simple' | 'advanced'>({
-    category: 'Appearance',
-    label: 'Mode',
+    category: 'General',
+    label: 'Interface',
     description: 'Simple: train from ready-made recipes and see just the progress. Advanced: every setting, the loss, the captions.',
     default: 'advanced',
     options: [
@@ -44,7 +44,7 @@ export const SETTINGS = {
     ],
   }),
   experimental: def<boolean>({
-    category: 'Appearance',
+    category: 'General',
     label: 'Experimental pages',
     description: "Apps, Tools and Gallery: they work, but they're still being finished. A run's Try buttons open Apps either way.",
     default: false,
@@ -70,6 +70,8 @@ export const SETTINGS = {
   loraFolder: def<string>({ category: 'Training', label: 'LoRA folder', default: '', options: [] }),
   // starred model families: first in every model list (see favorites.ts)
   favoriteModels: def<string[]>({ category: 'Models', label: 'Starred models', default: [], options: [] }),
+  // starred datasets: first in New run's dataset picker (see favorites.ts)
+  favoriteDatasets: def<string[]>({ category: 'Datasets', label: 'Starred datasets', default: [], options: [] }),
   // your own auto-caption instructions, beside the built-in styles (see CaptionPanel)
   captionStyles: def<{ id: string; label: string; prompt: string; format?: 'text' | 'fibo_json' }[]>({ category: 'Datasets', label: 'Caption styles', default: [], options: [] }),
 }

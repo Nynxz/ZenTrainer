@@ -6,7 +6,7 @@ import { vAutosize } from '@/lib/autosize'
 import { kb, pct, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
 
-const { cap, k, drafts, saving, save, sortKey, sortDir, selected, isMuted, faceOf, faceIssue, faceNote, shown, visible, more, sortBy, toggleSelect, onItemClick, onItemMenu, allShownSelected, toggleAll, full, thumb } = useDatasetContext()
+const { cap, k, drafts, saving, save, sortKey, sortDir, selected, isMuted, faceOf, faceIssue, faceNote, shown, visible, more, sortBy, toggleSelect, onItemClick, onItemMenu, allShownSelected, toggleAll, full, thumb, fit } = useDatasetContext()
 const SORTS = [
   { key: 'name', label: 'Name' },
   { key: 'res', label: 'Size' },
@@ -36,7 +36,7 @@ const SORTS = [
       @contextmenu="onItemMenu(it, i, $event)"
     >
       <label class="c-check" @click.prevent="toggleSelect(it, i, $event)"><i :class="selected.has(it.path) ? 'mdi mdi-checkbox-marked' : 'mdi mdi-checkbox-blank-outline'" /></label>
-      <button class="c-thumb" :data-peek="full(it)" @click="onItemClick(it, i, $event)"><img :src="thumb(it, 160)" loading="lazy" alt="" /></button>
+      <button class="c-thumb" :data-peek="full(it)" @click="onItemClick(it, i, $event)"><img :src="thumb(it, 160)" loading="lazy" alt="" :style="{ objectFit: fit }" /></button>
       <div class="body">
         <div class="head">
           <span class="mono ellipsis name" :title="it.path">{{ it.path }}</span>
@@ -151,7 +151,7 @@ const SORTS = [
 .c-thumb img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: cover; /* Crop to the card off: contain, set inline */
   display: block;
 }
 .body {

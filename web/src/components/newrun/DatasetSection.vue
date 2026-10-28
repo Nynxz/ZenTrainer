@@ -2,8 +2,9 @@
 // 2 Dataset: the folder, captions and trigger, resolution (and starting lower), dropout, edit
 // pairs, masks, and how videos turn into training clips.
 import { ZenCombo, ZenField, ZenInput, ZenNumber, ZenSwitch } from '@nynxz/zenkit-ui'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { thumbUrl, type DatasetInfo, type TrainSpec } from '@/api/engine'
+import DatasetPicker from './DatasetPicker.vue'
 import { items, useRunFormContext } from './form'
 
 const { spec, choices, datasets, dataset, pairCount, stage0, resuming, controlCounts, chosenInputs, toggleInput, channelModel } = useRunFormContext()
@@ -31,6 +32,16 @@ function toggleSet(st: string) {
   spec.dataset.caption_set = next[0]!
   spec.dataset.caption_mix = next.length > 1 ? next : []
 }
+const pickerOpen = ref(false)
+// masked training against the dataset's masks: says so when the two don't agree
+const maskHint = computed(() => {
+  const n = dataset.value?.masked ?? 0
+  if (n && !spec.dataset.masked_loss) return `${n} of ${dataset.value!.images} pictures have masks: turn it on to train only where they're white`
+  if (!n && spec.dataset.masked_loss) return 'This dataset has no masks: nothing to mask'
+  return n ? `${n} of ${dataset.value!.images} pictures masked` : ''
+})
+// the dataset's name as a trigger word, one click away: lower case, spaces and dashes as _
+const nameTrigger = computed(() => (spec.dataset.folder || '').toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, ''))
 const firstThumb = (d: DatasetInfo) => {
   const t = d.thumbs[0]
   return t ? thumbUrl(d.folder, [...t.subfolder.split('/').slice(1), t.filename].join('/'), 256) : ''
@@ -46,23 +57,17 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
 <section class="card sec" :class="{ locked: resuming }">
   <h2><span class="num">2</span> Dataset</h2>
   <ZenField label="Folder" stack>
-    <ZenCombo
-      v-model="spec.dataset.folder"
-      :items="datasets.map((d) => ({ value: d.folder, label: d.folder, keywords: d.folder, d }))"
-      placeholder="Pick a dataset…"
-      grid
-      :grid-min="150"
-      :menu-width="560"
-    >
-      <template #option="{ item }">
-        <div class="ds-opt">
-          <img v-if="firstThumb(item.d as DatasetInfo)" :src="firstThumb(item.d as DatasetInfo)" alt="" />
-          <b>{{ item.label }}</b>
-          <span class="muted">{{ (item.d as DatasetInfo).images }} images</span>
-        </div>
-      </template>
-    </ZenCombo>
+    <button type="button" class="ds-field" :class="{ empty: !dataset }" @click="pickerOpen = true">
+      <span class="ds-thumb" :class="{ blank: !dataset }"><img v-if="dataset && firstThumb(dataset)" :src="firstThumb(dataset)" alt="" /><i v-else :class="dataset ? 'mdi mdi-image-multiple-outline' : 'mdi mdi-plus'" /></span>
+      <span class="ds-text">
+        <b>{{ dataset?.folder ?? (spec.dataset.folder || 'Choose a dataset') }}</b>
+        <span v-if="dataset" class="muted small">{{ dataset.images }} pictures · {{ dataset.captioned }} captioned</span>
+        <span v-else class="muted small">A folder of pictures in ComfyUI's input</span>
+      </span>
+      <span class="ds-change">{{ dataset ? 'Change' : 'Pick' }} <i class="mdi mdi-chevron-right" /></span>
+    </button>
   </ZenField>
+  <DatasetPicker v-model:open="pickerOpen" :datasets="datasets" :current="spec.dataset.folder" @pick="spec.dataset.folder = $event" />
   <div class="grid-2">
     <ZenField label="Captions" stack :hint="spec.dataset.caption_mix.length > 1 ? 'Each step picks one of these sets at random' : 'Which caption set to train on; click more to mix them'">
       <div class="chips">
@@ -77,10 +82,22 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
         </button>
       </div>
     </ZenField>
-    <ZenField label="Trigger word" stack tip="Replaces [trigger] in captions and prompts">
-      <ZenInput v-model="spec.dataset.trigger" placeholder="e.g. ohwx" />
-    </ZenField>
-    <ZenField label="Add it to every caption" stack tip="Prepend it where a caption doesn't mention it"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
+    <!-- the dataset's name as a link on the label's line: the input keeps its width either way -->
+    <div class="trig-field">
+      <ZenField label="Trigger word" stack tip="Replaces [trigger] in captions and prompts">
+        <ZenInput v-model="spec.dataset.trigger" placeholder="e.g. ohwx" />
+      </ZenField>
+      <button
+        v-if="nameTrigger && spec.dataset.trigger !== nameTrigger"
+        type="button"
+        class="use-name"
+        :title="`Use the dataset's name, ${nameTrigger}, as the trigger word`"
+        @click="spec.dataset.trigger = nameTrigger"
+      >
+        <i class="mdi mdi-tag-outline" /> <span class="ellipsis">Use “{{ nameTrigger }}”</span>
+      </button>
+    </div>
+    <ZenField label="Add if missing" stack tip="Puts the trigger word at the start of any caption that doesn't have it, so every picture teaches it. Only while training: your caption files stay as they are"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="Resolution" stack>
       <div class="chips">
         <button v-for="r in [512, 768, 1024, 1280]" :key="r" class="chip-btn" :class="{ on: spec.dataset.resolution === r }" @click="spec.dataset.resolution = r">
@@ -165,7 +182,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
     <ZenField label="Cache on disk" stack tip="Each picture's latents (and its own conditioning) in a file of its own, read as training uses them, in bf16: for picture datasets bigger than RAM, such as thousands of edit pairs with the encoder seeing the input">
       <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.disk_cache" @update:model-value="spec.dataset.disk_cache = $event" /><span class="sw-state">{{ spec.dataset.disk_cache ? 'On' : 'Off' }}</span></div>
     </ZenField>
-    <ZenField label="Masked training" stack tip="Masked images learn only where it's white"><div class="sw-row"><ZenSwitch v-model="spec.dataset.masked_loss" /><span class="sw-state">{{ spec.dataset.masked_loss ? 'On' : 'Off' }}</span></div></ZenField>
+    <ZenField label="Masked training" stack tip="Masked images learn only where it's white" :hint="maskHint"><div class="sw-row"><ZenSwitch v-model="spec.dataset.masked_loss" /><span class="sw-state">{{ spec.dataset.masked_loss ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField v-if="spec.dataset.masked_loss" label="Unmasked weight" stack tip="0 ignores the rest; 0.1 learns it lightly">
       <ZenNumber v-model="spec.dataset.unmasked_weight" :min="0" :max="1" :step="0.05" :precision="2" />
     </ZenField>
@@ -244,17 +261,93 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   font-weight: 600;
   font-size: 13px;
 }
-.ds-opt {
+/* the trigger word, with the dataset's name a click away on its label's line */
+.trig-field {
+  position: relative;
+  min-width: 0;
+}
+.use-name {
+  position: absolute;
+  top: 0;
+  right: 0;
+  max-width: 60%;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--zen-accent);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.use-name:hover {
+  text-decoration: underline;
+}
+.use-name .ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* the dataset field: what's picked, with a picture; it opens the picker */
+.ds-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px 6px 6px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md);
+  background: var(--zen-surface);
+  color: var(--zen-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ds-field:hover {
+  border-color: color-mix(in srgb, var(--zen-accent) 50%, var(--zen-border));
+}
+.ds-thumb {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--zen-surface-2);
+  color: var(--zen-muted);
+}
+.ds-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ds-text {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
+  min-width: 0;
+  flex: 1;
 }
-.ds-opt img {
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
-  border-radius: var(--r-md);
-  background: var(--zen-surface-2);
+.ds-text b {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-field.empty {
+  border-style: dashed;
+}
+.ds-thumb.blank {
+  color: var(--zen-accent);
+  font-size: 18px;
+}
+.ds-change {
+  font-size: 12px;
+  color: var(--zen-accent);
+  display: inline-flex;
+  align-items: center;
 }
 </style>

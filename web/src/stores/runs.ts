@@ -35,12 +35,13 @@ export async function refreshRuns(): Promise<void> {
   try {
     runs.value = await engine.runs()
     engineError.value = null
-    // seed progress for active runs so nothing reads 0/0 until the next live step
+    // seed progress for active runs so nothing reads 0/0 until the next live step. Each on its own:
+    // a run that's only just starting may not have its details yet, and that isn't the engine down
     await Promise.all(
       runs.value
         .filter((r) => ACTIVE.includes(r.status) && !latest[r.run_id])
         .map(async (r) => {
-          const metrics = (await engine.run(r.run_id)).metrics
+          const metrics = (await engine.run(r.run_id).catch(() => null))?.metrics ?? []
           const last = metrics.at(-1)
           if (last && !latest[r.run_id]) latest[r.run_id] = last
           if (!lossTrail[r.run_id]) for (const m of metrics.slice(-TRAIL)) pushLoss(r.run_id, m.loss)

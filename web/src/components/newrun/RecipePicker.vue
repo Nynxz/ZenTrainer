@@ -5,16 +5,19 @@
 // stay; Undo takes it back. The dialog has a fixed height: the list and the detail each scroll on
 // their own (the app's overlay scrollbars). A search narrows the list; on a phone it fills the
 // screen and goes list, then detail.
-import { ZenButton, ZenInput, ZenModal } from '@nynxz/zenkit-ui'
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, toRaw, watch } from 'vue'
+import { ZenButton, ZenInput } from '@nynxz/zenkit-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch } from 'vue'
 import type { Preset, TrainSpec } from '@/api/engine'
 import ScrollArea from '@/components/ScrollArea.vue'
 import { makerLogo } from '@/lib/makers'
 import { BIG_DATASET, RECIPES, applyTo, changes, plan, type Plan, type Recipe } from '@/lib/recipes'
+import { SECTIONS, fmt, full, label } from '@/lib/specText'
 import { fmtBytes } from '@/stores/downloads'
 import { merge, useRunFormContext } from './form'
 
 const open = defineModel<boolean>('open', { default: false })
+/** a recipe to open on (the model browser's recipe cards); else the first */
+const props = defineProps<{ start?: string | null }>()
 const { spec, familyId, dataset, runPresets, applyRecipe, deleteRecipe } = useRunFormContext()
 
 type Mine = Preset<Partial<TrainSpec>>
@@ -105,17 +108,27 @@ phoneQuery.addEventListener('change', onPhone)
 onBeforeUnmount(() => phoneQuery.removeEventListener('change', onPhone))
 const step = ref<'list' | 'detail'>('list')
 
-watch(open, async (o) => {
+// on opening, and as the view appears in the open dialog (a tab switch): after setup, so it
+// reads what's declared further down
+async function reset(o: boolean) {
   if (!o) return
   void planAll()
   query.value = ''
   step.value = 'list'
   confirmDelete.value = false
-  picked.value = flat.value[0] ?? null // never an empty detail
+  picked.value = flat.value.find((e) => e.id === props.start) ?? flat.value[0] ?? null // never an empty detail
+  if (props.start && picked.value?.id === props.start) step.value = 'detail'
   if (!phone.value) {
     await nextTick()
     document.querySelector<HTMLInputElement>('.recipe-search input')?.focus()
   }
+}
+watch(open, reset)
+onMounted(() => open.value && reset(true))
+// Details on a model's recipe, with the dialog already open: that recipe
+watch(() => props.start, (id) => {
+  const e = id ? flat.value.find((x) => x.id === id) : null
+  if (e) choose(e)
 })
 // a search (or a delete) that hides the picked entry picks the first that's left
 watch(flat, (list) => {
@@ -198,10 +211,6 @@ const files = computed<{ key: string; name: string | null; download: { size: num
     .map(([key, name]) => ({ key: key!, name: name ?? null, download: null }))
 })
 
-const SECTIONS: Record<string, string> = {
-  model: 'Model', dataset: 'Dataset', network: 'LoRA', optim: 'Training', objective: 'Noise and loss',
-  samples: 'Samples', validation: 'Validation', memory: 'Memory', output: 'Saving', slider: 'Slider',
-}
 const grouped = computed(() => {
   const out: { section: string; rows: { label: string; from: string; to: string; full: string }[] }[] = []
   if (!next.value) return out
@@ -210,21 +219,12 @@ const grouped = computed(() => {
     const section = SECTIONS[head!] ?? head!
     let g = out.find((x) => x.section === section)
     if (!g) out.push((g = { section, rows: [] }))
-    g.rows.push({ label: (rest.length ? rest.join(' · ') : head!).replace(/_/g, ' '), from: fmt(c.from), to: fmt(c.to), full: `${c.key}: ${full(c.from)} → ${full(c.to)}` })
+    g.rows.push({ label: label(rest, head!), from: fmt(c.from), to: fmt(c.to), full: `${c.key}: ${full(c.from)} → ${full(c.to)}` })
   }
   return out
 })
 const changeCount = computed(() => grouped.value.reduce((n, g) => n + g.rows.length, 0))
 
-function fmt(v: unknown): string {
-  if (v === null || v === undefined || v === '') return '—'
-  if (Array.isArray(v)) return v.length ? v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') : '—'
-  if (typeof v === 'boolean') return v ? 'on' : 'off'
-  if (typeof v === 'object') return JSON.stringify(v)
-  const s = String(v)
-  return s.length > 48 ? `${s.slice(0, 46)}…` : s
-}
-const full = (v: unknown) => (v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v))
 function short(name: string | null | undefined) {
   return name?.split('/').pop() ?? '—'
 }
@@ -250,20 +250,16 @@ function apply() {
 </script>
 
 <template>
-  <ZenModal v-model:open="open" width="1080px" height="min(720px, 88vh)">
-    <template #header>
+  <!-- a view of ModelDialog: its controls and its buttons go in the dialog's header and footer -->
+  <Teleport defer to="#zt-md-head">
       <div class="head" :class="{ phone }">
         <button v-if="phone && step === 'detail'" class="back" @click="step = 'list'"><i class="mdi mdi-chevron-left" /> Recipes</button>
-        <div v-else class="head-text">
-          <b class="zt-title">Recipes</b>
-          <span class="muted">Ours, from runs we trained and checked, and yours. Sized to your dataset</span>
-        </div>
         <div v-if="!(phone && step === 'detail')" class="recipe-search">
           <i class="mdi mdi-magnify" />
           <ZenInput v-model="query" size="sm" placeholder="Search recipes" />
         </div>
       </div>
-    </template>
+  </Teleport>
 
     <div class="picker" :class="{ phone, detailed: step === 'detail' }">
       <ScrollArea class="list">
@@ -375,17 +371,15 @@ function apply() {
       </ScrollArea>
     </div>
 
-    <template #footer>
+    <Teleport defer to="#zt-md-foot">
       <div class="foot" :class="{ phone }">
         <span v-if="!phone" class="muted small"><i class="mdi mdi-lock-outline" /> Your name, dataset, trigger word and captions stay. Undo puts everything else back.</span>
         <span class="grow" />
-        <ZenButton @click="open = false">Cancel</ZenButton>
         <ZenButton v-if="!phone || step === 'detail'" variant="primary" icon="mdi mdi-check" :disabled="!next || planning" @click="apply">
           {{ picked ? (phone ? 'Apply' : `Apply ${picked.title}`) : 'Apply' }}
         </ZenButton>
       </div>
-    </template>
-  </ZenModal>
+    </Teleport>
 </template>
 
 <style scoped>
@@ -400,18 +394,6 @@ function apply() {
   gap: 16px;
   flex: 1;
   min-width: 0;
-}
-.head-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-.head-text b {
-  font-size: 15px;
-}
-.head-text .muted {
-  font-size: 12px;
 }
 .recipe-search {
   position: relative;
@@ -471,7 +453,7 @@ function apply() {
   background: color-mix(in srgb, var(--zen-surface-2) 55%, transparent);
 }
 .list-in {
-  padding: 10px 8px 16px;
+  padding: 10px 14px 16px 8px; /* the right: a gutter for the overlay scrollbar (12px), clear of the rows */
 }
 .group + .group {
   margin-top: 10px;
@@ -490,7 +472,7 @@ function apply() {
 .g-head img {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--r-md);
   background: #fff;
 }
 .here {
@@ -508,7 +490,7 @@ function apply() {
   width: 100%;
   padding: 6px 8px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--zen-text);
   font: inherit;
@@ -529,14 +511,14 @@ function apply() {
   top: 8px;
   bottom: 8px;
   width: 3px;
-  border-radius: 0 3px 3px 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
   background: var(--a);
 }
 .thumb {
   flex: none;
   width: 52px;
   height: 40px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -633,13 +615,12 @@ function apply() {
 .detail-in {
   padding: 0 24px 24px;
 }
+/* a compact band: the recipe's name bottom left, its icon large and faint on the right */
 .hero {
   position: relative;
   margin: 0 -24px;
-  height: 200px;
+  height: 128px;
   overflow: hidden;
-  display: grid;
-  place-items: center;
 }
 .hero img {
   position: absolute;
@@ -655,9 +636,13 @@ function apply() {
   background: linear-gradient(to top, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0) 60%);
 }
 .hero-icon {
-  font-size: 64px;
-  color: rgba(255, 255, 255, 0.85);
-  margin-bottom: 30px;
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 92px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.28);
 }
 .hero-text {
   position: absolute;
@@ -689,7 +674,7 @@ function apply() {
   flex-direction: column;
   gap: 2px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: 1px solid var(--zen-border);
   background: var(--zen-surface-2);
 }
@@ -763,7 +748,7 @@ h4 {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto minmax(0, 1fr);
   column-gap: 10px;
   border: 1px solid var(--zen-border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   overflow: hidden;
   font-size: 12px;
 }
