@@ -488,6 +488,20 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   hold), from loading on: a step that would spill runs out instead, before the driver is asked,
   and backs off like on Linux, with fewer blocks kept or fewer weights on the card, and the step
   retried.
+- **Class preservation (objective.preserve), AI Toolkit's differential output preservation:** a
+  character LoRA stops turning every woman (or man) into the character. Give class words
+  ("woman, man, person"; the run form fills them in from the dataset's captions when you switch it
+  on) and every 2nd step also trains its caption with one of them in the trigger's place to give
+  what the base model gives. On MOSS (37 photos of one woman), "a woman ..." without the trigger
+  scored 0.07 likeness to her, against 0.43 without preservation, and the trigger kept its 0.62;
+  the run took 1.7x as long (every step: 2.3x, and no better). The class captions are encoded with
+  the rest when the dataset is built. `preserve_weight` weighs its loss, `preserve_every` sets how
+  often, and `preserve_plain` puts a share of the passes on a plain prompt ("a photo of a woman")
+  at heavy noise instead (it didn't help on that dataset). The run page charts the loss
+  (`preserve_loss`) on its own scale.
+- **The loss chart's speed line is smooth whatever the steps:** it averages a triangle-weighted
+  window the same on both sides, which slides in at the ends instead of shrinking, so steps that
+  differ in turn (preservation every Nth step) no longer make it saw.
 
 ## 0.3.0 (2026-10-25)
 

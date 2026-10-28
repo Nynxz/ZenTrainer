@@ -646,6 +646,30 @@
           "type": "boolean",
           "description": "Noise levels from an even, low-discrepancy sequence instead of random draws: a small batch covers the schedule in a few steps, for a steadier loss.",
           "default": false
+        },
+        "preserve": {
+          "type": "string",
+          "description": "Class words, e.g. \"woman, man, person\" (AI Toolkit's differential output preservation): a step also trains its caption with one of them in the trigger's place to give what the base model gives, so the adapter changes only what the trigger asks for and \"a man\" stays a man. Needs a trigger. A step with it takes about 2.3x as long (the base model's pass and the adapter's own); every 2nd step, 1.7x. \"\" = off.",
+          "default": ""
+        },
+        "preserve_weight": {
+          "type": "number",
+          "description": "objective.preserve: its loss's weight beside the training loss.",
+          "default": 1.0,
+          "exclusiveMinimum": 0
+        },
+        "preserve_every": {
+          "type": "integer",
+          "description": "objective.preserve: on every Nth step. 2 held the class as well as every step (MOSS: \"a woman\" 0.07 likeness to the trained one either way) at 1.7x the time against 2.3x.",
+          "default": 2,
+          "minimum": 1
+        },
+        "preserve_plain": {
+          "type": "number",
+          "description": "objective.preserve: the share of its passes on a plain class prompt (\"a photo of a woman\") at heavy noise instead of the step's own caption: holds the prompts people write, where generating from noise takes on the trained subject. 0 = the captions only.",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 1
         }
       },
       "additionalProperties": false

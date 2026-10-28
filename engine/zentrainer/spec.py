@@ -207,6 +207,19 @@ class ObjectiveSpec:
                                  "every noise level (EDM2's idea). \"\" = none.", choices=("", "flex", "balance"))
     spread: bool = setting(False, "Noise levels from an even, low-discrepancy sequence instead of random draws: a "
                                   "small batch covers the schedule in a few steps, for a steadier loss.")
+    preserve: str = setting("", 'Class words, e.g. "woman, man, person" (AI Toolkit\'s differential output '
+                                "preservation): a step also trains its caption with one of them in the trigger's place "
+                                "to give what the base model gives, so the adapter changes only what the trigger asks "
+                                "for and \"a man\" stays a man. Needs a trigger. A step with it takes about 2.3x as "
+                                'long (the base model\'s pass and the adapter\'s own); every 2nd step, 1.7x. "" = off.')
+    preserve_weight: float = setting(1.0, "objective.preserve: its loss's weight beside the training loss.", gt=0)
+    preserve_every: int = setting(2, "objective.preserve: on every Nth step. 2 held the class as well as every step "
+                                     "(MOSS: \"a woman\" 0.07 likeness to the trained one either way) at 1.7x the time "
+                                     "against 2.3x.", ge=1)
+    preserve_plain: float = setting(0.0, 'objective.preserve: the share of its passes on a plain class prompt ("a photo '
+                                         'of a woman") at heavy noise instead of the step\'s own caption: holds the '
+                                         "prompts people write, where generating from noise takes on the trained "
+                                         "subject. 0 = the captions only.", ge=0, le=1)
 
 
 @dataclass
@@ -453,6 +466,13 @@ class TrainSpec:
             # nothing would train: it failed only once the model had loaded ("no layers matched")
             raise SpecError('network.targets has no patterns: add the layers to train (regexes), or use "attn", '
                             '"mlp", "attn_mlp" or "all"')
+        if self.objective.preserve.strip():
+            if not self.dataset.trigger.strip():
+                raise SpecError("objective.preserve swaps the trigger for a class word: set dataset.trigger")
+            if self.slider.kind:
+                raise SpecError("objective.preserve is for adapters with a trigger, not sliders")
+            if self.dataset.edit_grounded:
+                raise SpecError("objective.preserve can't swap the caption of a grounded edit (its encoding includes the inputs)")
         if self.network.blocks and not re.fullmatch(r"\s*\d*\s*-?\s*\d*\s*", self.network.blocks):
             raise SpecError("network.blocks is a range like 20-49, 20- or 10")
         if self.network.skip_blocks and not re.fullmatch(r"\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*", self.network.skip_blocks):

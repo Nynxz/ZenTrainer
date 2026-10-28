@@ -452,7 +452,7 @@ class Trainer:
             raise ValueError("keyframes (image-to-video training) are for MiniMax H3's fl2va model")
         self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root, cache,
                                   encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
-                                  audio_vae=self.models.audio_vae, h3=self.h3)
+                                  audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
         if s.slider.kind == "pairs":
             self._keep_pairs(self.dataset)
         self.val_dataset = None  # validation.dataset, prepared as the training set is
@@ -541,6 +541,7 @@ class Trainer:
             res = int(st["resolution"])
             ds = data.build(self._data_spec(replace(s.dataset, resolution=res, stages=[])), _Lazy(lambda: self.models.clip),
                             self.models.vae, root, cache, encoder_id, audio_vae=self.models.audio_vae, h3=self.h3,
+                            preserve=self._classes(),
                             progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
             if s.slider.kind == "pairs":
                 self._keep_pairs(ds)
@@ -1199,6 +1200,10 @@ class Trainer:
             scaled = loss / acc
             (self.scaler.scale(scaled) if self.scaler else scaled).backward()
             total_loss += loss.detach().float()
+            del x0_pred, loss, scaled  # the preservation pass's graph needs the room
+            held = self._preserve_loss(idx, x0, shapes, x_t, sigma, noise, acc)
+            if held is not None:
+                self.last_preserve_loss = held
             lap("backward")
 
         if self.scaler:
@@ -1430,6 +1435,56 @@ class Trainer:
                 return prepared
             self._conds[key] = prepared
         return self._conds[key]
+
+    def _classes(self) -> tuple[str, ...]:
+        """objective.preserve's class words."""
+        return tuple(w.strip() for w in self.spec.objective.preserve.split(",") if w.strip())
+
+    def _preserve_cond(self, i: int, x0: torch.Tensor, shapes: list | None, plain: bool = False) -> dict | None:
+        """One of sample i's captions with a class word in the trigger's place (objective.preserve),
+        or with `plain` the class word's plain prompt, prepared; None for a sample that brings its
+        own encoding (a grounded or H3 one)."""
+        sample = self.dataset.samples[i]
+        if sample.cond is not None:
+            return None
+        ds = self.dataset
+        index = getattr(ds, "_class_index", None)
+        if index is None:  # caption text -> its index, per dataset (each stage has its own)
+            index = ds._class_index = {c: n for n, c in enumerate(ds.captions)}
+        word = random.choice(self._classes())
+        if plain:
+            return self._prepared(i, index[data.plain_class(word)], x0, shapes)
+        cap = random.choice(sample.variants) if len(sample.variants) > 1 else sample.caption
+        return self._prepared(i, index[data.as_class(ds.captions[cap], self.spec.dataset.trigger, word)], x0, shapes)
+
+    def _preserve_loss(self, idx: list, x0: torch.Tensor, shapes: list | None, x_t: torch.Tensor,
+                       sigma: torch.Tensor, noise: torch.Tensor, acc: int) -> torch.Tensor | None:
+        """objective.preserve: the same noisy pictures with a class word for the trigger, the base
+        model's prediction (adapter zeroed) the target for the adapter's own; backward run here.
+        Its own forward without TREAD, so the target is the whole model's. A preserve_plain share
+        of them is the plain class prompt instead, at heavy noise (the noisiest 30% of the schedule:
+        the picture mostly gone, as when generating)."""
+        s = self.spec.objective
+        if not s.preserve.strip() or self.step % s.preserve_every:
+            return None
+        plain = s.preserve_plain > 0 and random.random() < s.preserve_plain
+        conds = [self._preserve_cond(i, x0, shapes, plain) for i in idx]
+        if any(c is None for c in conds):
+            return None
+        if plain:
+            ms = self.denoiser.model_sampling
+            percents = torch.rand(len(idx), generator=self.generator) * 0.3  # percent 0 = full noise
+            sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
+            x_t = self.objective.noisy(ms, sigma, noise, x0)
+        x_t = x_t.detach()
+        with torch.no_grad(), self.network.disabled(), self._autocast():
+            target = self.denoiser(x_t, sigma, conds, None)
+        with self._autocast():
+            pred = self.denoiser(x_t.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds, None)
+        loss = torch.nn.functional.mse_loss(pred.float(), target.float())
+        scaled = loss * s.preserve_weight / acc
+        (self.scaler.scale(scaled) if self.scaler else scaled).backward()
+        return loss.detach().float()
 
     def _cond(self, i: int, x0: torch.Tensor, shapes: list | None = None) -> dict:
         sample = self.dataset.samples[i]

@@ -455,6 +455,17 @@ def load_image(path: Path, size: tuple[int, int], mode: str = "RGB") -> torch.Te
     return torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0)
 
 
+def as_class(text: str, trigger: str, word: str) -> str:
+    """A caption (trigger applied) with a class word where the trigger is (objective.preserve):
+    "jane, standing in a kitchen" -> "woman, standing in a kitchen"."""
+    return re.sub(rf"(?<!\w){re.escape(trigger)}(?!\w)", lambda _: word, text, flags=re.IGNORECASE) if trigger else text
+
+
+def plain_class(word: str) -> str:
+    """objective.preserve_plain's prompt for a class word."""
+    return f"a photo of a {word}"
+
+
 def apply_trigger(text: str, trigger: str, prepend: bool) -> str:
     """ai-toolkit semantics: "[trigger]" -> the word; if the caption still doesn't
     contain it, prepend "trigger, ". A structured (JSON) caption gets it at the start of its
@@ -509,12 +520,12 @@ def cache_key(items: list[Item], spec: DatasetSpec, encoder_id: str) -> str:
 
 
 def build(spec: DatasetSpec, clip, vae, root: Path, cache_dir: Path, encoder_id: str, progress=None,
-          audio_vae=None, h3: bool = False) -> Dataset:
+          audio_vae=None, h3: bool = False, preserve: tuple[str, ...] = ()) -> Dataset:
     # The harness runs outside ComfyUI's inference_mode, where the frozen VAE/text
     # encoder parameters still require grad: encode under no_grad, or every cached
     # latent drags an autograd graph (and a VAE backward) into training.
     with torch.no_grad():
-        return _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae, h3)
+        return _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae, h3, preserve)
 
 
 MUTES_FILE = ".zentrainer.json"  # in the dataset folder: {"muted": {set: [relative paths]}}; travels with it
@@ -529,7 +540,8 @@ def muted(root: Path) -> dict[str, set[str]]:
     return {s: set(v) for s, v in (data.get("muted") or {}).items()}
 
 
-def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=None, h3: bool = False) -> Dataset:
+def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=None, h3: bool = False,
+           preserve: tuple[str, ...] = ()) -> Dataset:
     items = scan(root, spec.caption_ext)
     if not items:
         raise FileNotFoundError(f"no images found in {root}")
@@ -564,6 +576,13 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             texts = [instruction(t, spec.edit_template) for t in texts]
         variants.append(texts)
         it.caption = " ||| ".join(texts)  # only feeds the cache key
+    # objective.preserve: each caption also as each class word in the trigger's place, encoded with
+    # the rest (a cache made without them is another key)
+    classes = [[as_class(t, spec.trigger, w) for t in texts for w in preserve] + [plain_class(w) for w in preserve]
+               for texts in variants]
+    if preserve:
+        for it, cl in zip(items, classes):
+            it.caption += " ||| preserve: " + " ||| ".join(cl)
 
     # H3 builds references/keyframes its own way, a four-channel VAE encodes alpha (caches from
     # before it was kept were opaque); other runs keep their caches
@@ -583,7 +602,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             return _expand_repeats(ds, items)
 
     sizes = bucket_sizes(spec.resolution, spec.bucket_step) if spec.buckets else [(spec.resolution, spec.resolution)]
-    captions = sorted({t for v in variants for t in v} | {""})
+    captions = sorted({t for v in variants + classes for t in v} | {""})
     cap_index = {c: i for i, c in enumerate(captions)}
 
     from PIL import Image
@@ -682,7 +701,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
     # (thousands of them would be most of RAM)
     needed = None
     if disk:
-        needed = {""} | {captions[v] for sm in samples if not sm.has_cond for v in sm.variants}
+        needed = {""} | {captions[v] for sm in samples if not sm.has_cond for v in sm.variants} | {t for c in classes for t in c}
     conditionings = []
     for n, c in enumerate(captions):
         if needed is not None and c not in needed:

@@ -1289,3 +1289,27 @@ def test_windows_caps_the_allocator_at_the_card(monkeypatch):
     t.device = torch.device("cuda", 0)
     t._release()
     assert capped[-1] == (1.0, t.device)  # a run's end, however it ends, lifts the cap to the card
+
+
+def test_preserve_needs_a_trigger():
+    TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "trigger": "jane"}, "objective": {"preserve": "woman, man"}})
+    with pytest.raises(SpecError, match="set dataset.trigger"):
+        TrainSpec.from_dict({**_spec(), "objective": {"preserve": "woman"}})
+
+
+def test_class_words_suggest_the_captions_class_its_counterpart_and_person(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from zentrainer.datasets import folders as datasets
+
+    monkeypatch.setattr(datasets, "root", lambda: tmp_path.resolve())
+    datasets.create("d")
+    for n, cap in enumerate(["jane, a woman in a red coat", "two women laughing", "a portrait, soft light",
+                             "a woman and a dog", "jane by a window"]):
+        Image.new("RGB", (8, 8)).save(tmp_path / "d" / f"{n}.png")
+        (tmp_path / "d" / f"{n}.txt").write_text(cap)
+    out = datasets.class_words("d")
+    assert out["captions"] == 5
+    assert out["words"][0] == {"word": "woman", "count": 3} and {"word": "dog", "count": 1} in out["words"]
+    assert {"word": "man", "count": 0} not in out["words"]  # "woman" isn't a man
+    assert out["suggest"] == ["woman", "man", "person"]
