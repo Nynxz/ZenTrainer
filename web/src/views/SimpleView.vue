@@ -1029,7 +1029,6 @@ void leaving
   display: block;
   height: 100%;
   background: var(--zen-accent);
-  transition: width var(--zen-dur);
 }
 .err {
   color: var(--zen-danger);

@@ -165,7 +165,6 @@ const openLatest = (index: number) => openGrid(index, latestFor(index)!.step)
 .tile-bar div {
   height: 100%;
   background: var(--zen-accent);
-  transition: width 0.25s ease;
 }
 .tile-badge {
   position: absolute;

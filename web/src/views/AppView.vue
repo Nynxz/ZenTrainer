@@ -504,7 +504,6 @@ const when = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2
 .cell-bar div {
   height: 100%;
   background: var(--zen-accent);
-  transition: width 0.3s ease;
 }
 .gallery {
   display: grid;

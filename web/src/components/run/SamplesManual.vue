@@ -527,7 +527,6 @@ const tileOf = (x: SampleRow | null | undefined) => {
   display: block;
   height: 100%;
   background: var(--zen-accent);
-  transition: width var(--zen-dur) ease;
 }
 .base-sw {
   display: inline-flex;

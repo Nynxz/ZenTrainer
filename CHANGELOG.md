@@ -327,6 +327,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Fixed: an open ZenTrainer page cost training about 13% of its speed.** Progress bars and the
+  sidebar's job ring eased every change, but a run updates them every step, faster than the easing
+  ends, so the page redrew 60 times a second for the whole run, on the GPU training uses: MOSS at
+  768 px trained at 5.2 it/s with a run page open against 6.0 with Motion set to Reduced. Progress
+  now jumps to each value (one redraw a step), so Motion no longer matters to training.
 - **Faster steps when the card has room: Keep last blocks is now Auto.** Gradient checkpointing
   recomputes every block in the backward; with the model all on the card, ZenTrainer now measures
   what a block keeps over the first steps and leaves as many blocks un-checkpointed as the free
