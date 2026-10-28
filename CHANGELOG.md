@@ -84,6 +84,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   applied at once with its model (Undo takes it back). Recipes is the same dialog's other view
   (every recipe, yours too, with what it changes), and a recipe's Details go to it there; Pick
   the files yourself and Re-list are in its footer.
+- **Other LoRAs, in one list:** a LoRA to train more on, to sit under the new one, or to be on only
+  while training (a de-distillation adapter) is one row each, its file and how it's used,
+  instead of three fields (Continue from, Base LoRA, Training adapter). The settings are the same.
 - **Trigger word: Use “<dataset>”** beside it fills in the dataset's name (lower case, `_` for
   spaces), and goes once it's used.
 - **A new run picks the dataset changed last**, not the first by name (Train on this and a

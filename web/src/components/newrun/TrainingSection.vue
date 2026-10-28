@@ -4,10 +4,10 @@
 import { ZenCombo, ZenField, ZenInput, ZenNumber, ZenSwitch, ZenTip } from '@nynxz/zenkit-ui'
 import { computed, reactive } from 'vue'
 import type { OptimizerInfo } from '@/api/engine'
-import AdapterPicker from '@/components/AdapterPicker.vue'
 import FocusField from '@/components/FocusField.vue'
 import { fmtBytes } from '@/stores/downloads'
 import { setSetting } from '@/stores/settings'
+import LoraUses from './LoraUses.vue'
 import { items, useRunFormContext } from './form'
 
 const { spec, loraPlaces, choices, familyId, optimizers, dataset, datasets, opt, epochs, noise, resuming } = useRunFormContext()
@@ -70,18 +70,6 @@ const alphaAuto = computed({
 const alphaValue = computed({
   get: () => spec.network.alpha ?? spec.network.rank,
   set: (v: number) => (spec.network.alpha = v),
-})
-const initFrom = computed({
-  get: () => spec.network.init_from ?? '',
-  set: (v: string) => (spec.network.init_from = v || null),
-})
-const trainingAdapter = computed({
-  get: () => spec.network.training_adapter ?? '',
-  set: (v: string) => (spec.network.training_adapter = v || null),
-})
-const baseLora = computed({
-  get: () => spec.network.base_lora ?? '',
-  set: (v: string) => (spec.network.base_lora = v || null),
 })
 // ---- AI Toolkit's timestep types as ours: its linear and sigmoid draw σ unshifted (shift 1), its
 // shift keeps the model's own schedule (shift 0), and weighted is linear with its Flex.1 weights
@@ -254,17 +242,8 @@ const patterns = computed({
         <ZenField label="LoRA precision" stack tip="fp32: small steps land. bf16 rounds most AdamW steps away; use it only with Automagic (stochastic rounding)">
           <ZenCombo v-model="spec.network.lora_dtype" :items="items(['fp32', 'bf16'], { fp32: 'fp32 (recommended)', bf16: 'bf16' })" :searchable="false" :sorted="false" />
         </ZenField>
-        <ZenField label="Continue from" stack>
-          <ZenCombo v-model="initFrom" :items="[{ value: '', label: 'New LoRA' }, ...items(choices.loras)]" :item-height="30" />
-        </ZenField>
-        <ZenField label="Training adapter" stack class="span-2" tip="A LoRA applied while training only, never in samples or the saved file. Guidance-distilled models (MiniMax H3) train much better on a de-distillation adapter">
-          <AdapterPicker v-model="trainingAdapter" :family="familyId" />
-        </ZenField>
-        <ZenField label="Base LoRA" stack class="span-2" tip="A LoRA the new one sits on everywhere: training, samples and use. For a fix the model always needs (MOSS SFT's destripe) or an edit LoRA to build on. The new LoRA learns only what's left, so load the base beside it when you use it">
-          <AdapterPicker v-model="baseLora" :family="familyId" kind="base" />
-        </ZenField>
-        <ZenField v-if="spec.network.base_lora" label="Base strength" stack tip="The strength the base LoRA runs at, in training and samples. Use it at the same strength">
-          <ZenNumber :model-value="spec.network.base_strength ?? 1" :min="-4" :max="4" :step="0.05" :precision="2" @update:model-value="spec.network.base_strength = $event" />
+        <ZenField label="Other LoRAs" stack class="full-row" tip="A LoRA to train more on, one to sit under the new LoRA, or one that's on only while training: pick the file, then how it's used">
+          <LoraUses />
         </ZenField>
         <ZenField v-if="targets === 'custom'" label="Layer patterns" stack class="full-row" tip="One per line: a layer gets an adapter when its name matches any of them (regular expressions over names like diffusion_model.layers.30.proj.ffn_down). The Blocks and Skip blocks below still apply">
           <textarea v-model.lazy="patterns" class="patterns mono" rows="2" spellcheck="false" placeholder="proj\.ffn_(up_gate|down)$" />
