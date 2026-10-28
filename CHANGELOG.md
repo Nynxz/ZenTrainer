@@ -363,6 +363,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   1.12 → 1.05 s a step, MOSS 0.69 → 0.60, the same losses. They compile when a run first needs them
   (about 2 s, with what PyTorch ships: no CUDA toolkit); other cards and shapes use the Triton
   kernels as before.
+- **A LoRA on an int8 layer trains fused with it.** Its output is added inside the int8 matmul
+  (comfy_kitchen's epilogue, as ComfyUI does for a block's residual when generating) and its input
+  gradient inside the CUDA backward, instead of in passes of their own over the whole activation:
+  Krea 2 at 1024 px 1.05 → 1.01 s a step, the same losses. Plain LoRAs on int8 bases; others, and
+  sampling, as before.
 - **Validation on a held-out dataset** (Advanced training → Validate on, or `validation.dataset`):
   the validation loss is measured on another dataset folder, prepared like the training one (edit
   pairs and their inputs, masks, captions), instead of on training pictures. The curve then shows

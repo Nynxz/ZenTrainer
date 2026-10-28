@@ -129,14 +129,31 @@ class _BiasDiff(torch.nn.Module):
     __call__ = forward
 
 
-class _Assisted(torch.nn.Module):
+_BYPASS_ATTRS = ("multiplier", "is_conv", "conv_dim", "kernel_size", "in_channels", "out_channels", "kw_dict")
+
+
+class _PassesOn:
+    """For an adapter holding others: the layer info bypass sets on it at injection (multiplier,
+    is_conv, ...) reaches the ones inside as it's set. Passed on at each call instead, it was a
+    write during the forward, a side effect compiled, checkpointed blocks can't trace: the whole
+    block ran eager."""
+
+    def _inner(self) -> list:
+        return []
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in _BYPASS_ATTRS:
+            for child in self._inner():
+                setattr(child, name, value)
+
+
+class _Assisted(_PassesOn, torch.nn.Module):
     """A layer's trainable adapter (or none) plus a frozen training adapter that's only on
     while training (`switch.on`): e.g. a de-distillation adapter for a guidance-distilled
     model, which training must sit on top of but samples and the saved LoRA must not include.
     A base LoRA (`base`) is on always, training and samples: the trained one sits on it.
     Speaks both attachment protocols: called on the weight (weight wrapper) and h/g (bypass)."""
-
-    _BYPASS_ATTRS = ("multiplier", "is_conv", "conv_dim", "kernel_size", "in_channels", "out_channels", "kw_dict")
 
     def __init__(self, trained, assist, switch, preview=None, preview_strength: float = 1.0,
                  base=None, base_strength: float = 1.0):
@@ -161,15 +178,10 @@ class _Assisted(torch.nn.Module):
             return w
         return self.trained(w) if st == 1.0 else w + st * (self.trained(w) - w)
 
-    def _share(self) -> None:  # bypass sets layer info on the adapter it holds: pass it on
-        for child in (self.trained, self.assist, self.preview, self.base):
-            if child is not None:
-                for a in self._BYPASS_ATTRS:
-                    if hasattr(self, a):
-                        setattr(child, a, getattr(self, a))
+    def _inner(self) -> list:
+        return [c for c in (self.trained, self.assist, self.preview, self.base) if c is not None]
 
     def h(self, x, base_out):
-        self._share()
         st = self.switch.strength
         out = 0
         if self.trained is not None and st != 0.0:
@@ -201,21 +213,25 @@ class _Switch:
     turbo = None  # the preview (turbo) LoRA's strength in place of the one it was attached at; 0 = off
 
 
-class _Sliced(torch.nn.Module):
+class _Sliced(_PassesOn, torch.nn.Module):
     """Frozen adapters on row slices of one fused weight: a LoRA made for separate q/k/v on a
     build that fuses them (MOSS-Image int8's proj.qkv). ComfyUI maps those keys to
     (weight, (dim 0, offset, size)); each adapter acts on its slice. Both protocols, like
     _Assisted: called on the weight, and h/g (bypass) on the output's last dim."""
 
-    _BYPASS_ATTRS = _Assisted._BYPASS_ATTRS
-
     def __init__(self):
         super().__init__()
         self.parts: list[tuple[int, int, torch.nn.Module]] = []
 
+    def _inner(self) -> list:
+        return [a for _, _, a in getattr(self, "parts", [])]
+
     def add(self, offset: int, size: int, adapter) -> None:
         self.parts.append((offset, size, adapter))
         self.add_module(f"part{len(self.parts)}", adapter)
+        for a in _BYPASS_ATTRS:  # what bypass already set
+            if a in self.__dict__:
+                setattr(adapter, a, self.__dict__[a])
 
     def __call__(self, w):
         out = w.clone()
@@ -226,9 +242,6 @@ class _Sliced(torch.nn.Module):
     def h(self, x, base_out):
         out = torch.zeros_like(base_out)
         for off, size, a in self.parts:
-            for k in self._BYPASS_ATTRS:
-                if hasattr(self, k):
-                    setattr(a, k, getattr(self, k))
             out[..., off:off + size] = a.h(x, base_out[..., off:off + size])
         return out
 
@@ -367,6 +380,10 @@ class Network:
                 attached = (_Assisted(adapter, frozen, self._switch, fast, preview_strength, under, base_strength)
                             if scalable or frozen is not None or fast is not None or under is not None else adapter)
                 if self._bypass is not None:
+                    if attached is adapter:  # a plain LoRA beside an int8 layer trains fused with it
+                        from .kernels.int8_backward import lora_beside
+
+                        attached = lora_beside(adapter, m)
                     self._bypass.add_adapter(key, attached, strength=1.0)
                 else:
                     patcher.add_weight_wrapper(key, _Pinned(attached))
