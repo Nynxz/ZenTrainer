@@ -489,6 +489,10 @@ def test_compiled_blocks_are_undone():
         assert all(b.__dict__.get("comfy_cast_weights") is False for b in net.blocks)
     assert not any("forward" in b.__dict__ for b in net.blocks)  # the cached model is left as it was
     assert not any("comfy_cast_weights" in b.__dict__ for b in net.blocks)
+    with compiled_blocks(net, True):
+        net.blocks[1].comfy_cast_weights = True  # ComfyUI offloaded this one while the run trained
+    assert net.blocks[1].__dict__.get("comfy_cast_weights") is True  # it still casts its weights
+    assert not any("comfy_cast_weights" in b.__dict__ for b in (net.blocks[0], net.blocks[2]))
 
 
 def test_failed_run_frames_let_go_of_their_tensors():

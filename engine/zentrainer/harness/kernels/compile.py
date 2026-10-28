@@ -119,7 +119,10 @@ def compiled_blocks(diffusion_model, enabled: bool):
         for m in done + mlps:
             m.__dict__.pop("forward", None)
         for sub in casts:
-            sub.__dict__.pop("comfy_cast_weights", None)
+            # only where it's still the class's value: a layer ComfyUI left offloaded (True on the
+            # instance) keeps it, or the cached model would stop casting that layer's weights
+            if sub.__dict__.get("comfy_cast_weights") == type(sub).comfy_cast_weights:
+                sub.__dict__.pop("comfy_cast_weights", None)
         if cache_was is not None:
             functorch_config.enable_autograd_cache = cache_was
 
