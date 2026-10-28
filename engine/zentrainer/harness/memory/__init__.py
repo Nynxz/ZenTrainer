@@ -58,6 +58,29 @@ def _keep_attention():
     return create_selective_checkpoint_contexts(policy)
 
 
+# A block whose attention is this sharp keeps nothing: kept attention saves the softmax statistics
+# from the forward and pairs them with q and k recomputed in the backward, which compiled code
+# rounds a little differently (other kernels): harmless on ordinary logits, but Krea 2's block 0
+# (q and k norm weights up to 51.9, logits to ~31,000) turned that rounding into gradients of
+# 1e8-1e17 and NaN, intermittently. The largest q-norm weight times the largest k-norm weight:
+# Krea 2's block 0 2690, then 21; MOSS's sharpest blocks 55 and 42 (and those train as uncompiled).
+SHARP_QK = 500.0
+
+
+def _qk_peak(m) -> float:
+    """The largest q-norm weight times the largest k-norm weight in block m (0 without them)."""
+    peak = {"q": 0.0, "k": 0.0}
+    for name, sub in m.named_modules():
+        leaf = name.rsplit(".", 1)[-1].replace("_", "")
+        side = "q" if leaf in ("qnorm", "normq", "querynorm") else "k" if leaf in ("knorm", "normk", "keynorm") else None
+        if side is None:
+            continue
+        for p in sub.parameters(recurse=False):
+            if p.ndim == 1:
+                peak[side] = max(peak[side], float(p.detach().abs().max()))
+    return peak["q"] * peak["k"]
+
+
 def _patch_saving(m) -> None:
     """A block checkpointed with _keep_attention. A compiled block (kernels/compile.py) is compiled
     again around the checkpoint: the policy has to see the ops, which a checkpoint around the
@@ -100,8 +123,16 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     if save == "attention" and not offloading:  # (offloading checkpoints per layer: untested there)
         comfy_patch = patch
 
+        sharp: set[int] = set()
+
         def patch(m, offloading=False):  # noqa: F811
-            if any(m is b for b in every):
+            i = next((i for i, b in enumerate(every) if b is m), None)
+            if i is not None and (peak := _qk_peak(m)) > SHARP_QK and i not in sharp:
+                sharp.add(i)
+                name = next((n for n, x in diffusion_model.named_modules() if x is m), f"block {i}")
+                logging.info("[ZenTrainer] %s keeps nothing, not attention: its attention is too sharp for it "
+                             "(q x k norm weights %.0f)", name, peak)
+            if i is not None and i not in sharp:
                 _patch_saving(m)
             else:
                 comfy_patch(m, offloading=offloading)

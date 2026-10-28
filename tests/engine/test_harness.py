@@ -1061,3 +1061,41 @@ def test_kept_attention_survives_two_forwards_in_one_autocast(monkeypatch):
             loss = run(x) + run(x + 1)  # the second forward would hit the cache
         got = torch.autograd.grad(loss, list(net.parameters()))
     assert all(torch.allclose(g, w) for g, w in zip(got, want))
+
+
+def test_a_block_with_sharp_attention_keeps_nothing(monkeypatch):
+    """Kept attention pairs the forward's softmax statistics with q and k recomputed in the
+    backward: on Krea 2's block 0 (q/k norm weights ~52) compiled rounding made that blow up."""
+    import sys
+
+    import torch.nn as nn
+
+    from zentrainer.harness import memory
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+    plain = []
+    mod.patch = lambda m, offloading=False: plain.append(m)
+    mod.unpatch = lambda m: None
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+    kept = []
+    monkeypatch.setattr(memory, "_patch_saving", kept.append)
+
+    class Block(nn.Module):
+        def __init__(self, scale):
+            super().__init__()
+            self.q_norm, self.k_norm = nn.RMSNorm(8), nn.RMSNorm(8)
+            with torch.no_grad():
+                self.q_norm.weight.fill_(scale)
+                self.k_norm.weight.fill_(scale)
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block(60.0), Block(7.5), Block(1.0)])
+
+    net = Net()
+    assert memory._qk_peak(net.blocks[0]) == 3600.0 and memory._qk_peak(nn.Linear(2, 2)) == 0.0
+    with memory.gradient_checkpointing(net, True, 1, False, save="attention"):
+        assert plain == [net.blocks[0]]  # checkpointed as before
+        assert kept == [net.blocks[1], net.blocks[2]]  # MOSS's sharpest is ~55: still kept
