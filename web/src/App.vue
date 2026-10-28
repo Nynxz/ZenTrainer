@@ -98,7 +98,12 @@ watch(
   () => route.path,
   async (to, from) => {
     const el = scroller.value?.viewport
-    if (el && from) scrolls.set(from, el.scrollTop) // still the old page: the watch runs before it's swapped
+    if (el && from) {
+      // still the old page: the watch runs before it's swapped. The 200 latest pages, the oldest go
+      scrolls.delete(from)
+      scrolls.set(from, el.scrollTop)
+      if (scrolls.size > 200) scrolls.delete(scrolls.keys().next().value!)
+    }
     const top = popped ? (scrolls.get(to) ?? 0) : 0
     popped = false
     await nextTick()
