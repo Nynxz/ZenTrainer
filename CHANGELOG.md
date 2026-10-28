@@ -60,6 +60,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   `GET /zentrainer/api/spec/schema`) is the JSON Schema. Both are generated from the spec itself, so
   they can't drift from it. A spec file can name the schema (`"$schema": "https://raw.githubusercontent.com/Nynxz/ZenTrainer/main/docs/spec.schema.json"`,
   as the examples do) and editors such as VS Code complete and check it as you type.
+- **Compile blocks is off unless you turn it on** (Memory → Compile blocks). It was "auto", on for
+  runs of 500 steps or more with Triton installed; with kept attention and the fused q/k rope
+  running without it, it saves a few percent on most models, against seconds to minutes of
+  compiling on NVIDIA and 10 minutes or more on ROCm. A saved spec's `"auto"` still loads, as off,
+  and the log says so; the Fibo 2.0 recipe still asks for it.
 
 ### Command line
 - **Specs from the command line:** `zt new [--profile ID] > spec.json` writes a complete spec with

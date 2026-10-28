@@ -260,10 +260,10 @@ class MemorySpec:
                                  choices=("w8a8", "fused", "bf16"))
     fp8_backward: bool = setting(False, "fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). "
                                         "Faster, less precise.")
-    compile_blocks: bool | Auto = setting("auto", "torch.compile the repeated transformer block, fusing the elementwise "
-                                                  "work around the matmuls; the first steps (and first sample) are "
-                                                  'slower while it compiles. "auto": on for runs long enough to repay '
-                                                  "that, when Triton is installed.", choices=("auto", True, False))
+    compile_blocks: bool | Auto = setting(False, "torch.compile the repeated transformer block, fusing the elementwise "
+                                                 "work around the matmuls; the first steps (and first sample) are "
+                                                 "slower while it compiles, minutes on ROCm. Off unless turned on: "
+                                                 '"auto" (an older spec\'s) is off too.', choices=("auto", True, False))
     fused_qk_rope: bool | Auto = setting("auto", "Krea 2, MOSS, MiniMax H3: the attention's q/k norms and rope as one "
                                                  "op with its own backward (Triton): the same maths, 6-9% a step. "
                                                  '"auto": on while the blocks run uncompiled (compiled ones fuse '

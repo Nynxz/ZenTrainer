@@ -11,36 +11,28 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 
 import torch
 
-# memory.compile_blocks "auto": compile when a run is at least this long. Compiling costs about 40 s
-# up front (Krea 2, 1024 px, RTX 5090) and then saves 0.2 s a step, so it pays back after about
-# 200 steps; at 512 px it saves far less, and the margin keeps a short run from losing.
-AUTO_STEPS = 500
-
-
 def wanted(setting: bool | str, steps: int) -> tuple[bool, str]:
-    """Whether to compile, and why when it wasn't simply what was asked. Offloaded weights are
-    fine: compile was kept off with them for a while after an illegal memory access (Krea 2, 16 GB
+    """Whether to compile, and why when it wasn't simply what was asked. Only when turned on: it used
+    to be "auto" (runs of 500+ steps with Triton), but what it saves is a few percent with kept
+    attention and the fused q/k rope that run uncompiled, against minutes of compiling on ROCm (8.4
+    min on an RX 7800 XT for 1.91 against 2.14 s a step: ~2,200 steps to repay) and every graph
+    rebuilt when the weights or kept blocks move. An "auto" from an older spec is off.
+
+    Offloaded weights are fine: compile was kept off with them for a while after an illegal memory access (Krea 2, 16 GB
     card, ~2 GB streaming), but the cause was the offloaded weights' stream-ordered frees, in eager
     too, since fixed (memory/offload.py guard_backward). Compiled with weights streaming and
     moving: MiniMax H3 (0.7-6.4 GB streaming) and Krea 2 (8.5-9.4 GB, and a 32 GB card held to 16)
     with Automagic3 + EMA and samples, 10 of 10 runs clean. It pays when little streams (H3, 0.7
     GB: 32% a step) and is even when most does (Krea 2, 9.4 of 12.9 GB: the copies set the pace).
-    Weights that move recompile fresh graphs (reset_if_moved). "auto" also needs
-    Triton, which inductor generates its kernels with (often missing on Windows, where it also
-    needs a C++ compiler)."""
-    if setting != "auto":
-        return bool(setting), ""
-    import importlib.util
-
-    if os.name == "nt" or importlib.util.find_spec("triton") is None:
-        return False, "not compiling (needs Triton; turn it on in Memory to try)"
-    if steps < AUTO_STEPS:
-        return False, f"not compiling a run under {AUTO_STEPS} steps (the compile would cost more than it saves)"
-    return True, f"compiling: {steps} steps repay the first steps' compile"
+    Weights that move recompile fresh graphs (reset_if_moved). It needs Triton, which
+    inductor generates its kernels with (often missing on Windows, where it also needs a C++
+    compiler)."""
+    if setting == "auto":
+        return False, "not compiling: Compile blocks is off unless turned on (Memory), and an older spec's \"auto\" is off"
+    return bool(setting), ""
 
 
 def main_blocks(diffusion_model) -> list:
