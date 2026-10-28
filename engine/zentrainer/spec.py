@@ -442,6 +442,11 @@ class TrainSpec:
             raise SpecError("dataset.edit_template needs {} where the instruction goes")
         if isinstance(self.network.targets, str):
             _choice("network.targets", self.network.targets, ("attn", "mlp", "attn_mlp", "all"))
+        elif not any(str(p).strip() for p in self.network.targets) and not self.network.train_bias_norm \
+                and not d.control_sets:
+            # nothing would train: it failed only once the model had loaded ("no layers matched")
+            raise SpecError('network.targets has no patterns: add the layers to train (regexes), or use "attn", '
+                            '"mlp", "attn_mlp" or "all"')
         if self.network.blocks and not re.fullmatch(r"\s*\d*\s*-?\s*\d*\s*", self.network.blocks):
             raise SpecError("network.blocks is a range like 20-49, 20- or 10")
         if self.network.skip_blocks and not re.fullmatch(r"\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*", self.network.skip_blocks):

@@ -265,6 +265,9 @@ const patterns = computed({
         </ZenField>
         <ZenField v-if="targets === 'custom'" label="Layer patterns" stack class="full-row" tip="One per line: a layer gets an adapter when its name matches any of them (regular expressions over names like diffusion_model.layers.30.proj.ffn_down). The Blocks and Skip blocks below still apply">
           <textarea v-model.lazy="patterns" class="patterns mono" rows="2" spellcheck="false" placeholder="proj\.ffn_(up_gate|down)$" />
+          <p v-if="!patterns.trim() && !spec.network.train_bias_norm && !spec.dataset.control_sets?.length" class="warn-note">
+            No patterns yet, so nothing would train: add the layers to train, or pick a preset above.
+          </p>
         </ZenField>
         <ZenField label="Blocks" stack tip="Only these transformer blocks get adapters, e.g. 20-49: the backward stops at the first one, so steps are quicker, and the early blocks (layout, motion) stay untouched. Empty = every block">
           <ZenInput :model-value="spec.network.blocks ?? ''" placeholder="all" @update:model-value="spec.network.blocks = String($event).trim()" />

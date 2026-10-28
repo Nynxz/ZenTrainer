@@ -327,6 +327,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Fixed: a run with Targets on Custom and no patterns** loaded its model for a couple of minutes
+  and then failed ("no layers matched network.targets=[]"). It's refused when you start it now,
+  and the form says so under the patterns box.
 - **Faster steps when the card has room: Keep last blocks is now Auto.** Gradient checkpointing
   recomputes every block in the backward; with the model all on the card, ZenTrainer now measures
   what a block keeps over the first steps and leaves as many blocks un-checkpointed as the free
