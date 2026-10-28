@@ -77,7 +77,35 @@ def open_browser(url: str) -> None:
 # ---- questions ----------------------------------------------------------------------------------
 
 def interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    return (sys.stdin.isatty() and sys.stdout.isatty()) or _mintty()
+
+
+def _mintty() -> bool:
+    """Git Bash's mintty: a terminal, but to a Windows program its stdin and stdout are pipes
+    (\\msys-…-pty0-from-master, …-to-master), so isatty is false. Told apart from a script's pipes
+    by those names, as go-isatty's IsCygwinTerminal does."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class NameInfo(ctypes.Structure):
+        _fields_ = [("length", wintypes.DWORD), ("name", wintypes.WCHAR * 260)]
+
+    def pty(stream) -> bool:
+        info = NameInfo()
+        try:
+            handle = msvcrt.get_osfhandle(stream.fileno())
+        except (OSError, ValueError):
+            return False
+        if not ctypes.windll.kernel32.GetFileInformationByHandleEx(handle, 2, ctypes.byref(info), ctypes.sizeof(info)):
+            return False  # 2: FileNameInfo
+        name = info.name[: info.length // 2]
+        return (name.startswith(("\\msys-", "\\cygwin-")) and "-pty" in name
+                and ("-from-master" in name or "-to-master" in name))
+
+    return pty(sys.stdin) and pty(sys.stdout)
 
 
 def _style():
@@ -88,10 +116,18 @@ def _style():
                               ("selected", f"fg:{ACCENT} noreverse"), ("instruction", "fg:#888888")])
 
 
-# A terminal that isn't a Windows console (Git Bash's mintty, some IDE consoles) passes isatty but has
-# no console screen buffer for prompt_toolkit to draw in: it raises NoConsoleScreenBufferError as the
-# question is built. There every question is asked as plain lines instead, typed and Enter.
+# A terminal that isn't a Windows console (Git Bash's mintty, some IDE consoles) has no console screen
+# buffer for prompt_toolkit to draw in: it raises NoConsoleScreenBufferError as the question is built.
+# There every question is asked as plain lines instead, typed and Enter; in mintty, from the start.
 _plain = False
+
+
+def _no_console() -> type[BaseException] | tuple[()]:
+    if sys.platform != "win32":
+        return ()  # prompt_toolkit.output.win32 only imports on Windows; nothing to catch elsewhere
+    from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
+
+    return NoConsoleScreenBufferError
 
 
 def _answer(build, plain):
@@ -99,12 +135,12 @@ def _answer(build, plain):
     global _plain
     if not interactive():
         die("no terminal to answer in; stopping. Run it in a terminal, or use the commands (zt --help)")
+    if not _plain and _mintty():
+        _plain = True
     if not _plain:
         try:
             q = build()
-        except Exception as e:  # by name: prompt_toolkit.output.win32 only imports on Windows
-            if type(e).__name__ != "NoConsoleScreenBufferError":
-                raise
+        except _no_console():
             _plain = True
         else:
             ans = q.ask()

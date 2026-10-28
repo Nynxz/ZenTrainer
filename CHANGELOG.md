@@ -71,8 +71,8 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   [docs/api.md](docs/api.md) (the HTTP API the app and `zt` use: runs, the queue, live events, with
   a Python example).
 - **zt's menus work in Git Bash and other terminals that aren't a Windows console**, which crashed
-  with `NoConsoleScreenBufferError`: there it asks in plain lines instead (a numbered list to pick
-  from, Enter for the default).
+  with `NoConsoleScreenBufferError` (or, in Git Bash, could stop as "no terminal"): there it asks in
+  plain lines instead (a numbered list to pick from, Enter for the default).
 
 ### Run form and look
 - **A run's rail reads like a dataset's side panel**, the same spacing and headers, and every card
