@@ -453,7 +453,7 @@ function apply() {
   background: color-mix(in srgb, var(--zen-surface-2) 55%, transparent);
 }
 .list-in {
-  padding: 10px 8px 16px;
+  padding: 10px 14px 16px 8px; /* the right: a gutter for the overlay scrollbar (12px), clear of the rows */
 }
 .group + .group {
   margin-top: 10px;
