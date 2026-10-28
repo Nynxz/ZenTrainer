@@ -333,6 +333,13 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   VRAM holds (the biggest first), checkpointing some again if a step runs out. On an RTX 5090 at
   1024 px: MOSS 0.69 → 0.50 s a step (40 of 44 blocks kept), Krea 2 1.12 → 1.08. With offloading
   that VRAM holds weights instead, so none are kept; a number in the setting is kept as before.
+- **A faster int8 backward (Krea 2, MOSS, MiniMax H3 int8 bases), in raw CUDA.** The W8A8 input
+  gradient now runs as two CUDA kernels with ConvRot's rotation inside the matmul, on NVIDIA cards
+  from the RTX 30 series (compute capability 8.0) on: it reads the int8 weight as stored, so no
+  transposed copy, and rounds to bf16 once instead of twice. On an RTX 5090 at 1024 px: Krea 2
+  1.12 → 1.05 s a step, MOSS 0.69 → 0.60, the same losses. They compile when a run first needs them
+  (about 2 s, with what PyTorch ships: no CUDA toolkit); other cards and shapes use the Triton
+  kernels as before.
 - **Validation on a held-out dataset** (Advanced training → Validate on, or `validation.dataset`):
   the validation loss is measured on another dataset folder, prepared like the training one (edit
   pairs and their inputs, masks, captions), instead of on training pictures. The curve then shows

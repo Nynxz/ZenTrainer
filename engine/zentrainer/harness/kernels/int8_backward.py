@@ -11,16 +11,19 @@ Two ways to take the first product:
 
 - "fused" (memory.int8_backward "fused"): a Triton kernel (kernels/w8a16_backward.py) that never
   builds the bf16 weight. Still 16-bit math: saves memory, not time.
-- "w8a8" (memory.int8_backward "w8a8", the default): the gradient quantized to int8 per row too, and the product on
-  int8 tensor cores (torch._int_mm), as OneTrainer does. Measured on H3's shapes at clip size
-  (RTX 5090): 6.0 ms for the four GEMMs against 16.8 in bf16. cuBLAS wants the weight
-  column-major for that, so each call takes a transposed copy (int8: a quarter of a bf16 one).
-  Costs some gradient precision (an int8 step of each row's largest value), rounded
-  stochastically so it stays unbiased.
+- "w8a8" (memory.int8_backward "w8a8", the default): the gradient quantized to int8 per row too,
+  and the product on int8 tensor cores, as OneTrainer does. On NVIDIA cards from compute
+  capability 8.0, two raw CUDA kernels with the rotation inside (kernels/w8a8_cuda.py: 27-32% less
+  time than Triton's matmul and rotation on Krea 2's and MOSS's shapes, RTX 5090); else Triton's
+  (kernels/w8a8_backward.py); else torch._int_mm, which wants the weight column-major, so each
+  call takes a transposed copy (int8: a quarter of a bf16 one). Measured on H3's shapes at clip
+  size (RTX 5090, Triton): 6.0 ms for the four GEMMs against 16.8 in bf16. Costs some gradient
+  precision (an int8 step of each row's largest value), rounded stochastically so it stays
+  unbiased.
 
-The rotation after either is a small per-group matmul. Training only; anything else (other
-layouts, an fp8 backward, a weight that trains, no Triton) and any error falls back to
-ComfyUI's own path.
+Outside the CUDA kernels the rotation after either is a small per-group matmul. Training only;
+anything else (other layouts, an fp8 backward, a weight that trains, no Triton) and any error
+falls back to ComfyUI's own path.
 """
 
 from __future__ import annotations
@@ -38,12 +41,23 @@ _warned = False
 _flagged: list = []  # (layer, its _full_precision_mm before weight_only)
 
 
+def _count(path: str) -> None:
+    """Which path a layer took, for the profile command. Not while dynamo traces: a compiled,
+    checkpointed block can't mutate state outside it (the whole block fell back to eager)."""
+    if not torch.compiler.is_compiling():
+        stats[path] += 1
+
+
 def enable(mode: str | bool) -> None:
     """Pick the backward ("" = ComfyUI's), patching ComfyUI's QuantLinearFunc once."""
     global _mode
     _mode = "fused" if mode is True else (mode or "")
     if _mode:
         _patch()
+    if _mode == "w8a8" and torch.cuda.is_available():
+        from . import w8a8_cuda
+
+        w8a8_cuda._load(torch.device("cuda", torch.cuda.current_device()))  # now: a compiled block's trace can't
 
 
 def _hadamard(size: int, device, dtype) -> torch.Tensor:
@@ -72,6 +86,20 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
     k = q.shape[1]
     if m <= 16 or n % 8 or k % 8:
         return None
+    from . import w8a8_cuda
+
+    if w8a8_cuda.supported(grad_2d, q, group):  # raw CUDA, the rotation inside (kernels/w8a8_cuda.py)
+        _count("w8a8: cuda")
+        seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
+        return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256)
+    return _w8a8_input_grad(grad_2d, q, scale, group)
+
+
+def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor:
+    """The Triton kernels (or plain torch without Triton): the CUDA kernel's fallback, also from
+    inside its custom op when the real tensors don't suit it (w8a8_cuda.input_grad)."""
+    m, n = grad_2d.shape
+    k = q.shape[1]
     try:
         from .w8a8_backward import TRITON_AVAILABLE, int8_matmul, quantize_rows
     except Exception:
@@ -126,7 +154,7 @@ def _patch() -> None:
                 why = ("not quantized" if params is None else "not convrot" if not getattr(params, "convrot", False)
                        else "no int8 data" if getattr(weight, "_qdata", None) is None or weight._qdata.dtype != torch.int8
                        else "cpu" if not grad_output.is_cuda else "")
-                stats[why or _mode] += 1
+                _count(why or _mode)
                 if params is not None and getattr(params, "convrot", False) and getattr(weight, "_qdata", None) is not None \
                         and weight._qdata.dtype == torch.int8 and grad_output.is_cuda:
                     grad_2d = grad_output.flatten(0, -2)
@@ -187,11 +215,11 @@ class _Int8Linear(torch.autograd.Function):
                         gi = w8a8_input_grad(g, w._qdata, params.scale, group)
                     except Exception:
                         gi = None
-                stats["int8 layer: w8a8" if gi is not None else "int8 layer: dequantized"] += 1
+                _count("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized")
                 if gi is None:
                     gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
             else:
-                stats["int8 layer: plain weight"] += 1
+                _count("int8 layer: plain weight")
                 gi = torch.mm(g, w.to(g.dtype))
         ctx.m = None
         return gi.to(grad_out.dtype).reshape(ctx.in_shape), None, None
