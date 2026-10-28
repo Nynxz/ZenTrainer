@@ -344,6 +344,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   ends, so the page redrew 60 times a second for the whole run, on the GPU training uses: MOSS at
   768 px trained at 5.2 it/s with a run page open against 6.0 with Motion set to Reduced. Progress
   now jumps to each value (one redraw a step), so Motion no longer matters to training.
+- **Fixed: a run with Targets on Custom and no patterns** loaded its model for a couple of minutes
+  and then failed ("no layers matched network.targets=[]"). It's refused when you start it now,
+  and the form says so under the patterns box.
 - **Fixed: compiled blocks recompiled every graph after a run's first sample** on a card where
   ComfyUI unloads part of the model for the render and loads it back (16 GB and the like): a cluster
   of slow steps after each sample and save, 7–8 s each with a warm kernel cache on an RX 7800 XT,
