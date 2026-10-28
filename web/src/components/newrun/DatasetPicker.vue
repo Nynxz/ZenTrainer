@@ -125,19 +125,20 @@ function use(folder = picked.value) {
 
       <ScrollArea class="detail">
         <article v-if="shown" class="detail-in">
-          <div class="mosaic" :class="`n${Math.min(shown.thumbs.length, 8)}`">
+          <!-- always two rows of four, empty tiles for a smaller set: the panel doesn't jump between datasets -->
+          <div class="mosaic">
             <button v-for="t in shown.thumbs.slice(0, 8)" :key="t.filename" type="button" class="pic" title="See it big, with its caption" @click="gallery = relPath(t)">
               <img :src="thumb(shown, t, 320)" alt="" loading="lazy" />
             </button>
-            <span v-if="!shown.thumbs.length" class="none"><i class="mdi mdi-image-off-outline" /></span>
+            <span v-for="n in Math.max(0, 8 - shown.thumbs.slice(0, 8).length)" :key="`gap${n}`" class="gap"><i v-if="!shown.thumbs.length && n === 1" class="mdi mdi-image-off-outline" /></span>
           </div>
           <div class="title-row">
             <h3 class="zt-title">{{ shown.folder }}</h3>
-            <span v-if="shown.health || shown.captioned < shown.images" class="ring" :title="shown.health ? 'Its health, from the last check' : 'How much is captioned'">
-              <CaptionRing :done="shown.captioned" :total="shown.images" :scores="shown.health?.scores" :size="34" />
+            <span class="ring" :title="shown.health ? 'Its health, from the last check' : shown.captioned < shown.images ? 'How much is captioned' : ''">
+              <CaptionRing v-if="shown.health || shown.captioned < shown.images" :done="shown.captioned" :total="shown.images" :scores="shown.health?.scores" :size="34" />
             </span>
             <span class="spacer" />
-            <button type="button" class="open" @click="gallery = ''"><i class="mdi mdi-image-multiple-outline" /> Browse all {{ shown.images }}</button>
+            <button type="button" class="browse" @click="gallery = ''"><i class="mdi mdi-image-multiple-outline" /> Browse {{ shown.images }} pictures</button>
             <RouterLink :to="`/datasets/${encodeURIComponent(shown.folder)}`" class="open" @click="open = false">View dataset <i class="mdi mdi-arrow-right" /></RouterLink>
           </div>
           <dl class="facts">
@@ -307,7 +308,6 @@ function use(folder = picked.value) {
   border-radius: 10px;
   overflow: hidden;
   background: var(--zen-surface-2);
-  min-height: 120px;
 }
 .mosaic .pic {
   display: block;
@@ -326,40 +326,57 @@ function use(folder = picked.value) {
 .mosaic .pic:hover img {
   filter: brightness(1.12);
 }
-.mosaic.n1,
-.mosaic.n2,
-.mosaic.n3 {
-  grid-template-columns: repeat(3, 1fr);
-}
-.mosaic .none {
-  grid-column: 1 / -1;
+.mosaic .gap {
+  aspect-ratio: 1;
   display: grid;
   place-items: center;
-  min-height: 160px;
+  background: color-mix(in srgb, var(--zen-surface-2) 70%, transparent);
   color: var(--zen-muted);
-  font-size: 28px;
+  font-size: 24px;
 }
 .title-row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 14px 0 10px;
+  min-height: 36px; /* the ring's room, whether a dataset has one or not */
+}
+.ring {
+  width: 34px;
+  height: 34px;
+  flex: none;
 }
 .title-row h3 {
   margin: 0;
   font-size: 22px;
 }
-.open {
-  border: none;
-  background: none;
-  padding: 0;
+/* an action here (the lightbox) as a button; leaving for the dataset's page as a quieter link */
+.browse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md);
+  background: var(--zen-surface);
+  color: var(--zen-text);
   font: inherit;
-  cursor: pointer;
   font-size: 12px;
-  color: var(--zen-accent);
+  cursor: pointer;
+}
+.browse:hover {
+  border-color: color-mix(in srgb, var(--zen-accent) 50%, var(--zen-border));
+}
+.open {
+  font-size: 12px;
+  color: var(--zen-muted);
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  margin-left: 6px;
+}
+.open:hover {
+  color: var(--zen-text);
 }
 .facts {
   display: grid;

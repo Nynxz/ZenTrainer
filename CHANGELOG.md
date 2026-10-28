@@ -78,6 +78,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   with Datasets as its crumb), then the same sticky toolbar and view switch.
 - **A grad norm or loss that blew up reads short** (6.3e16, the whole number on hover) instead of
   running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
+- **Browse models in New run:** every model family (starred first, a search, all or installed),
+  and the one highlighted: whether it's installed or what it downloads, where it comes from, and
+  its recipes; a recipe opens Recipes on it, to see what it changes before applying it.
+- **A new run picks the dataset changed last**, not the first by name (Train on this and a
+  duplicate still bring their own).
 - **New run's dataset picker is a dialog like Recipes:** the datasets on the left (starred first,
   a search, by recent, name or size) and the one highlighted on the right, eight of its pictures,
   its health and what's in it, before Use; a picture (or Browse all) opens the dataset in the

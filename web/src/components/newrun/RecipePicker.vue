@@ -16,6 +16,8 @@ import { fmtBytes } from '@/stores/downloads'
 import { merge, useRunFormContext } from './form'
 
 const open = defineModel<boolean>('open', { default: false })
+/** a recipe to open on (the model browser's recipe cards); else the first */
+const props = defineProps<{ start?: string | null }>()
 const { spec, familyId, dataset, runPresets, applyRecipe, deleteRecipe } = useRunFormContext()
 
 type Mine = Preset<Partial<TrainSpec>>
@@ -112,7 +114,8 @@ watch(open, async (o) => {
   query.value = ''
   step.value = 'list'
   confirmDelete.value = false
-  picked.value = flat.value[0] ?? null // never an empty detail
+  picked.value = flat.value.find((e) => e.id === props.start) ?? flat.value[0] ?? null // never an empty detail
+  if (props.start && picked.value?.id === props.start) step.value = 'detail'
   if (!phone.value) {
     await nextTick()
     document.querySelector<HTMLInputElement>('.recipe-search input')?.focus()

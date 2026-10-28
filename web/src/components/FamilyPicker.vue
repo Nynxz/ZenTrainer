@@ -288,7 +288,7 @@ onMounted(() => {
   loadFamilies()
   void loadOnDisk()
 })
-defineExpose({ refresh: () => fam.value && open(fam.value.id, true) })
+defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick })
 </script>
 
 <template>

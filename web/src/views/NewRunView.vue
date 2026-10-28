@@ -26,6 +26,11 @@ provide(RUN_FORM, form)
 const { spec, editing, retrying, resuming, resumeStep } = form
 const { imported, exportSettings, copySettings, importSettings, recipeApplied, undoRecipe } = form
 const recipesOpen = ref(false)
+const recipeStart = ref<string | null>(null) // the model browser's recipe card: Recipes opens on it
+function openRecipe(id: string) {
+  recipeStart.value = id
+  recipesOpen.value = true
+}
 
 const saveOpen = ref(false) // these settings as one of your recipes (the recipes dialog lists them under Yours)
 const openSave = () => (saveOpen.value = true)
@@ -89,7 +94,7 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
         </p>
       </div>
       <span v-if="copied" class="copied small"><i class="mdi mdi-check" /> Copied</span>
-      <button v-if="!resuming" class="bar-btn" title="Ready-made settings, ours and yours: applied here, sized to your dataset" @click="recipesOpen = true">
+      <button v-if="!resuming" class="bar-btn" title="Ready-made settings, ours and yours: applied here, sized to your dataset" @click="(recipeStart = null), (recipesOpen = true)">
         <i class="mdi mdi-book-open-page-variant-outline" /> Recipes
       </button>
       <ZenPopover placement="bottom-end">
@@ -145,7 +150,7 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
           <i class="mdi mdi-lock-outline" /> It has trained, so its model, dataset and LoRA shape (algorithm, rank, layers, blocks) and
           optimizer type stay as they were. Memory, samples, learning rate, schedule and length can change.
         </div>
-        <ModelSection />
+        <ModelSection @recipe="openRecipe" />
         <DatasetSection />
         <!-- after the dataset: an image slider's other end is one of its picture sets -->
         <SliderSection />
@@ -156,7 +161,7 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
 
       <RunSummary />
     </div>
-    <RecipePicker v-model:open="recipesOpen" />
+    <RecipePicker v-model:open="recipesOpen" :start="recipeStart" />
     <SaveRecipe v-model:open="saveOpen" :spec="spec" />
   </div>
 </template>

@@ -5,6 +5,7 @@ import { ZenCombo, ZenField, ZenMenuItem, ZenPopover } from '@nynxz/zenkit-ui'
 import { computed, ref } from 'vue'
 import type { ModelProfile } from '@/api/engine'
 import FamilyPicker from '@/components/FamilyPicker.vue'
+import ModelBrowser from './ModelBrowser.vue'
 import { items, merge, useRunFormContext } from './form'
 
 const { spec, choices, modelMissing, sampleSuggestion, profile, familyId, resuming } = useRunFormContext()
@@ -31,6 +32,10 @@ const profileApplied = computed(() => {
   return same(p.train, spec as unknown as Record<string, unknown>) && same(p.samples as Record<string, unknown>, spec.samples as unknown as Record<string, unknown>)
 })
 const profileOpen = ref(false)
+// the model browser: a family picked there goes through the picker (its files, its downloads)
+const emit = defineEmits<{ recipe: [id: string] }>()
+const picker = ref<InstanceType<typeof FamilyPicker> | null>(null)
+const browsing = ref(false)
 </script>
 
 <template>
@@ -38,6 +43,7 @@ const profileOpen = ref(false)
   <div class="head-row">
     <h2><span class="num">1</span> Model</h2>
     <span class="grow" />
+    <button v-if="!resuming" class="add small" title="Every model, whether it's installed, and its recipes" @click="browsing = true"><i class="mdi mdi-view-grid-outline" /> Browse models</button>
     <!-- extras a run can add (a slider for now), so they don't sit in the form when unused -->
     <ZenPopover v-if="!resuming" placement="bottom-end">
       <template #trigger="{ toggle }">
@@ -55,7 +61,9 @@ const profileOpen = ref(false)
       </template>
     </ZenPopover>
   </div>
+  <ModelBrowser v-model:open="browsing" :current="familyId" @pick="picker?.pick($event)" @recipe="emit('recipe', $event)" />
   <FamilyPicker
+    ref="picker"
     v-model="spec.model"
     @missing="modelMissing = $event"
     @sample-suggestion="sampleSuggestion = $event"
