@@ -314,13 +314,14 @@ class Trainer:
                         overlap(False)
                         guard_backward(False)
                         watch_pins(False)
-                        if getattr(self, "_capped", False):
-                            torch.cuda.set_per_process_memory_fraction(1.0, self.device)  # the cap _card set
                         if getattr(self, "_compiled", 0):
                             torch.compiler.set_stance("default")  # the final samples left it eager
             except BaseException as e:
                 interrupted = type(e).__name__ == "InterruptProcessingException"
-                self._status("interrupted" if interrupted else "error", message=str(e) or type(e).__name__)
+                # out of VRAM before the loop (the model's load, under Windows' cap): the advice, not the
+                # allocator's text about a "user-supplied memory fraction"
+                message = _oom_advice(self.spec, self.step) if isinstance(e, torch.OutOfMemoryError) else str(e) or type(e).__name__
+                self._status("interrupted" if interrupted else "error", message=message)
                 _release_frames(e)
                 raise
             finally:
@@ -400,6 +401,8 @@ class Trainer:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if getattr(self, "_capped", False):
+            torch.cuda.set_per_process_memory_fraction(1.0, self.device)  # the cap _card set: the card itself
 
     def setup(self) -> None:
         import comfy.model_management as mm
