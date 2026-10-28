@@ -157,7 +157,7 @@ Precision, checkpointing, offloading and kernels: how the run fits and how fast 
 | `memory.training_dtype` | `"bf16"` | `"bf16"` or `"fp16"` or `"fp32"` | The precision the model computes in. |
 | `memory.gradient_checkpointing` | `true` | true/false | Recompute activations in the backward instead of keeping them: much less VRAM, some speed. |
 | `memory.grad_checkpoint_depth` | `1` | whole number, >= 1 | Gradient checkpointing's granularity. |
-| `memory.grad_checkpoint_skip` | `0` | whole number, >= 0 | Leave the last N blocks un-checkpointed: they keep their activations (more VRAM) and skip the recompute, the cheapest place to trade memory for speed. |
+| `memory.grad_checkpoint_skip` | `"auto"` | whole number or "auto", >= 0 | Leave N blocks un-checkpointed (the biggest, the last first): they keep their activations (more VRAM) and skip the recompute, the cheapest place to trade memory for speed. "auto": as many as the VRAM the first steps left free holds (none with offloading). |
 | `memory.offloading` | `false` | true/false | Keep part of the model in RAM and stream it in: for models bigger than the card. |
 | `memory.vram_headroom` | `0.0` | number, >= 0 | With offloading: the VRAM kept free for activations, the LoRA and its optimizer (GB); the rest holds as much of the model as fits. 0 = auto (8 GB, more for long video clips). |
 | `memory.tread` | `0.0` | number, >= 0, < 1 | TREAD token routing on video steps (MiniMax H3): this share of a clip's tokens skips the middle blocks and rejoins unchanged (0.5 roughly halves their work). Stills, samples and validation always run whole. 0 = off. |

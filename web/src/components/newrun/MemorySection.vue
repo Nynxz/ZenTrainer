@@ -20,8 +20,13 @@ const advanced = reactive({ memory: false })
     <ZenField label="Training dtype" stack><ZenCombo v-model="spec.memory.training_dtype" :items="items(['bf16', 'fp16', 'fp32'])" :searchable="false" :sorted="false" /></ZenField>
     <ZenField label="Attention" stack tip="Only backends with a backward pass"><ZenCombo v-model="spec.memory.attention" :items="items(trainAttention)" :searchable="false" /></ZenField>
     <ZenField label="Gradient checkpointing" stack tip="Recompute each block in backward"><div class="sw-row"><ZenSwitch v-model="spec.memory.gradient_checkpointing" /><span class="sw-state">{{ spec.memory.gradient_checkpointing ? 'On' : 'Off' }}</span></div></ZenField>
-    <ZenField v-if="spec.memory.gradient_checkpointing" label="Keep last blocks" stack tip="The last N blocks skip checkpointing: they keep their activations (more VRAM) and skip the recompute (faster). Spare VRAM spent on speed">
-      <ZenNumber v-model="spec.memory.grad_checkpoint_skip" :min="0" :max="64" :step="1" :precision="0" />
+    <ZenField v-if="spec.memory.gradient_checkpointing" label="Keep last blocks" stack tip="N blocks (the biggest, the last first) skip checkpointing: they keep their activations (more VRAM) and skip the recompute (faster). Spare VRAM spent on speed. Auto measures what a block keeps over the first steps, then keeps as many as the free VRAM holds, and fewer if a step runs out (MOSS at 1024 px on an RTX 5090: 20% faster a step). None with offloading: that VRAM holds weights instead">
+      <div class="sw-row">
+        <ZenNumber :model-value="spec.memory.grad_checkpoint_skip === 'auto' ? 0 : (spec.memory.grad_checkpoint_skip ?? 0)" :min="0" :max="64" :step="1" :precision="0" :disabled="(spec.memory.grad_checkpoint_skip ?? 'auto') === 'auto'" @update:model-value="spec.memory.grad_checkpoint_skip = $event" />
+        <span v-if="(spec.memory.grad_checkpoint_skip ?? 'auto') === 'auto'" class="sw-state">Auto</span>
+        <button v-if="(spec.memory.grad_checkpoint_skip ?? 'auto') === 'auto'" type="button" class="sw-auto" @click="spec.memory.grad_checkpoint_skip = 0">Set</button>
+        <button v-else type="button" class="sw-auto" @click="spec.memory.grad_checkpoint_skip = 'auto'">Auto</button>
+      </div>
     </ZenField>
     <ZenField label="Offload weights" stack tip="Stream weights from RAM"><div class="sw-row"><ZenSwitch v-model="spec.memory.offloading" /><span class="sw-state">{{ spec.memory.offloading ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="FP8 backward" stack tip="fp8 bases: the backward's matmuls in fp8 too. Faster, less precise"><div class="sw-row"><ZenSwitch v-model="spec.memory.fp8_backward" /><span class="sw-state">{{ spec.memory.fp8_backward ? 'On' : 'Off' }}</span></div></ZenField>

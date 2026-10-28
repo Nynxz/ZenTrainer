@@ -94,7 +94,7 @@ export interface SpecFields {
     training_dtype: string
     gradient_checkpointing: boolean
     grad_checkpoint_depth: number
-    grad_checkpoint_skip: number
+    grad_checkpoint_skip: number | "auto"
     offloading: boolean
     vram_headroom: number
     tread: number

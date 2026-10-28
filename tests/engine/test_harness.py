@@ -910,3 +910,41 @@ def test_the_validation_dataset_cant_be_the_training_one():
     TrainSpec.from_dict({**base, "validation": {"dataset": "cats_held_out"}})
     with pytest.raises(SpecError, match="is the training dataset"):
         TrainSpec.from_dict({**base, "validation": {"dataset": "cats"}})
+
+
+def test_kept_blocks_are_the_biggest_last_first_and_move_between_steps(monkeypatch):
+    import sys
+
+    import torch.nn as nn
+
+    from zentrainer.harness.memory import gradient_checkpointing
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+
+    def patch(m, offloading=False):
+        m.org_forward = m.forward
+
+    def unpatch(m):
+        m.__dict__.pop("org_forward", None)
+
+    mod.patch, mod.unpatch = patch, unpatch
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+
+    class Net(nn.Module):  # like Krea 2: the main blocks, then small text blocks last
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([nn.Linear(8, 8) for _ in range(4)])
+            self.txt = nn.Sequential(nn.ModuleList([nn.Linear(2, 2), nn.Linear(2, 2)]))
+
+    net = Net()
+    checkpointed = lambda: [hasattr(b, "org_forward") for b in list(net.blocks) + list(net.txt[0])]
+    with gradient_checkpointing(net, True, 1, False, skip=1) as ck:
+        assert checkpointed() == [True, True, True, False, True, True]  # the last main block, not a text one
+        assert ck.keep(3) == 3 and ck.blocks == 3
+        assert checkpointed() == [True, False, False, False, True, True]
+        ck.keep(0)
+        assert all(checkpointed())
+    assert not any(checkpointed())
+    with gradient_checkpointing(net, True, 1, True, skip=2) as ck:  # offloading: fixed at the start
+        assert ck.keep(4) == 2 and ck.kept == 2

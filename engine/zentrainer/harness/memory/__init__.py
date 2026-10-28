@@ -44,26 +44,47 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     ComfyUI's native helper (find_modules_at_depth) counts the model itself as depth 1,
     so "depth 1" there wraps the whole network as one segment: backward then rebuilds
     every activation at once and saves nothing. Checkpointing per block is what bounds
-    memory to roughly one block's activations. `skip` leaves the last blocks as they are
-    (keeping their activations, no recompute)."""
+    memory to roughly one block's activations. `skip` leaves that many of the biggest blocks
+    (the last first) as they are: keeping their activations, no recompute."""
     import types
 
     import torch.nn as nn
 
     if not enabled:
-        yield types.SimpleNamespace(blocks=0, input_grad=False)
+        yield types.SimpleNamespace(blocks=0, input_grad=False, all=[], kept=0, keep=lambda n: 0)
         return
     from comfy_extras.nodes_train import patch, unpatch
 
-    blocks = block_lists(diffusion_model, max(1, depth))
-    if not blocks:  # no repeated blocks (unusual): fall back to the top-level children
-        blocks = [c for c in diffusion_model.children()]
-    if skip > 0:
-        blocks = blocks[: max(0, len(blocks) - skip)]
-    for m in blocks:
-        patch(m, offloading=offloading)
+    every = block_lists(diffusion_model, max(1, depth))
+    if not every:  # no repeated blocks (unusual): fall back to the top-level children
+        every = [c for c in diffusion_model.children()]
+    # which blocks stay un-checkpointed first: the biggest, the last of them first. By order alone
+    # Krea 2's last blocks are its four small text-fusion ones, which run on the caption only
+    size = [sum(p.numel() for p in b.parameters()) for b in every]
+    order = sorted(range(len(every) - 1, -1, -1), key=lambda i: -size[i])
+    state = types.SimpleNamespace(blocks=0, input_grad=False, all=every, kept=0)
+
+    def keep(n: int) -> int:
+        """The n blocks of `order` un-checkpointed, the rest checkpointed; between steps too
+        (memory.grad_checkpoint_skip "auto" moves it as it measures). Fixed with offloading: kept
+        blocks' weights would stream too, and the loose layers patched below assume the start's."""
+        n = min(max(0, n), len(every))
+        if state.blocks and (offloading or n == state.kept):
+            return state.kept
+        kept = set(order[:n])
+        for i, m in enumerate(every):
+            if i not in kept and not hasattr(m, "org_forward"):
+                patch(m, offloading=offloading)
+            elif i in kept and hasattr(m, "org_forward"):
+                unpatch(m)
+        state.kept, state.blocks = n, len(every) - n
+        return n
+
+    keep(skip)
+    blocks = [m for m in every if hasattr(m, "org_forward")]
     logging.info("[ZenTrainer] gradient checkpointing on %d blocks (depth %d%s)", len(blocks), depth,
-                 f", last {skip} kept" if skip > 0 else "")
+                 f", {state.kept} kept" if state.kept else "")
+    state.keep = keep
     if offloading:
         # An offloaded layer's weight lives in a streaming buffer that the next layers reuse, so
         # autograd can't keep it for backward ("modified by an inplace operation" on step one).
@@ -85,9 +106,9 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     # module is itself a Linear/Conv) only records when its input requires grad; block-level
     # checkpointing is torch's non-reentrant one, which doesn't. Without that need, the input
     # stays grad-free and the backward stops at the first trained layer.
-    input_grad = offloading and any(isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)) for m in blocks)
+    state.input_grad = offloading and any(isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)) for m in blocks)
     try:
-        yield types.SimpleNamespace(blocks=len(blocks), input_grad=input_grad)
+        yield state
     finally:
         for m in diffusion_model.modules():
             unpatch(m)
