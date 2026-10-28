@@ -28,6 +28,9 @@ const advanced = reactive({ memory: false })
         <button v-else type="button" class="sw-auto" @click="spec.memory.grad_checkpoint_skip = 'auto'">Auto</button>
       </div>
     </ZenField>
+    <ZenField v-if="spec.memory.gradient_checkpointing" label="Checkpoints keep" stack tip="What checkpointed blocks keep instead of recomputing in the backward. Attention: each block's attention output (about 50 MB at 1024 px), so attention, the costliest part to recompute, runs once: Krea 2 6% and MOSS 15% faster a step at 1024 px for 1–2 GB. Nothing: every block recomputed whole, the least VRAM. Not with offloading">
+      <ZenCombo :model-value="spec.memory.checkpoint_save ?? 'attention'" :items="items(['attention', 'none'], { attention: 'Attention', none: 'Nothing' })" :searchable="false" :sorted="false" @update:model-value="spec.memory.checkpoint_save = $event as 'attention' | 'none'" />
+    </ZenField>
     <ZenField label="Offload weights" stack tip="Stream weights from RAM"><div class="sw-row"><ZenSwitch v-model="spec.memory.offloading" /><span class="sw-state">{{ spec.memory.offloading ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="FP8 backward" stack tip="fp8 bases: the backward's matmuls in fp8 too. Faster, less precise"><div class="sw-row"><ZenSwitch v-model="spec.memory.fp8_backward" /><span class="sw-state">{{ spec.memory.fp8_backward ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="TREAD (video)" stack tip="On video steps this share of the clip's tokens skips the middle blocks and rejoins unchanged: those blocks do about half the work at 50%. Stills, samples and validation run whole. Best with some stills in the dataset: they anchor the LoRA. MiniMax H3">

@@ -690,6 +690,15 @@
           "default": "auto",
           "minimum": 0
         },
+        "checkpoint_save": {
+          "type": "string",
+          "description": "What checkpointed blocks keep instead of recomputing: \"attention\": attention's output (about 50 MB a block at 1024 px), so the backward doesn't run attention again (Krea 2 6%, MOSS 15% a step, for 1-2 GB). \"none\": everything recomputed, the least VRAM. Not with offloading.",
+          "default": "attention",
+          "enum": [
+            "attention",
+            "none"
+          ]
+        },
         "offloading": {
           "type": "boolean",
           "description": "Keep part of the model in RAM and stream it in: for models bigger than the card.",

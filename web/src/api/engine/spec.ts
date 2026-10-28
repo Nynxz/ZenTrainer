@@ -124,6 +124,8 @@ export interface TrainSpec {
     grad_checkpoint_depth: number
     /** the last N blocks keep their activations: faster, more VRAM. "auto": as many as fit */
     grad_checkpoint_skip: number | 'auto'
+    /** what checkpointed blocks keep instead of recomputing: attention's output, or nothing */
+    checkpoint_save?: 'attention' | 'none'
     /** TREAD: share of a video clip's tokens routed around the middle blocks (0 = off) */
     tread?: number
     /** int8 ConvRot bases' backward: "w8a8" on int8 tensor cores (engine default), "fused" Triton at

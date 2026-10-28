@@ -948,3 +948,183 @@ def test_kept_blocks_are_the_biggest_last_first_and_move_between_steps(monkeypat
     assert not any(checkpointed())
     with gradient_checkpointing(net, True, 1, True, skip=2) as ck:  # offloading: fixed at the start
         assert ck.keep(4) == 2 and ck.kept == 2
+
+
+@pytest.mark.parametrize("save,runs", [("attention", 1), ("none", 2)])
+def test_checkpoints_keep_attention_so_it_runs_once(monkeypatch, save, runs):
+    import sys
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    from zentrainer.harness.memory import gradient_checkpointing
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+
+    def patch(m, offloading=False):  # ComfyUI's: the block's forward under torch's checkpoint
+        org = m.forward
+        m.org_forward = org
+        m.forward = lambda *a, **k: torch.utils.checkpoint.checkpoint(org, *a, use_reentrant=False, **k)
+
+    def unpatch(m):
+        if "org_forward" in m.__dict__:
+            m.forward = m.__dict__.pop("org_forward")
+
+    mod.patch, mod.unpatch = patch, unpatch
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.qkv, self.out = nn.Linear(16, 48), nn.Linear(16, 16)
+
+        def forward(self, x):
+            q, k, v = self.qkv(x).view(1, 6, 2, 3, 8).permute(3, 0, 2, 1, 4)
+            return x + self.out(F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(1, 6, 16))
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block(), Block()])
+
+    class Count(TorchDispatchMode):
+        n = 0
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            if "scaled_dot_product" in func.__name__ and "backward" not in func.__name__:
+                Count.n += 1
+            return func(*args, **(kwargs or {}))
+
+    torch.manual_seed(0)
+    net = Net()
+    x = torch.randn(1, 6, 16, requires_grad=True)
+    want = torch.autograd.grad(net.blocks[1](net.blocks[0](x)).square().sum(), x)[0]
+    with gradient_checkpointing(net, True, 1, False, save=save), Count():
+        got = torch.autograd.grad(net.blocks[1](net.blocks[0](x)).square().sum(), x)[0]
+    assert torch.allclose(got, want)
+    assert Count.n == 2 * runs  # two blocks: once each, or again in the backward
+
+
+def test_kept_attention_survives_two_forwards_in_one_autocast(monkeypatch):
+    """A micro-batch can run the model twice in one autocast region (a batch of two pictures, each
+    with its own conditioning). With autocast's cast cache on, the second forward skips casting a
+    trained fp32 weight that the recompute then casts, and a block keeping attention can't replay
+    it ("_to_copy ... not found in storage"); the trainer's autocast keeps no cache."""
+    import sys
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    from zentrainer.harness.memory import gradient_checkpointing
+    from zentrainer.harness.trainer import Trainer
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+
+    def patch(m, offloading=False):
+        org = m.forward
+        m.org_forward = org
+        m.forward = lambda *a, **k: torch.utils.checkpoint.checkpoint(org, *a, use_reentrant=False, **k)
+
+    def unpatch(m):
+        if "org_forward" in m.__dict__:
+            m.forward = m.__dict__.pop("org_forward")
+
+    mod.patch, mod.unpatch = patch, unpatch
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.qkv, self.out = nn.Linear(16, 48), nn.Linear(16, 16)  # fp32 and trained, like an adapter
+
+        def forward(self, x):
+            q, k, v = self.qkv(x).view(1, 6, 2, 3, 8).permute(3, 0, 2, 1, 4)
+            return x + self.out(F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(1, 6, 16))
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block(), Block()])
+
+    trainer = types.SimpleNamespace(device=torch.device("cpu"), train_dtype=torch.bfloat16)
+    torch.manual_seed(0)
+    net = Net()
+    x = torch.randn(1, 6, 16)
+    run = lambda t: net.blocks[1](net.blocks[0](t)).float().square().sum()  # noqa: E731
+    with Trainer._autocast(trainer):
+        want = torch.autograd.grad(run(x) + run(x + 1), list(net.parameters()))
+    with gradient_checkpointing(net, True, 1, False, save="attention"):
+        with Trainer._autocast(trainer):
+            loss = run(x) + run(x + 1)  # the second forward would hit the cache
+        got = torch.autograd.grad(loss, list(net.parameters()))
+    assert all(torch.allclose(g, w) for g, w in zip(got, want))
+
+
+def test_a_block_with_sharp_attention_keeps_nothing(monkeypatch):
+    """Kept attention pairs the forward's softmax statistics with q and k recomputed in the
+    backward: on Krea 2's block 0 (q/k norm weights ~52) compiled rounding made that blow up."""
+    import sys
+
+    import torch.nn as nn
+
+    from zentrainer.harness import memory
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+    plain = []
+    mod.patch = lambda m, offloading=False: plain.append(m)
+    mod.unpatch = lambda m: None
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+    kept = []
+    monkeypatch.setattr(memory, "_patch_saving", kept.append)
+
+    class Block(nn.Module):
+        def __init__(self, scale):
+            super().__init__()
+            self.q_norm, self.k_norm = nn.RMSNorm(8), nn.RMSNorm(8)
+            with torch.no_grad():
+                self.q_norm.weight.fill_(scale)
+                self.k_norm.weight.fill_(scale)
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block(60.0), Block(7.5), Block(1.0)])
+
+    net = Net()
+    assert memory._qk_peak(net.blocks[0]) == 3600.0 and memory._qk_peak(nn.Linear(2, 2)) == 0.0
+    with memory.gradient_checkpointing(net, True, 1, False, save="attention"):
+        assert plain == [net.blocks[0]]  # checkpointed as before
+        assert kept == [net.blocks[1], net.blocks[2]]  # MOSS's sharpest is ~55: still kept
+
+
+def test_without_selective_checkpointing_attention_falls_back_to_plain(monkeypatch):
+    """torch before 2.4 has no create_selective_checkpoint_contexts: the default (attention) has to
+    checkpoint whole blocks, not fail at the first step."""
+    import sys
+
+    import torch.nn as nn
+
+    from zentrainer.harness import memory
+
+    mod = types.ModuleType("comfy_extras.nodes_train")
+    plain = []
+    mod.patch = lambda m, offloading=False: plain.append(m)
+    mod.unpatch = lambda m: None
+    monkeypatch.setitem(sys.modules, "comfy_extras", types.ModuleType("comfy_extras"))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", mod)
+    monkeypatch.delattr(torch.utils.checkpoint, "create_selective_checkpoint_contexts")
+    kept = []
+    monkeypatch.setattr(memory, "_patch_saving", kept.append)
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([nn.Linear(2, 2), nn.Linear(2, 2)])
+
+    net = Net()
+    with memory.gradient_checkpointing(net, True, 1, False, save="attention"):
+        assert plain == list(net.blocks) and not kept

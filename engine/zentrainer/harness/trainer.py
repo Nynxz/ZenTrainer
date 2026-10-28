@@ -75,6 +75,8 @@ def _oom_advice(spec: TrainSpec, step: int) -> str:
         tips.append("turn on gradient checkpointing")
     elif isinstance(m.grad_checkpoint_skip, int) and m.grad_checkpoint_skip:
         tips.append(f"keep fewer blocks un-checkpointed ({m.grad_checkpoint_skip} -> 0)")
+    if m.gradient_checkpointing and not m.offloading and m.checkpoint_save == "attention":
+        tips.append("let checkpoints keep nothing (Memory -> Checkpoints keep: Nothing)")
     if not m.offloading:
         tips.append("turn on weight offloading")
     if d.resolution > 768:
@@ -274,7 +276,7 @@ class Trainer:
                 skip = m.grad_checkpoint_skip
                 with compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
-                                               0 if skip == "auto" else skip) as ckpt:
+                                               0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:
                     self._input_grad = ckpt.input_grad
                     self._ckpt = ckpt
                     self._keep_auto = skip == "auto" and not m.offloading and bool(ckpt.all) and torch.cuda.is_available()
@@ -1169,7 +1171,7 @@ class Trainer:
 
             # the input needs grad only for ComfyUI's per-layer offload checkpoint (see memory.py);
             # otherwise it stays grad-free so the backward ends at the first trained layer
-            with torch.autocast(self.device.type, dtype=self.train_dtype, enabled=self.train_dtype != torch.float32):
+            with self._autocast():
                 x0_pred = self.denoiser(x_t.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds,
                                         self._tread(idx))
             loss = self.objective.train_loss(x_t.detach(), x0, x0_pred, sigma, weight, percents).mean()
@@ -1244,7 +1246,7 @@ class Trainer:
         total = torch.zeros((), device=self.device)
         for strength, xt, target in ((own, x_t, x0), (-own, x_other, x0_other)):
             with self.network.at_strength(strength):
-                with torch.autocast(self.device.type, dtype=self.train_dtype, enabled=self.train_dtype != torch.float32):
+                with self._autocast():
                     pred = self.denoiser(xt.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds, None)
                 loss = self.objective.train_loss(xt.detach(), target, pred, sigma, weight, percents).mean()
                 scaled = loss / (acc * 2)
@@ -1279,6 +1281,15 @@ class Trainer:
                 self._slider_conds[key] = self.denoiser.prepare(self._slider_text[name], x0[:1], self.device, shapes)
         return self._slider_conds[key]
 
+    def _autocast(self):
+        """A training forward's autocast. Without its cast cache: a micro-batch can run the model more
+        than once in one region (ComfyUI runs each picture's conditioning apart), and a cached cast of
+        a trained weight then skips the cast the checkpoint's recompute does again, which a block
+        keeping attention (memory.checkpoint_save) can't replay. Each forward casts the adapters'
+        weights itself; they're small."""
+        return torch.autocast(self.device.type, dtype=self.train_dtype, enabled=self.train_dtype != torch.float32,
+                              cache_enabled=False)
+
     def _slider_loss(self, x0: torch.Tensor, shapes, x_t: torch.Tensor, sigma: torch.Tensor, acc: int) -> torch.Tensor:
         """A text slider's micro-batch: the base model's predictions (strength 0, no grad) make the
         targets; then the LoRA trains at +1 (and -1) on the neutral prompt, a backward each, inside
@@ -1287,8 +1298,7 @@ class Trainer:
         from . import slider
 
         sl, n = self.spec.slider, x0.shape[0]
-        autocast = lambda: torch.autocast(self.device.type, dtype=self.train_dtype,  # noqa: E731
-                                          enabled=self.train_dtype != torch.float32)
+        autocast = self._autocast
         cond = {k: [self._slider_cond(k, x0, shapes)] * n for k in self._slider_text}
         anchors = [k for k in cond if k.startswith("anchor")]
         with torch.no_grad(), self.network.at_strength(0.0), autocast():

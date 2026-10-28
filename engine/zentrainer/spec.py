@@ -220,6 +220,11 @@ class MemorySpec:
                                                      "they keep their activations (more VRAM) and skip the recompute, the cheapest "
                                                      'place to trade memory for speed. "auto": as many as the VRAM '
                                                      "the first steps left free holds (none with offloading).", ge=0)
+    checkpoint_save: str = setting("attention", "What checkpointed blocks keep instead of recomputing: "
+                                                '"attention": attention\'s output (about 50 MB a block at 1024 px), so '
+                                                "the backward doesn't run attention again (Krea 2 6%, MOSS 15% a step, "
+                                                'for 1-2 GB). "none": everything recomputed, the least VRAM. Not with '
+                                                "offloading.", choices=("attention", "none"))
     offloading: bool = setting(False, "Keep part of the model in RAM and stream it in: for models bigger than the "
                                       "card.")
     vram_headroom: float = setting(0.0, "With offloading: the VRAM kept free for activations, the LoRA and its "

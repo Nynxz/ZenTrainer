@@ -36,8 +36,72 @@ def block_lists(model, depth: int = 1) -> list:
     return found
 
 
+# memory.checkpoint_save "attention": a checkpointed block keeps attention's outputs (and its
+# softmax statistics) instead of running attention's forward again in the backward; the rest is
+# recomputed as before. Measured on an RTX 5090 at 1024 px, compiled, nothing kept un-checkpointed:
+# Krea 2 1.08 -> 1.01 s a step for 1.9 GB more, MOSS 0.60 -> 0.51 for 1.0 GB (keeping 10 whole
+# Krea 2 blocks bought the same 6% for 6 GB). The same losses: the step-one loss is the eager run's
+# to the last digit uncompiled, and compiled within the rounding compiling itself changes.
+_SAVE_OPS = ("_scaled_dot_product_flash_attention", "_scaled_dot_product_efficient_attention",
+             "_scaled_dot_product_cudnn_attention", "_scaled_dot_product_flash_attention_for_cpu")
+
+
+def _keep_attention():
+    import torch
+    from torch.utils.checkpoint import CheckpointPolicy, create_selective_checkpoint_contexts
+
+    save = {getattr(torch.ops.aten, n).default for n in _SAVE_OPS if hasattr(torch.ops.aten, n)}
+
+    def policy(ctx, op, *args, **kwargs):
+        return CheckpointPolicy.MUST_SAVE if op in save else CheckpointPolicy.PREFER_RECOMPUTE
+
+    return create_selective_checkpoint_contexts(policy)
+
+
+# A block whose attention is this sharp keeps nothing: kept attention saves the softmax statistics
+# from the forward and pairs them with q and k recomputed in the backward, which compiled code
+# rounds a little differently (other kernels): harmless on ordinary logits, but Krea 2's block 0
+# (q and k norm weights up to 51.9, logits to ~31,000) turned that rounding into gradients of
+# 1e8-1e17 and NaN, intermittently. The largest q-norm weight times the largest k-norm weight:
+# Krea 2's block 0 2690, then 21; MOSS's sharpest blocks 55 and 42 (and those train as uncompiled).
+SHARP_QK = 500.0
+
+
+def _qk_peak(m) -> float:
+    """The largest q-norm weight times the largest k-norm weight in block m (0 without them)."""
+    peak = {"q": 0.0, "k": 0.0}
+    for name, sub in m.named_modules():
+        leaf = name.rsplit(".", 1)[-1].replace("_", "")
+        side = "q" if leaf in ("qnorm", "normq", "querynorm") else "k" if leaf in ("knorm", "normk", "keynorm") else None
+        if side is None:
+            continue
+        for p in sub.parameters(recurse=False):
+            if p.ndim == 1:
+                peak[side] = max(peak[side], float(p.detach().abs().max()))
+    return peak["q"] * peak["k"]
+
+
+def _patch_saving(m) -> None:
+    """A block checkpointed with _keep_attention. A compiled block (kernels/compile.py) is compiled
+    again around the checkpoint: the policy has to see the ops, which a checkpoint around the
+    compiled forward can't (it fails in the backward)."""
+    import torch
+
+    org = m.forward
+    inner = getattr(org, "_torchdynamo_orig_callable", None)
+
+    def checkpointed(fn):
+        def run(*args, **kwargs):
+            return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False, context_fn=_keep_attention, **kwargs)
+        return run
+
+    m.org_forward = org  # what unpatch puts back
+    m.forward = torch.compile(checkpointed(inner), dynamic=True) if inner is not None else checkpointed(org)
+
+
 @contextmanager
-def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloading: bool, skip: int = 0) -> Iterator[int]:
+def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloading: bool, skip: int = 0,
+                           save: str = "none") -> Iterator[int]:
     """Recompute each block's activations in backward instead of keeping them. Yields
     how many blocks are checkpointed.
 
@@ -45,7 +109,8 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     so "depth 1" there wraps the whole network as one segment: backward then rebuilds
     every activation at once and saves nothing. Checkpointing per block is what bounds
     memory to roughly one block's activations. `skip` leaves that many of the biggest blocks
-    (the last first) as they are: keeping their activations, no recompute."""
+    (the last first) as they are: keeping their activations, no recompute. `save` "attention": the
+    checkpointed blocks keep attention's outputs (see _SAVE_OPS)."""
     import types
 
     import torch.nn as nn
@@ -54,6 +119,27 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
         yield types.SimpleNamespace(blocks=0, input_grad=False, all=[], kept=0, keep=lambda n: 0)
         return
     from comfy_extras.nodes_train import patch, unpatch
+
+    if save == "attention" and not hasattr(__import__("torch").utils.checkpoint, "create_selective_checkpoint_contexts"):
+        # selective checkpointing is torch 2.4's: an older ComfyUI's torch checkpoints whole blocks
+        logging.info("[ZenTrainer] checkpoints keep nothing, not attention: this torch has no selective checkpointing (2.4+)")
+        save = "none"
+    if save == "attention" and not offloading:  # (offloading checkpoints per layer: untested there)
+        comfy_patch = patch
+
+        sharp: set[int] = set()
+
+        def patch(m, offloading=False):  # noqa: F811
+            i = next((i for i, b in enumerate(every) if b is m), None)
+            if i is not None and (peak := _qk_peak(m)) > SHARP_QK and i not in sharp:
+                sharp.add(i)
+                name = next((n for n, x in diffusion_model.named_modules() if x is m), f"block {i}")
+                logging.info("[ZenTrainer] %s keeps nothing, not attention: its attention is too sharp for it "
+                             "(q x k norm weights %.0f)", name, peak)
+            if i is not None and i not in sharp:
+                _patch_saving(m)
+            else:
+                comfy_patch(m, offloading=offloading)
 
     every = block_lists(diffusion_model, max(1, depth))
     if not every:  # no repeated blocks (unusual): fall back to the top-level children
@@ -82,8 +168,9 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
 
     keep(skip)
     blocks = [m for m in every if hasattr(m, "org_forward")]
-    logging.info("[ZenTrainer] gradient checkpointing on %d blocks (depth %d%s)", len(blocks), depth,
-                 f", {state.kept} kept" if state.kept else "")
+    logging.info("[ZenTrainer] gradient checkpointing on %d blocks (depth %d%s%s)", len(blocks), depth,
+                 f", {state.kept} kept" if state.kept else "",
+                 ", attention kept" if save == "attention" and not offloading else "")
     state.keep = keep
     if offloading:
         # An offloaded layer's weight lives in a streaming buffer that the next layers reuse, so
