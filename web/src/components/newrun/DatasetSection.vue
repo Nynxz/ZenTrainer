@@ -75,20 +75,21 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
         </button>
       </div>
     </ZenField>
-    <ZenField label="Trigger word" stack tip="Replaces [trigger] in captions and prompts">
-      <div class="trig-row">
+    <!-- the dataset's name as a link on the label's line: the input keeps its width either way -->
+    <div class="trig-field">
+      <ZenField label="Trigger word" stack tip="Replaces [trigger] in captions and prompts">
         <ZenInput v-model="spec.dataset.trigger" placeholder="e.g. ohwx" />
-        <button
-          v-if="nameTrigger && spec.dataset.trigger !== nameTrigger"
-          type="button"
-          class="chip-btn use-name"
-          :title="`Use the dataset's name, ${nameTrigger}, as the trigger word`"
-          @click="spec.dataset.trigger = nameTrigger"
-        >
-          <i class="mdi mdi-tag-outline" /> <span class="ellipsis">Use “{{ nameTrigger }}”</span>
-        </button>
-      </div>
-    </ZenField>
+      </ZenField>
+      <button
+        v-if="nameTrigger && spec.dataset.trigger !== nameTrigger"
+        type="button"
+        class="use-name"
+        :title="`Use the dataset's name, ${nameTrigger}, as the trigger word`"
+        @click="spec.dataset.trigger = nameTrigger"
+      >
+        <i class="mdi mdi-tag-outline" /> <span class="ellipsis">Use “{{ nameTrigger }}”</span>
+      </button>
+    </div>
     <ZenField label="Add it to every caption" stack tip="Prepend it where a caption doesn't mention it"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="Resolution" stack>
       <div class="chips">
@@ -253,23 +254,31 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   font-weight: 600;
   font-size: 13px;
 }
-/* the trigger word, with the dataset's name a click away beside it */
-.trig-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.trig-row > :first-child {
-  flex: 1;
+/* the trigger word, with the dataset's name a click away on its label's line */
+.trig-field {
+  position: relative;
   min-width: 0;
 }
 .use-name {
-  flex: 0 1 auto;
-  max-width: 55%;
+  position: absolute;
+  top: 0;
+  right: 0;
+  max-width: 60%;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--zen-accent);
   white-space: nowrap;
+  cursor: pointer;
+}
+.use-name:hover {
+  text-decoration: underline;
 }
 .use-name .ellipsis {
   overflow: hidden;
