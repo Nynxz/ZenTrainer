@@ -239,7 +239,6 @@ async function forget(a: TrainingAdapter) {
   display: block;
   height: 100%;
   background: var(--zen-accent);
-  transition: width var(--zen-dur);
 }
 .ap-link {
   border: none;

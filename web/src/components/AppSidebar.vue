@@ -640,7 +640,6 @@ nav {
 .ring .arc {
   stroke: var(--sb-primary);
   stroke-linecap: round;
-  transition: stroke-dasharray 0.4s ease;
 }
 .ring.paused .arc {
   stroke: var(--zen-warn);
@@ -811,7 +810,6 @@ nav {
   display: block;
   height: 100%;
   background: var(--sb-primary);
-  transition: width 0.5s ease;
 }
 .meter span.hot {
   background: var(--zen-warn);
