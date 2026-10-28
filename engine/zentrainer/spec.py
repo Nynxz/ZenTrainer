@@ -216,9 +216,10 @@ class MemorySpec:
     gradient_checkpointing: bool = setting(True, "Recompute activations in the backward instead of keeping them: much "
                                                  "less VRAM, some speed.")
     grad_checkpoint_depth: int = setting(1, "Gradient checkpointing's granularity.", ge=1)
-    grad_checkpoint_skip: int = setting(0, "Leave the last N blocks un-checkpointed: they keep their activations (more "
-                                           "VRAM) and skip the recompute, the cheapest place to trade memory for "
-                                           "speed.", ge=0)
+    grad_checkpoint_skip: int | Auto = setting("auto", "Leave N blocks un-checkpointed (the biggest, the last first): "
+                                                     "they keep their activations (more VRAM) and skip the recompute, the cheapest "
+                                                     'place to trade memory for speed. "auto": as many as the VRAM '
+                                                     "the first steps left free holds (none with offloading).", ge=0)
     offloading: bool = setting(False, "Keep part of the model in RAM and stream it in: for models bigger than the "
                                       "card.")
     vram_headroom: float = setting(0.0, "With offloading: the VRAM kept free for activations, the LoRA and its "

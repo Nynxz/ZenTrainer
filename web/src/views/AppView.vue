@@ -168,7 +168,6 @@ onUnmounted(() => {
   off()
   clearTimeout(timer)
 })
-watch(() => props.id, () => location.reload())
 
 // ---- results ------------------------------------------------------------------------------------
 const view = computed(() => app.value?.outputs[0]?.view ?? 'gallery')

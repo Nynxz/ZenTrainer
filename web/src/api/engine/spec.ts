@@ -122,8 +122,8 @@ export interface TrainSpec {
     training_dtype: 'bf16' | 'fp16' | 'fp32'
     gradient_checkpointing: boolean
     grad_checkpoint_depth: number
-    /** the last N blocks keep their activations: faster, more VRAM */
-    grad_checkpoint_skip: number
+    /** the last N blocks keep their activations: faster, more VRAM. "auto": as many as fit */
+    grad_checkpoint_skip: number | 'auto'
     /** TREAD: share of a video clip's tokens routed around the middle blocks (0 = off) */
     tread?: number
     /** int8 ConvRot bases' backward: "w8a8" on int8 tensor cores (engine default), "fused" Triton at
@@ -285,7 +285,7 @@ export function defaultSpec(): TrainSpec {
       training_dtype: 'bf16',
       gradient_checkpointing: true,
       grad_checkpoint_depth: 1,
-      grad_checkpoint_skip: 0,
+      grad_checkpoint_skip: 'auto',
       offloading: false,
       fp8_backward: false,
       bypass_mode: false,

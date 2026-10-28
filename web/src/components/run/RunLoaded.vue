@@ -4,6 +4,7 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { loadedModels, watchLoaded } from '@/stores/loaded'
 import { gb } from '@/stores/system'
+import { isCollapsed, toggleCollapsed } from './collapse'
 import { useRunContext } from './context'
 
 const { detail, running } = useRunContext()
@@ -25,11 +26,23 @@ onUnmounted(() => stopLoaded())
 
 <template>
   <section v-if="runLoaded.length" class="card loaded-card">
-    <header class="sec-head">
+    <header
+      class="sec-head fold"
+      :class="{ folded: isCollapsed('In VRAM') }"
+      role="button"
+      tabindex="0"
+      :aria-expanded="!isCollapsed('In VRAM')"
+      :title="isCollapsed('In VRAM') ? 'Show' : 'Fold away'"
+      @click="toggleCollapsed('In VRAM')"
+      @keydown.enter.self.prevent="toggleCollapsed('In VRAM')"
+      @keydown.space.self.prevent="toggleCollapsed('In VRAM')"
+    >
       <span class="sec-title">In VRAM</span>
       <span class="sec-sub">loaded now</span>
+      <span class="spacer" />
+      <i class="mdi fold-chev" :class="isCollapsed('In VRAM') ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
     </header>
-    <div v-for="m in runLoaded" :key="m.file ?? m.name" class="lrow" :title="`${m.file}: ${gb(m.vram)} of ${gb(m.bytes)} GB in VRAM`">
+    <div v-for="m in isCollapsed('In VRAM') ? [] : runLoaded" :key="m.file ?? m.name" class="lrow" :title="`${m.file}: ${gb(m.vram)} of ${gb(m.bytes)} GB in VRAM`">
       <span class="lname ellipsis">{{ (m.file ?? m.name).replace(/\.safetensors$/, '') }}</span>
       <span class="mono small muted">{{ gb(m.vram) }}/{{ gb(m.bytes) }} GB</span>
       <div class="lbar"><span :style="{ width: `${m.bytes ? (m.vram / m.bytes) * 100 : 0}%` }" /></div>

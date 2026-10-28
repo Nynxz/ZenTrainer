@@ -8,6 +8,7 @@ state (the run store keeps the full history in metrics.jsonl).
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 METRICS = "zentrainer.metrics"  # {run_id, step, total, loss, lr, grad_norm, epoch, elapsed, it_s}
@@ -23,11 +24,24 @@ VALIDATION = "zentrainer.validation"  # {run_id, step, val_loss, by_noise: {nois
 ZENKIT_JOB = "zenkit.job"  # mirrored so ZenKit's taskbar shows the run too
 
 
+def finite(obj: Any) -> Any:
+    """JSON a browser can read: a number that isn't finite (a step whose gradients overflowed has
+    an infinite or NaN grad norm) becomes null. Python writes them as NaN and Infinity, which
+    JSON.parse refuses, so one such step broke every event and page that carried it."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: finite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [finite(v) for v in obj]
+    return obj
+
+
 def emit(event: str, data: dict[str, Any]) -> None:
     """Best effort: telemetry must never be what fails a training run."""
     try:
         from server import PromptServer
 
-        PromptServer.instance.send_sync(event, data)
+        PromptServer.instance.send_sync(event, finite(data))
     except Exception:  # outside ComfyUI, server not started, socket gone
         logging.debug("[ZenTrainer] dropped %s event", event, exc_info=True)

@@ -203,7 +203,9 @@ export function useRunForm() {
       spec.output.keep_states = settings.keepStates
     }
     const q = route.query.dataset
-    spec.dataset.folder = (typeof q === 'string' && q) || spec.dataset.folder || datasets.value[0]?.folder || ''
+    // else the dataset changed last (pictures added, captions written): likely the one to train now
+    const latest = [...datasets.value].sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0))[0]
+    spec.dataset.folder = (typeof q === 'string' && q) || spec.dataset.folder || latest?.folder || ''
   })
 
   // ---- presets ---------------------------------------------------------------------------------

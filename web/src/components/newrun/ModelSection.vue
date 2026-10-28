@@ -2,12 +2,14 @@
 // 1 Model: the family picker, its hand-picked recipe (applied when the family is picked, re-appliable
 // after edits), and the file-by-file pick for a custom model.
 import { ZenCombo, ZenField, ZenMenuItem, ZenPopover } from '@nynxz/zenkit-ui'
-import { computed, ref } from 'vue'
-import type { ModelProfile } from '@/api/engine'
+import { computed, ref, toRaw } from 'vue'
+import type { ModelProfile, TrainSpec } from '@/api/engine'
 import FamilyPicker from '@/components/FamilyPicker.vue'
+import { RECIPES, applyTo, plan } from '@/lib/recipes'
+import ModelDialog from './ModelDialog.vue'
 import { items, merge, useRunFormContext } from './form'
 
-const { spec, choices, modelMissing, sampleSuggestion, profile, familyId, resuming } = useRunFormContext()
+const { spec, choices, modelMissing, sampleSuggestion, profile, familyId, resuming, applyRecipe } = useRunFormContext()
 
 const customModel = ref(false) // the picker's custom (file-by-file) mode
 function applyProfile(p: ModelProfile) {
@@ -31,6 +33,26 @@ const profileApplied = computed(() => {
   return same(p.train, spec as unknown as Record<string, unknown>) && same(p.samples as Record<string, unknown>, spec.samples as unknown as Record<string, unknown>)
 })
 const profileOpen = ref(false)
+// the model dialog: a family picked there goes through the picker (its files, its downloads); a
+// recipe on Models is applied as Recipes applies it (its model with it, Undo to take it back). If
+// its files can't be worked out here, the dialog opens on Recipes at it, to say why
+const dialogView = ref<'models' | 'recipes'>('models')
+const recipeStart = ref<string | null>(null)
+async function useRecipe(id: string) {
+  const r = RECIPES.find((x) => x.id === id)
+  if (!r) return
+  try {
+    const p = await plan(r)
+    if (p.problems.length) throw new Error(p.problems.join('; '))
+    applyRecipe({ id: r.id, title: r.title }, applyTo(r, p, toRaw(spec) as TrainSpec))
+  } catch {
+    recipeStart.value = id
+    dialogView.value = 'recipes'
+    browsing.value = true
+  }
+}
+const picker = ref<InstanceType<typeof FamilyPicker> | null>(null)
+const browsing = ref(false)
 </script>
 
 <template>
@@ -55,8 +77,12 @@ const profileOpen = ref(false)
       </template>
     </ZenPopover>
   </div>
+  <ModelDialog v-model:open="browsing" v-model:view="dialogView" v-model:start="recipeStart" :current="familyId" @pick="picker?.pick($event)" @recipe="useRecipe" />
   <FamilyPicker
+    ref="picker"
     v-model="spec.model"
+    browse
+    @browse="(dialogView = 'models'), (browsing = true)"
     @missing="modelMissing = $event"
     @sample-suggestion="sampleSuggestion = $event"
     @custom="customModel = $event"

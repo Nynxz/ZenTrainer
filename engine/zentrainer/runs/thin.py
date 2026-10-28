@@ -35,7 +35,8 @@ def thin(rows: list[dict], keep: int = KEEP, tail: int = TAIL) -> tuple[list[dic
     for i in range(0, len(head), per):
         part = head[i:i + per]
         row = dict(part[-1])
-        losses = [r["loss"] for r in part if r.get("loss") is not None]
+        # a NaN or inf step is left out, not averaged: one would make the whole bucket null
+        losses = [r["loss"] for r in part if isinstance(r.get("loss"), (int, float)) and math.isfinite(r["loss"])]
         if losses:
             row["loss"] = sum(losses) / len(losses)
         out.append(row)

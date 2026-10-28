@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import web
 
 from ... import presets, sharing, state
+from ...events import finite
 from ...runs import preflight
 from ...runs.thin import thin
 from .. import jobqueue, system
@@ -56,7 +57,7 @@ def register(server) -> None:
                 rows, every = metrics, 1
             else:
                 rows, every = thin(metrics)
-            return web.json_response({
+            return web.json_response(finite({
                 "run": store.meta(run_id),
                 "spec": store.spec(run_id),
                 "metrics": rows,
@@ -68,7 +69,7 @@ def register(server) -> None:
                 "likeness": store.read(run_id, "likeness"),
                 "pruned": store.read(run_id, "pruned"),
                 "live": control.get(run_id) is not None,
-            })
+            }))
         except (FileNotFoundError, ValueError):
             return _bad("run not found", 404)
 

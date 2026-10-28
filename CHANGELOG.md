@@ -72,6 +72,84 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   a Python example).
 
 ### Run form and look
+- **A run's rail reads like a dataset's side panel**, the same spacing and headers, and every card
+  in it (Time, Learning, Setup, In VRAM, Checkpoints) folds from its header, remembered in this
+  browser. The Datasets page and a dataset's page take the header Jobs and Models have (a dataset's
+  with Datasets as its crumb), then the same sticky toolbar and view switch.
+- **A grad norm or loss that blew up reads short** (6.3e16, the whole number on hover) instead of
+  running out of its cell, and a checkpoint that's both final and best keeps its loss in view.
+- **New run's model field opens a model browser,** as its dataset field opens the dataset picker:
+  every model family (starred first, a search, all or installed) and the one highlighted, whether
+  it's installed or what it downloads, where it comes from, and its recipes. A recipe there is
+  applied at once with its model (Undo takes it back). Recipes is the same dialog's other view
+  (every recipe, yours too, with what it changes), and a recipe's Details go to it there; Pick
+  the files yourself and Re-list are in its footer.
+- **The adapter and its rank together:** LoRA or LoKr is a switch beside the rank at the top of
+  Training, not a field in Advanced.
+- **Masked training says when it disagrees with the dataset:** a dataset with masks and the
+  switch off (or the reverse) is pointed out under it.
+- **Other LoRAs, in one list:** a LoRA to train more on, to sit under the new one, or to be on only
+  while training (a de-distillation adapter) is one row each, its file and how it's used,
+  instead of three fields (Continue from, Base LoRA, Training adapter). The settings are the same.
+- **Trigger word: Use “`<dataset>`”** beside it fills in the dataset's name (lower case, `_` for
+  spaces), and goes once it's used.
+- **A new run picks the dataset changed last**, not the first by name (Train on this and a
+  duplicate still bring their own).
+- **New run's dataset picker is a dialog like Recipes:** the datasets on the left (starred first,
+  a search, by recent, name or size) and the one highlighted on the right, eight of its pictures,
+  its health and what's in it, before Use; a picture (or Browse all) opens the dataset in the
+  lightbox with its captions. Stars follow you, as starred models do. The pickers
+  close with ✕ or Esc: no Cancel button.
+- **A run's full spec reads like Recipes:** every setting by part, in words, or the JSON, and
+  it copies or downloads as JSON (`zt train` takes it, and a New run page takes it pasted).
+- **Recipes reads more cleanly:** a shorter header over each recipe, and its changes in words (a
+  resolution stage reads "768 px for the first 60%", not its JSON).
+- **The page behind a dialog or the lightbox stays put:** the wheel scrolls only the dialog.
+- **Smoother moving around:** Back and Forward land where each page was scrolled; the Datasets
+  and Models lists show at once on a return and refresh in place; switching between Apps no longer
+  reloads the whole page.
+- **System's runs table stays short:** the 12 biggest first with Show all, the runs that keep
+  nothing on disk out of the way behind a count, a search, a Total column, and each column's
+  header sorts by it.
+- **Jobs has a search** (a run by name or id, a caption job by what it captioned), in the same
+  sticky toolbar Models and the datasets pages have now, with one style of switch for their
+  filters, sorts and views.
+- **Crop to the card works in the table view too:** off, its thumbnails show the whole picture.
+- **Mask editor on the dataset page:** a button beside Add files (and Masks with a selection) opens
+  it on the first selected picture, or the first one.
+- **Auto-caption's Into set lists every set** under the field, one click each: the field's
+  suggestions showed only sets starting with what it already held.
+- **Fixed: a training step whose gradients overflowed broke the app's pages.** Its grad norm
+  (infinite or NaN) went out as `Infinity` in the live updates and the run's details, which a
+  browser can't read, so the Jobs page said it couldn't reach the engine. Such a value now goes out
+  as empty (shown as –), and a run that's only just starting no longer reads as the engine down.
+- **The adapter list is LoRA and LoKr.** LoHa and OFT aren't ready (LoHa can't train on an int8
+  base), so the form no longer offers them; a run that already uses one keeps it, and specs still
+  take them.
+- **The adapter's rank is labelled,** and resuming a run locks the adapter and its rank with the
+  rest of the network (its saved state is that adapter at that rank).
+- **The optimizer list is the ones that can run:** those needing a package that isn't installed
+  are one line at its end (how many, which, and the pip line that adds them); a run that already
+  uses one keeps it.
+- **Resume states set to None says what it costs,** in Settings and on New run: a stopped or
+  crashed run can't be continued. It's remembered from the last run's choice, so it's worth seeing.
+- **Mask editor: Save & next** (Ctrl+→) beside Previous and Next, and the one Save button beside
+  it. It saves only what changed, so an untouched picture keeps the mask it has. Its side panel
+  goes in the order you work (Tools, Find it, Mask, This size), and its list filters round as the
+  theme does.
+- **Holding Shift over a dataset thumbnail peeks at a sharp copy,** not the tile's small one; it
+  doesn't peek in the lightbox or over the mask editor's canvas, and a Shift-click (selecting a
+  range) doesn't pop it up.
+- **The Datasets page has the picker's stars** (starred first, whatever the sort) and a sort for
+  the cards as well as the table, remembered like the view.
+- **Settings is tidier:** a General section (Interface, Experimental pages), then Training, then
+  Appearance (Light or dark, Motion, eight theme packs until Show all). A web-only update
+  rebuilds from Versions.
+- **A paused queue resumes from the sidebar:** a play button beside Jobs while it's paused (its
+  queued runs' line reads Paused instead of Next). The update button lines up with Settings, its
+  icon centred.
+- **Fixed: one NaN step blanked a stretch of a long run's loss chart.** Thinning averaged it in;
+  it's left out now.
 - **Fixed: an edit sample's input picture didn't show when it was given as a full path** (one on
   another drive, say): training found it, but the run page asked for a dataset named after the
   path's first part ("bad dataset name"). A run now hands the page each
@@ -249,6 +327,12 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   A file from a newer ZenTrainer loads what this one knows, and says what it left out.
 
 ### Training
+- **Faster steps when the card has room: Keep last blocks is now Auto.** Gradient checkpointing
+  recomputes every block in the backward; with the model all on the card, ZenTrainer now measures
+  what a block keeps over the first steps and leaves as many blocks un-checkpointed as the free
+  VRAM holds (the biggest first), checkpointing some again if a step runs out. On an RTX 5090 at
+  1024 px: MOSS 0.69 → 0.50 s a step (40 of 44 blocks kept), Krea 2 1.12 → 1.08. With offloading
+  that VRAM holds weights instead, so none are kept; a number in the setting is kept as before.
 - **A faster int8 backward (Krea 2, MOSS, MiniMax H3 int8 bases), in raw CUDA.** The W8A8 input
   gradient now runs as two CUDA kernels with ConvRot's rotation inside the matmul, on NVIDIA cards
   from the RTX 30 series (compute capability 8.0) on: it reads the int8 weight as stored, so no
