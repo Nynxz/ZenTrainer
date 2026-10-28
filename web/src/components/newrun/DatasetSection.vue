@@ -90,7 +90,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
         <i class="mdi mdi-tag-outline" /> <span class="ellipsis">Use “{{ nameTrigger }}”</span>
       </button>
     </div>
-    <ZenField label="Add it to every caption" stack tip="Prepend it where a caption doesn't mention it"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
+    <ZenField label="Add if missing" stack tip="Puts the trigger word at the start of any caption that doesn't have it, so every picture teaches it. Only while training: your caption files stay as they are"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="Resolution" stack>
       <div class="chips">
         <button v-for="r in [512, 768, 1024, 1280]" :key="r" class="chip-btn" :class="{ on: spec.dataset.resolution === r }" @click="spec.dataset.resolution = r">
