@@ -162,7 +162,7 @@ async function save() {
         <label class="f"><span class="small muted">LoRA or LoKr</span><ZenCombo v-model="name" :items="loraItems" placeholder="Pick a LoRA…" :item-height="30" /></label>
         <label class="f">
           <span class="small muted">Base model (optional)</span>
-          <ZenCombo v-model="base" :items="baseItems" placeholder="None: measure the change alone" :item-height="30" />
+          <ZenCombo v-model="base" :items="baseItems" :pinned="['']" placeholder="None: measure the change alone" :item-height="30" />
         </label>
       </div>
       <span v-if="base" class="small muted">Each layer's change is measured against that layer's own weight in the model: a change beside a large weight counts for less. Only the weights' sizes are read.</span>

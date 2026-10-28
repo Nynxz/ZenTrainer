@@ -10,7 +10,7 @@ import { vAutosize } from '@/lib/autosize'
 import { useRunContext } from './context'
 import { isVideo, rowHasVideo, sampleItem, useSamplesContext } from './samples'
 
-const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries } = useRunContext()
+const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries, send, load } = useRunContext()
 const { liveManual, lb, syncing, toggleSync, hoverPlay, hoverPause } = useSamplesContext()
 
 // each try is a card: its no-LoRA render (if asked for) and every step it was rendered at
@@ -68,9 +68,11 @@ const tryPrompt = ref('')
 const trySize = ref('')
 const tryFrames = ref<number | null>(null)
 const tryBase = ref(true)
-// a try's own sampling (else the run's): sampler, scheduler or custom sigmas, steps, CFG
+// a try's own sampling (else the run's): sampler, scheduler or custom sigmas, steps, CFG, and the
+// turbo LoRA's strength (0: without it)
 const tune = ref(false)
-const tuned = reactive({ sampler: '', scheduler: '', steps: null as number | null, cfg: null as number | null, sigmas: '' })
+const tuned = reactive({ sampler: '', scheduler: '', steps: null as number | null, cfg: null as number | null, sigmas: '', turbo: null as number | null })
+const untuned = { sampler: '', scheduler: '', steps: null, cfg: null, sigmas: '', turbo: null }
 const samplerNames = ref<string[]>([])
 const schedulerNames = ref<string[]>([])
 onMounted(async () => {
@@ -100,7 +102,22 @@ function sampling(): Record<string, unknown> {
   else if (tuned.scheduler) out.scheduler = tuned.scheduler
   if (tuned.steps != null && tuned.scheduler !== 'custom') out.steps = tuned.steps
   if (tuned.cfg != null) out.cfg = tuned.cfg
+  if (tuned.turbo != null && run.value?.turbo_lora) out.turbo_strength = tuned.turbo
   return out
+}
+// the tuned settings become the run's own, from its next sample on (and kept in its spec)
+const applying = ref(false)
+async function applyToRun() {
+  const own = sampling()
+  if (!Object.keys(own).length || sigmaError.value) return
+  applying.value = true
+  try {
+    await send('samples', own)
+    await load()
+    Object.assign(tuned, untuned)
+  } finally {
+    applying.value = false
+  }
 }
 const ownSampling = computed(() => Object.keys(sampling()).length > 0)
 // what the next try renders with, its own settings or the run's
@@ -111,10 +128,14 @@ const samplingSummary = computed(() => {
   const sched = custom ? 'custom' : (own && tuned.scheduler) || runSchedule.value
   const steps = custom ? Math.max(0, sigmaList.value.length - 1) : (own && tuned.steps) || (runSchedule.value === 'custom' ? (run.value?.sigmas?.length ?? 1) - 1 : run.value?.steps ?? 20)
   const cfg = (own && tuned.cfg != null ? tuned.cfg : run.value?.cfg) ?? 1
-  return `${sampler} · ${sched} · ${steps} steps · cfg ${cfg}`
+  const turbo = (own && tuned.turbo != null ? tuned.turbo : run.value?.turbo_strength) ?? 0.75
+  return `${sampler} · ${sched} · ${steps} steps · cfg ${cfg}${run.value?.turbo_lora ? turboText(turbo) : ''}`
 })
+const turboText = (s: number) => (s ? ` · turbo ${s}` : ' · no turbo')
 const samplingText = (x: SampleRow) =>
-  x.sampling ? ` · ${x.sampling.sampler} / ${x.sampling.scheduler} · ${x.sampling.steps} steps · cfg ${x.sampling.cfg}` : ''
+  x.sampling
+    ? ` · ${x.sampling.sampler} / ${x.sampling.scheduler} · ${x.sampling.steps} steps · cfg ${x.sampling.cfg}${x.sampling.turbo_strength != null ? turboText(x.sampling.turbo_strength) : ''}`
+    : ''
 async function renderTry() {
   // one try per line: several prompts queue at once
   const lines = tryPrompt.value.split('\n').map((l) => l.trim()).filter(Boolean)
@@ -193,7 +214,11 @@ const tileOf = (x: SampleRow | null | undefined) => {
         </label>
         <label v-else class="f num"><span class="lbl">Steps</span><ZenNumber :model-value="tuned.steps ?? run?.steps ?? 20" :min="1" :max="200" :step="1" :precision="0" size="sm" @update:model-value="tuned.steps = $event" /></label>
         <label class="f num"><span class="lbl">CFG</span><ZenNumber :model-value="tuned.cfg ?? run?.cfg ?? 1" :min="0" :max="30" :step="0.5" :precision="1" size="sm" @update:model-value="tuned.cfg = $event" /></label>
-        <button v-if="ownSampling" class="link small" title="Back to the run's own sample settings" @click="Object.assign(tuned, { sampler: '', scheduler: '', steps: null, cfg: null, sigmas: '' })">Use the run's settings</button>
+        <label v-if="run?.turbo_lora" class="f num" :title="`${run.turbo_lora}'s strength under the render; 0 renders without it (your LoRA alone, so raise the steps and CFG to match)`">
+          <span class="lbl">Turbo LoRA</span><ZenNumber :model-value="tuned.turbo ?? run.turbo_strength ?? 0.75" :min="0" :max="1.5" :step="0.05" :precision="2" size="sm" @update:model-value="tuned.turbo = $event" />
+        </label>
+        <button v-if="ownSampling" class="link small" title="Back to the run's own sample settings" @click="Object.assign(tuned, untuned)">Use the run's settings</button>
+        <button v-if="ownSampling && status === 'training'" class="link small" :disabled="applying || !!sigmaError" title="The run's own samples (and the likeness they're scored on) use these from its next one, and its settings keep them" @click="applyToRun">Use for the run's samples</button>
       </div>
     </div>
     <div v-if="!manualGroups.length && !waitingCards.length" class="muted small empty-manual">

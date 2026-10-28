@@ -14,7 +14,7 @@ from ...runs.thin import thin
 from .. import jobqueue, system
 from ...harness import control
 from ...harness.keep import faces_missing
-from ...spec import SpecError, TrainSpec, locked_changes, slugify
+from ...spec import SpecError, TrainSpec, live_samples, locked_changes, slugify
 from . import common
 from .common import RETRYABLE, _bad, _dequeue, _keep_later, _migrate_states, _not_local, _queue_session, _remember_client, is_local
 
@@ -312,7 +312,9 @@ def register(server) -> None:
 
     @routes.post("/zentrainer/api/runs/{run_id}/control")
     async def control_run(request):
-        """{"command": "pause"|"resume"|"stop"|"save"|"sample"|"set_lr", "args": {...}}"""
+        """{"command": "pause"|"resume"|"stop"|"save"|"sample"|"set_lr"|"samples", "args": {...}}.
+        "samples" changes the run's sample settings (spec.LIVE_SAMPLES) from its next sample on,
+        and keeps them in its spec."""
         run_id = request.match_info["run_id"]
         body = await request.json()
         ctl = control.get(run_id)
@@ -329,14 +331,34 @@ def register(server) -> None:
         if body.get("command") == "sample" and isinstance(args, dict) and args.get("control"):
             if (refused := await _outside(request, state.store().spec(run_id), [args])) is not None:
                 return refused
+        if body.get("command") == "samples":
+            if (why := _unknown_sampling(args)) is not None:
+                return _bad(why)
+            store = state.store()
+            try:
+                spec = live_samples(store.spec(run_id), args)
+            except (SpecError, TypeError) as e:
+                return _bad(str(e))
+            args = {k: spec["samples"][k] for k in args} | ({"sigmas": []} if "scheduler" in args and "sigmas" not in args else {})
         try:
             ctl.send(body.get("command", ""), **args)
         except (ValueError, TypeError) as e:
             return _bad(str(e))
+        if body.get("command") == "samples":
+            store.set_spec(run_id, spec)  # sent first: a run that just ended keeps the spec it trained with
         if body.get("command") == "sample":  # acknowledge now; it renders at the next step boundary
             from ... import events
             events.emit(events.SAMPLE_PROGRESS, {"run_id": run_id, "phase": "requested"})
         return web.json_response({"ok": True})
+
+    def _unknown_sampling(args: dict) -> str | None:
+        import comfy.samplers
+
+        if isinstance(args.get("sampler"), str) and args["sampler"] not in comfy.samplers.KSampler.SAMPLERS:
+            return f"ComfyUI has no sampler {args['sampler']!r}"
+        if isinstance(args.get("scheduler"), str) and args["scheduler"] not in comfy.samplers.KSampler.SCHEDULERS:
+            return f"ComfyUI has no scheduler {args['scheduler']!r}"
+        return None
 
     async def _unpark(run_id: str, body: dict):
         """A parked run (paused, ComfyUI let go): resume puts it back first in the queue to continue

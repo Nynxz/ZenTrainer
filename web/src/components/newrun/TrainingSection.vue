@@ -65,6 +65,7 @@ const keepItems = computed(() => {
   ]
 })
 const keepNeedsFaces = computed(() => noFaces.value && spec.output.keep.startsWith('likeness'))
+const keepOnTurbo = computed(() => spec.output.keep.startsWith('likeness') && !!spec.samples.turbo_lora && (spec.samples.turbo_strength ?? 0.75) > 0)
 const keepTip =
   'Which saves stay on disk; the rest are deleted as the run goes. The final LoRA, the newest save and saves made by hand or at a stop always stay. ' +
   "Best likeness: its samples' faces against the dataset's (a character, with faces on for its dataset). " +
@@ -183,6 +184,9 @@ const patterns = computed({
       </div>
       <p v-if="keepNeedsFaces" class="warn-note">
         {{ dataset!.folder }} has Check faces off, so its samples get no likeness to rank by: turn it on on the dataset's page (Settings), or keep another way.
+      </p>
+      <p v-else-if="keepOnTurbo" class="warn-note">
+        Samples ride on the turbo LoRA, so likeness is scored on few-step turbo renders rather than on your LoRA alone. Set its strength to 0 in Samples to score without it.
       </p>
     </ZenField>
     <ZenField label="Save LoRAs to" stack class="span-2" :tip="loraPlaceHint">

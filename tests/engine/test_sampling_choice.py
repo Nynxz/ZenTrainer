@@ -55,3 +55,30 @@ def test_sigmas_and_schedulers_replace_each_other(samplers):
     assert _try_sampling(custom, {"scheduler": "simple"}).sigmas == []  # its own scheduler: not the run's sigmas
     assert _try_sampling(SampleSpec(), {"scheduler": "custom", "sigmas": [1, 0.3, 0]}).sigmas == [1.0, 0.3, 0.0]
     assert _try_sampling(SampleSpec(steps=500), {"steps": 9999}).steps == 200
+
+
+def test_a_try_can_render_without_the_turbo_lora(samplers):
+    run = SampleSpec(turbo_lora="turbo.safetensors", turbo_strength=0.75)
+    assert _try_sampling(run, {"turbo_strength": 0}).turbo_strength == 0.0
+    assert _try_sampling(run, {"turbo_strength": 9}).turbo_strength == 1.5
+
+
+def _trained():
+    s = TrainSpec().to_dict()
+    s["model"].update(ckpt_name="x.safetensors")
+    s["dataset"]["folder"] = "d"
+    return s
+
+
+def test_a_training_run_changes_only_its_live_sample_settings():
+    from zentrainer.spec import live_samples
+
+    s = _trained()
+    s["samples"]["sigmas"] = [1.0, 0.5, 0.0]
+    got = live_samples(s, {"steps": 25, "cfg": 2.5, "turbo_strength": 0, "scheduler": "simple"})
+    assert (got["samples"]["steps"], got["samples"]["cfg"], got["samples"]["turbo_strength"]) == (25, 2.5, 0)
+    assert got["samples"]["sigmas"] == []  # its own scheduler replaces the custom sigmas
+    assert s["samples"]["steps"] != 25  # the spec handed in is left alone
+    for bad in ({}, {"width": 512}, {"turbo_lora": None}, {"steps": 0}, {"turbo_strength": -1}):
+        with pytest.raises(SpecError):
+            live_samples(s, bad)

@@ -139,6 +139,21 @@ def test_training_adapter_is_switchable_and_not_saved():
     assert only(w).tolist() == [0.0, 0.0] and only.h(w, w) == 0
 
 
+def test_the_turbo_lora_is_on_in_samples_at_the_strength_asked():
+    from zentrainer.harness.network import _Assisted, _Switch
+
+    sw = _Switch()
+    a = _Assisted(_Frozen(1.0), None, sw, preview=_Frozen(10.0), preview_strength=0.5)
+    w = torch.zeros(2)
+    assert a(w).tolist() == [1.0, 1.0]  # training: no turbo
+    sw.on = False
+    assert a(w).tolist() == [6.0, 6.0] and a.h(w, w).tolist() == [6.0, 6.0]  # samples: as attached
+    sw.turbo = 0.0
+    assert a(w).tolist() == [1.0, 1.0] and a.h(w, w).tolist() == [1.0, 1.0]  # 0: without it
+    sw.turbo = 1.0
+    assert a(w).tolist() == [11.0, 11.0]
+
+
 def test_base_lora_is_on_in_training_and_samples():
     from zentrainer.harness.network import _Assisted, _Switch
     from zentrainer.harness.callbacks import write_metadata

@@ -154,8 +154,8 @@ class _Assisted(torch.nn.Module):
             w = w + self.base_strength * (self.base(w) - w)
         if self.switch.on and self.assist is not None:
             w = self.assist(w)
-        elif not self.switch.on and self.preview is not None:
-            w = w + self.preview_strength * (self.preview(w) - w)
+        elif not self.switch.on and self.preview is not None and self._turbo():
+            w = w + self._turbo() * (self.preview(w) - w)
         st = self.switch.strength
         if self.trained is None or st == 0.0:
             return w
@@ -180,9 +180,12 @@ class _Assisted(torch.nn.Module):
             out = out + self.base_strength * self.base.h(x, base_out)
         if self.switch.on and self.assist is not None:
             out = out + self.assist.h(x, base_out)
-        elif not self.switch.on and self.preview is not None:
-            out = out + self.preview_strength * self.preview.h(x, base_out)
+        elif not self.switch.on and self.preview is not None and self._turbo():
+            out = out + self._turbo() * self.preview.h(x, base_out)
         return out
+
+    def _turbo(self) -> float:
+        return self.preview_strength if self.switch.turbo is None else self.switch.turbo
 
     def g(self, y):
         return self.trained.g(y) if self.trained is not None else y
@@ -195,6 +198,7 @@ class _Switch:
 
     on = True
     strength = 1.0
+    turbo = None  # the preview (turbo) LoRA's strength in place of the one it was attached at; 0 = off
 
 
 class _Sliced(torch.nn.Module):
@@ -454,6 +458,15 @@ class Network:
     @strength.setter
     def strength(self, s: float) -> None:
         self._switch.strength = float(s)
+
+    @property
+    def turbo(self) -> float | None:
+        """The turbo LoRA's strength under samples (None: as attached, 0: samples without it)."""
+        return self._switch.turbo
+
+    @turbo.setter
+    def turbo(self, s: float | None) -> None:
+        self._switch.turbo = None if s is None else float(s)
 
     @contextlib.contextmanager
     def at_strength(self, s: float):

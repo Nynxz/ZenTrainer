@@ -229,6 +229,7 @@ async function savePromptSet(name: string) {
       <ZenCombo
         v-model="sampleModel"
         :items="[{ value: '', label: 'The model being trained' }, ...items(spec.model.kind === 'split' ? choices.unet : choices.ckpt)]"
+        :pinned="['']"
         :item-height="30"
       />
     </ZenField>
@@ -255,7 +256,7 @@ async function savePromptSet(name: string) {
     </ZenField>
     <ZenField label="Turbo LoRA" stack tip="Rides under every sample (never training or the saved LoRA) so previews take a few steps: MiniMax H3's minimax_h3_turbo_v4_step600_ema at 0.75, 6 steps, CFG 1">
       <div class="inline">
-        <ZenCombo :model-value="spec.samples.turbo_lora ?? ''" :items="[{ value: '', label: 'None' }, ...items(choices.loras)]" :item-height="30" @update:model-value="spec.samples.turbo_lora = String($event) || null" />
+        <ZenCombo :model-value="spec.samples.turbo_lora ?? ''" :items="[{ value: '', label: 'None' }, ...items(choices.loras)]" :pinned="['']" :item-height="30" @update:model-value="spec.samples.turbo_lora = String($event) || null" />
         <ZenNumber v-if="spec.samples.turbo_lora" :model-value="spec.samples.turbo_strength ?? 0.75" :min="0" :max="1.5" :step="0.05" :precision="2" @update:model-value="spec.samples.turbo_strength = $event" />
       </div>
     </ZenField>

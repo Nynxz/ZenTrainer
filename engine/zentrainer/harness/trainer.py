@@ -11,6 +11,7 @@ from __future__ import annotations
 import pickle
 
 import contextlib
+import dataclasses
 import logging
 import os
 import random
@@ -1480,6 +1481,11 @@ class Trainer:
                 self._profile_next = True
             elif cmd.name == "set_lr":
                 optim.set_lr(self.optimizer, self.scheduler, float(cmd.args["lr"]))
+            elif cmd.name == "samples":  # validated by the route (spec.live_samples): from the next sample on
+                self.spec.samples = dataclasses.replace(self.spec.samples, **cmd.args)
+                if self._samples is not None:
+                    self._samples.every = self.spec.samples.every
+                logging.info("[ZenTrainer] sample settings changed: %s", cmd.args)
         if tries and self._samples:
             # manual tries in one session; ones queued while it renders join it, so the model and
             # encoder aren't swapped in and out per try. Other commands that arrive meanwhile
