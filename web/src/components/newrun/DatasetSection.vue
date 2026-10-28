@@ -33,6 +33,8 @@ function toggleSet(st: string) {
   spec.dataset.caption_mix = next.length > 1 ? next : []
 }
 const pickerOpen = ref(false)
+// the dataset's name as a trigger word, one click away: lower case, spaces and dashes as _
+const nameTrigger = computed(() => (spec.dataset.folder || '').toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, ''))
 const firstThumb = (d: DatasetInfo) => {
   const t = d.thumbs[0]
   return t ? thumbUrl(d.folder, [...t.subfolder.split('/').slice(1), t.filename].join('/'), 256) : ''
@@ -74,7 +76,18 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
       </div>
     </ZenField>
     <ZenField label="Trigger word" stack tip="Replaces [trigger] in captions and prompts">
-      <ZenInput v-model="spec.dataset.trigger" placeholder="e.g. ohwx" />
+      <div class="trig-row">
+        <ZenInput v-model="spec.dataset.trigger" placeholder="e.g. ohwx" />
+        <button
+          v-if="nameTrigger && spec.dataset.trigger !== nameTrigger"
+          type="button"
+          class="chip-btn use-name"
+          :title="`Use the dataset's name, ${nameTrigger}, as the trigger word`"
+          @click="spec.dataset.trigger = nameTrigger"
+        >
+          <i class="mdi mdi-tag-outline" /> <span class="ellipsis">Use “{{ nameTrigger }}”</span>
+        </button>
+      </div>
     </ZenField>
     <ZenField label="Add it to every caption" stack tip="Prepend it where a caption doesn't mention it"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="Resolution" stack>
@@ -239,6 +252,28 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   gap: 8px;
   font-weight: 600;
   font-size: 13px;
+}
+/* the trigger word, with the dataset's name a click away beside it */
+.trig-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.trig-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.use-name {
+  flex: 0 1 auto;
+  max-width: 55%;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.use-name .ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* the dataset field: what's picked, with a picture; it opens the picker */
 .ds-field {

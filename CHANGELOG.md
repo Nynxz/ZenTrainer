@@ -84,6 +84,8 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   applied at once with its model (Undo takes it back). Recipes is the same dialog's other view
   (every recipe, yours too, with what it changes), and a recipe's Details go to it there; Pick
   the files yourself and Re-list are in its footer.
+- **Trigger word: Use “<dataset>”** beside it fills in the dataset's name (lower case, `_` for
+  spaces), and goes once it's used.
 - **A new run picks the dataset changed last**, not the first by name (Train on this and a
   duplicate still bring their own).
 - **New run's dataset picker is a dialog like Recipes:** the datasets on the left (starred first,
