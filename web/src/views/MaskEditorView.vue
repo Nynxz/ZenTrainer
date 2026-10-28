@@ -392,8 +392,12 @@ async function save() {
 }
 // save (if anything changed: an untouched image keeps what it has), then the next image
 async function saveNext() {
-  if (dirty.value || grow.value || feather.value) await save()
-  if (!error.value) go(1)
+  if (busy.value) return
+  if (dirty.value || grow.value || feather.value) {
+    await save()
+    if (error.value) return // the save failed: stay on it
+  }
+  go(1)
 }
 async function remove() {
   if (!item.value || !confirm('Delete this image’s mask? It trains on the whole image again.')) return

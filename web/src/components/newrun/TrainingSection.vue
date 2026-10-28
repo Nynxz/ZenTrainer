@@ -162,12 +162,12 @@ const patterns = computed({
       <ZenNumber v-model="spec.optim.learning_rate" :min="0" :step="0.00001" :precision="6" />
     </ZenField>
     <!-- what trains and its size together: the rank means a different thing for each -->
-    <ZenField label="Adapter" stack tip="LoRA, or LoKr (smaller files, often as good). Rank: 8–16 for a character, 16–32 for a style as a LoRA; 4–8 as a LoKr">
-      <div class="adapter-row">
+    <ZenField label="Adapter" stack :tip="resuming ? 'Kept from the run it resumes: its saved state is this adapter at this rank' : 'LoRA, or LoKr (smaller files, often as good). Rank: 8–16 for a character, 16–32 for a style as a LoRA; 4–8 as a LoKr'">
+      <div class="adapter-row" :class="{ locked: resuming }">
         <div class="view-switch text" role="radiogroup" aria-label="Adapter">
-          <button v-for="a in algorithms" :key="a" role="radio" :aria-checked="spec.network.algorithm === a" :class="{ on: spec.network.algorithm === a }" @click="spec.network.algorithm = a">{{ a }}</button>
+          <button v-for="a in algorithms" :key="a" role="radio" :aria-checked="spec.network.algorithm === a" :class="{ on: spec.network.algorithm === a }" @click="resuming || (spec.network.algorithm = a)">{{ a }}</button>
         </div>
-        <label class="rank"><span class="muted small">Rank</span><ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" /></label>
+        <label class="rank"><span class="muted small">Rank</span><ZenNumber v-model="spec.network.rank" :min="1" :max="256" :step="1" :precision="0" :disabled="resuming" /></label>
       </div>
     </ZenField>
     <ZenField label="Schedule" stack>

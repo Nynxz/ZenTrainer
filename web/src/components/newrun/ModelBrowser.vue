@@ -27,7 +27,6 @@ async function load() {
     // the list as last seen (or empty): the combo beside the field still works
   }
 }
-onMounted(() => families.value.length || load())
 
 // the model makers' Hugging Face repos listed again, for models added since the cache
 const relisting = ref(false)
@@ -58,7 +57,9 @@ function reset(o: boolean) {
   void load()
 }
 watch(open, reset)
-onMounted(() => open.value && reset(true))
+onMounted(() => (open.value ? reset(true) : families.value.length || load()))
+// opened before any families were known: pick the first once they come
+watch(families, (f) => open.value && !picked.value && f[0] && (picked.value = f[0].id))
 
 const ready = (f: ModelFamily) => !f.missing.length
 const listed = computed(() => {

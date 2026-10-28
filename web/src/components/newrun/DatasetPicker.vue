@@ -21,6 +21,7 @@ const sort = ref<Sort>('recent')
 const picked = ref<string>(props.current)
 watch(open, (o) => {
   if (o) (picked.value = props.current || props.datasets[0]?.folder || ''), (query.value = '')
+  else gallery.value = null // closed with the lightbox up: it doesn't come back on its own next time
 })
 
 const sorted = computed(() => {

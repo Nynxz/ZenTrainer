@@ -77,7 +77,7 @@ const hint = (r: Role) => ROLES.find((x) => x.id === r)!.hint
           :items="items(choices.loras)"
           placeholder="Pick a LoRA…"
           :item-height="30"
-          @update:model-value="setValue(r, String($event))"
+          @update:model-value="setValue(r, $event == null ? '' : String($event))"
         />
         <AdapterPicker v-else :model-value="value(r)" :family="familyId" :kind="r === 'base' ? 'base' : 'training'" @update:model-value="setValue(r, $event)" />
         <label v-if="r === 'base'" class="strength" title="The strength it runs at, in training and samples: use it at the same strength">

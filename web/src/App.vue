@@ -82,13 +82,24 @@ const scrolls = new Map<string, number>()
 // the browser's Back or Forward: the router's history says so before it navigates (a popstate
 // listener of our own would hear it only after the navigation, microtasks running between listeners)
 let popped = false
-const stopListening = useRouter().options.history.listen(() => (popped = true))
-onUnmounted(stopListening)
+const router = useRouter()
+const stopListening = router.options.history.listen(() => (popped = true))
+// a pop that doesn't land on another page (a leave guard cancels it, or only the query changes)
+// mustn't make the next ordinary link restore an old scroll
+const stopAfter = router.afterEach((to, from, failure) => {
+  if (failure || to.path === from.path) popped = false
+})
+onUnmounted(() => (stopListening(), stopAfter()))
 function scrollTo(top: number) {
   let frames = 0
+  // the user scrolling (wheel, touch, keys) ends it: the restore doesn't fight them
+  let stopped = false
+  const stop = () => (stopped = true)
+  const opts = { once: true, passive: true, capture: true } as const
+  for (const ev of ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const) addEventListener(ev, stop, opts)
   const step = () => {
     const el = scroller.value?.viewport
-    if (!el) return
+    if (!el || stopped) return
     el.scrollTop = top
     if (Math.abs(el.scrollTop - top) > 2 && frames++ < 90) requestAnimationFrame(step)
   }

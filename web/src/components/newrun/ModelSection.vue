@@ -42,7 +42,9 @@ async function useRecipe(id: string) {
   const r = RECIPES.find((x) => x.id === id)
   if (!r) return
   try {
-    applyRecipe({ id: r.id, title: r.title }, applyTo(r, await plan(r), toRaw(spec) as TrainSpec))
+    const p = await plan(r)
+    if (p.problems.length) throw new Error(p.problems.join('; '))
+    applyRecipe({ id: r.id, title: r.title }, applyTo(r, p, toRaw(spec) as TrainSpec))
   } catch {
     recipeStart.value = id
     dialogView.value = 'recipes'
