@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ZenLotus } from '@nynxz/zenkit-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppSidebar from './components/AppSidebar.vue'
 import HoverPeek from './components/HoverPeek.vue'
 import LogDrawer from './components/LogDrawer.vue'
@@ -73,14 +73,36 @@ watch(drawerOpen, async (open) => {
 })
 watch(drawerHeight, (h) => drawerOpen.value && (roomPx.value = h))
 
-// new page: back to the top, and re-observe the new content for the scrollbar
+// a page's scroll, kept by its address: Back and Forward land where it was, a page opened anew
+// starts at the top. The page fills in as its data comes, so the restore keeps at it for a moment
+// until there's room to scroll that far. Then re-observe the new content for the scrollbar.
 const route = useRoute()
 const scroller = ref<InstanceType<typeof ScrollArea> | null>(null)
+const scrolls = new Map<string, number>()
+// the browser's Back or Forward: the router's history says so before it navigates (a popstate
+// listener of our own would hear it only after the navigation, microtasks running between listeners)
+let popped = false
+const stopListening = useRouter().options.history.listen(() => (popped = true))
+onUnmounted(stopListening)
+function scrollTo(top: number) {
+  let frames = 0
+  const step = () => {
+    const el = scroller.value?.viewport
+    if (!el) return
+    el.scrollTop = top
+    if (Math.abs(el.scrollTop - top) > 2 && frames++ < 90) requestAnimationFrame(step)
+  }
+  step()
+}
 watch(
   () => route.path,
-  async () => {
+  async (to, from) => {
+    const el = scroller.value?.viewport
+    if (el && from) scrolls.set(from, el.scrollTop) // still the old page: the watch runs before it's swapped
+    const top = popped ? (scrolls.get(to) ?? 0) : 0
+    popped = false
     await nextTick()
-    if (scroller.value?.viewport) scroller.value.viewport.scrollTop = 0
+    scrollTo(top)
     scroller.value?.refresh()
   },
 )
@@ -101,7 +123,8 @@ watch(
         <ZenLotus class="lotus" /> <b class="zt-title">ZenTrainer</b>
       </header>
       <ScrollArea ref="scroller" class="content">
-        <main><RouterView /></main>
+        <!-- a page marked remount (an app) starts fresh when its address changes, not reused -->
+        <main><RouterView v-slot="{ Component, route: r }"><component :is="Component" :key="r.meta.remount ? r.path : undefined" /></RouterView></main>
         <!-- room to scroll the page's end up above the open log; below the content, so nothing visible moves -->
         <div class="log-room" :style="{ height: `${roomPx}px` }" aria-hidden="true" />
       </ScrollArea>

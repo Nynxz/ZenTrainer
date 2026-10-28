@@ -82,6 +82,9 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   it copies or downloads as JSON (`zt train` takes it, and a New run page takes it pasted).
 - **Recipes reads more cleanly:** a shorter header over each recipe, and its changes in words (a
   resolution stage reads "768 px for the first 60%", not its JSON).
+- **Smoother moving around:** Back and Forward land where each page was scrolled; the Datasets
+  and Models lists show at once on a return and refresh in place; switching between Apps no longer
+  reloads the whole page.
 - **Jobs has a search** (a run by name or id, a caption job by what it captioned), in the same
   sticky toolbar Models and the datasets pages have now, with one style of switch for their
   filters, sorts and views.

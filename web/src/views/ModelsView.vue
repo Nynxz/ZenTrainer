@@ -10,8 +10,9 @@ import StarButton from '@/components/StarButton.vue'
 import { isStarred, starred, starredFirst } from '@/stores/favorites'
 import { finished, fmtAdded, fmtBytes, hfToken, isNew, startDownloadSync, targets } from '@/stores/downloads'
 import StickyBar from '@/components/StickyBar.vue'
+import { familiesSeen } from '@/stores/lists'
 
-const families = ref<ModelFamily[]>([])
+const families = familiesSeen // last visit's list at once, refreshed in place
 const loaded = ref(false)
 const error = ref<string | null>(null)
 const query = ref('')

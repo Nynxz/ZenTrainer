@@ -8,9 +8,10 @@ import { engine, thumbUrl, type DatasetInfo } from '@/api/engine'
 import CaptionRing from '@/components/CaptionRing.vue'
 import StickyBar from '@/components/StickyBar.vue'
 import TemplateCard from '@/components/TemplateCard.vue'
+import { datasetsSeen } from '@/stores/lists'
 
 const router = useRouter()
-const datasets = ref<DatasetInfo[] | null>(null)
+const datasets = datasetsSeen // last visit's list at once, refreshed in place
 const error = ref<string | null>(null)
 const creating = ref(false)
 const newName = ref('')
