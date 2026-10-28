@@ -602,6 +602,7 @@ watch(path, load)
       </div>
       <ZenButton icon="mdi mdi-chevron-left" :disabled="index <= 0" @click="go(-1)">Previous</ZenButton>
       <ZenButton icon="mdi mdi-chevron-right" :disabled="index >= items.length - 1" @click="go(1)">Next</ZenButton>
+      <ZenButton icon="mdi mdi-content-save-outline" :disabled="busy || !loaded || !(dirty || grow || feather)" title="Save this mask (Ctrl+S)" @click="save">{{ dirty || grow || feather ? 'Save' : 'Saved' }}</ZenButton>
       <ZenButton variant="primary" icon="mdi mdi-content-save-move-outline" :disabled="busy || !loaded || index >= items.length - 1" title="Save this mask, then the next image (Ctrl+→)" @click="saveNext">Save &amp; next</ZenButton>
     </div>
 
@@ -735,8 +736,7 @@ watch(path, load)
           <div v-if="status" class="small muted">{{ status }}</div>
           <div v-if="error" class="small err">{{ error }}</div>
           <div class="row">
-            <ZenButton variant="primary" icon="mdi mdi-content-save-outline" :disabled="busy || !loaded" @click="save">{{ dirty || grow || feather ? 'Save mask' : 'Saved' }}</ZenButton>
-            <ZenButton v-if="hasMask" icon="mdi mdi-trash-can-outline" :disabled="busy" @click="remove">Delete</ZenButton>
+            <ZenButton v-if="hasMask" icon="mdi mdi-trash-can-outline" :disabled="busy" @click="remove">Delete mask</ZenButton>
           </div>
         </section>
       </aside>
