@@ -227,7 +227,7 @@ onUnmounted(() => {
 
     <!-- what's training, above the memory meters: one click to it. The queue rides on the card's
          foot as one "next" line (all of it in the tooltip), so the card stays put as runs come and go -->
-    <div v-if="running.length || waiting.length" class="live">
+    <div v-if="running.length || waiting.length || queue.paused" class="live">
       <RouterLink
         v-for="r in running"
         :key="r.run_id"
@@ -251,16 +251,18 @@ onUnmounted(() => {
           </span>
         </span>
       </RouterLink>
-      <div v-if="waiting.length" class="next-row">
+      <!-- paused with nothing waiting still shows: the next run queued won't start until it's resumed -->
+      <div v-if="waiting.length || queue.paused" class="next-row">
         <RouterLink
           to="/jobs"
           class="live-next"
           :class="{ paused: queue.paused }"
-          :title="`${queue.paused ? 'Queue paused. ' : ''}Queued, in order:\n${waiting.map((w, i) => `${i + 1}. ${w.name}`).join('\n')}`"
+          :title="waiting.length ? `${queue.paused ? 'Queue paused. ' : ''}Queued, in order:\n${waiting.map((w, i) => `${i + 1}. ${w.name}`).join('\n')}` : 'Queue paused: a run you queue waits until it’s resumed'"
           @click="emit('navigate')"
         >
-          <span class="ic"><i :class="queue.paused ? 'mdi mdi-pause-circle-outline' : 'mdi mdi-tray-full'" /><span class="q-count">{{ waiting.length }}</span></span>
-          <span class="lbl next-body"><span class="muted">{{ queue.paused ? 'Paused' : 'Next' }}</span><span class="ellipsis">{{ waiting[0]!.name }}</span><span v-if="waiting.length > 1" class="mono muted">+{{ waiting.length - 1 }}</span></span>
+          <span class="ic"><i :class="queue.paused ? 'mdi mdi-pause-circle-outline' : 'mdi mdi-tray-full'" /><span v-if="waiting.length" class="q-count">{{ waiting.length }}</span></span>
+          <span v-if="waiting.length" class="lbl next-body"><span class="muted">{{ queue.paused ? 'Paused' : 'Next' }}</span><span class="ellipsis">{{ waiting[0]!.name }}</span><span v-if="waiting.length > 1" class="mono muted">+{{ waiting.length - 1 }}</span></span>
+          <span v-else class="lbl next-body"><span>Queue paused</span></span>
         </RouterLink>
         <button
           v-if="queue.paused && (!collapsed || mobileOpen)"
