@@ -455,6 +455,11 @@ class Trainer:
                                   audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
         if s.slider.kind == "pairs":
             self._keep_pairs(self.dataset)
+        if self._classes() and any(sm.has_cond if isinstance(sm, data.DiskSample) else sm.cond is not None
+                                   for sm in self.dataset.samples):
+            # an H3 reference or keyframe clip's caption is encoded with its pictures: no class word to put in
+            raise ValueError("objective.preserve can't swap the captions of pictures encoded with their references "
+                             "(MiniMax H3 edits or keyframes): turn Preserve classes off for this dataset")
         self.val_dataset = None  # validation.dataset, prepared as the training set is
         if s.validation.every and s.validation.dataset:
             from dataclasses import replace
@@ -1149,6 +1154,7 @@ class Trainer:
         ms = self.denoiser.model_sampling
         acc = s.optim.grad_accumulation_steps
         total_loss = torch.zeros((), device=self.device)
+        held_sum, held_n = torch.zeros((), device=self.device), 0  # objective.preserve's losses, per micro-batch
         # where the step's time goes: data, forward, backward, optimizer, shown on the run page.
         # Timing a phase means waiting for the GPU at its end, which leaves the GPU idle while the
         # next phase's work is queued (about 5% of a step), so only every PHASES_EVERY-th step does
@@ -1203,9 +1209,11 @@ class Trainer:
             del x0_pred, loss, scaled  # the preservation pass's graph needs the room
             held = self._preserve_loss(idx, x0, shapes, x_t, sigma, noise, acc)
             if held is not None:
-                self.last_preserve_loss = held
+                held_sum, held_n = held_sum + held, held_n + 1
             lap("backward")
 
+        if held_n:
+            self.last_preserve_loss = held_sum / held_n  # the step's mean over its micro-batches
         if self.scaler:
             self.scaler.unscale_(self.optimizer)
         params = self.network.trainable()

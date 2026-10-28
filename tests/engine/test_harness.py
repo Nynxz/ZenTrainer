@@ -1295,6 +1295,11 @@ def test_preserve_needs_a_trigger():
     TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "trigger": "jane"}, "objective": {"preserve": "woman, man"}})
     with pytest.raises(SpecError, match="set dataset.trigger"):
         TrainSpec.from_dict({**_spec(), "objective": {"preserve": "woman"}})
+    with pytest.raises(SpecError, match="class words, comma-separated"):  # nothing in it to swap in
+        TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "trigger": "jane"}, "objective": {"preserve": " , "}})
+    with pytest.raises(SpecError, match="keyframe clip"):  # its caption is encoded with the keyframes
+        TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "trigger": "jane", "video_keyframes": "first"},
+                             "objective": {"preserve": "woman"}})
 
 
 def test_class_words_suggest_the_captions_class_its_counterpart_and_person(tmp_path, monkeypatch):

@@ -20,6 +20,17 @@ const heldOutItems = computed(() => [
 // Preserve classes: turning it on fills in what the dataset's captions call the subject and its
 // counterpart (a woman's LoRA bleeds into men too), or woman, man, person
 const classes = ref<{ captions: number; words: { word: string; count: number }[]; suggest: string[] } | null>(null)
+// on/off of its own, so emptying the words to retype them doesn't switch it off under the cursor;
+// a spec arriving with words (a recipe, a copied run) turns it on
+const FALLBACK = 'woman, man, person'
+const preserveOn = ref(!!spec.objective.preserve?.trim())
+watch(() => spec.objective.preserve, (v) => { if (v?.trim()) preserveOn.value = true })
+function setPreserve(on: boolean) {
+  preserveOn.value = on
+  spec.objective.preserve = on ? classes.value?.suggest.join(', ') || FALLBACK : ''
+}
+// a slider has no trigger to swap and the switch hides with it: turning one on turns this off
+watch(() => spec.slider?.kind, (kind) => { if (kind && preserveOn.value) setPreserve(false) })
 let classTicket = 0
 watch(() => spec.dataset.folder, async (folder) => {
   const ticket = ++classTicket
@@ -27,19 +38,14 @@ watch(() => spec.dataset.folder, async (folder) => {
   if (!folder) return
   try {
     const got = await engine.datasetClassWords(folder)
-    if (ticket === classTicket) classes.value = got
+    if (ticket !== classTicket) return
+    classes.value = got
+    // switched on before the captions' words came: theirs replace the stand-in, never words typed
+    if (preserveOn.value && spec.objective.preserve === FALLBACK && got.suggest.length) spec.objective.preserve = got.suggest.join(', ')
   } catch {
     /* no suggestion: the field still takes words by hand */
   }
 }, { immediate: true })
-// on/off of its own, so emptying the words to retype them doesn't switch it off under the cursor;
-// a spec arriving with words (a recipe, a copied run) turns it on
-const preserveOn = ref(!!spec.objective.preserve?.trim())
-watch(() => spec.objective.preserve, (v) => { if (v?.trim()) preserveOn.value = true })
-function setPreserve(on: boolean) {
-  preserveOn.value = on
-  spec.objective.preserve = on ? classes.value?.suggest.join(', ') || 'woman, man, person' : ''
-}
 
 const advanced = reactive({ training: false })
 // LoRA and LoKr: LoHa and OFT aren't ready (LoHa can't train on an int8 base). A run that already

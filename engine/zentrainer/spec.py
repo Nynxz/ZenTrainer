@@ -467,12 +467,16 @@ class TrainSpec:
             raise SpecError('network.targets has no patterns: add the layers to train (regexes), or use "attn", '
                             '"mlp", "attn_mlp" or "all"')
         if self.objective.preserve.strip():
+            if not any(w.strip() for w in self.objective.preserve.split(",")):
+                raise SpecError('objective.preserve is class words, comma-separated: e.g. "woman, man, person"')
             if not self.dataset.trigger.strip():
                 raise SpecError("objective.preserve swaps the trigger for a class word: set dataset.trigger")
             if self.slider.kind:
                 raise SpecError("objective.preserve is for adapters with a trigger, not sliders")
             if self.dataset.edit_grounded:
                 raise SpecError("objective.preserve can't swap the caption of a grounded edit (its encoding includes the inputs)")
+            if self.dataset.video_keyframes:
+                raise SpecError("objective.preserve can't swap the caption of a keyframe clip (its encoding includes the keyframes)")
         if self.network.blocks and not re.fullmatch(r"\s*\d*\s*-?\s*\d*\s*", self.network.blocks):
             raise SpecError("network.blocks is a range like 20-49, 20- or 10")
         if self.network.skip_blocks and not re.fullmatch(r"\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*", self.network.skip_blocks):
