@@ -118,3 +118,27 @@ def test_what_it_does_not_take_goes_to_the_triton_path(monkeypatch):
     monkeypatch.setenv("ZENTRAINER_CUDA_KERNELS", "0")
     monkeypatch.setattr(w8a8_cuda, "_kernels", {})
     assert not w8a8_cuda.supported(g, q, 256)
+
+
+@cuda
+def test_tensors_it_does_not_suit_go_to_the_triton_path_inside_the_op(monkeypatch):
+    # a trace decides on the CUDA path before the real tensors exist; one that isn't 16-byte
+    # aligned (a view one element in) has to come back by the fallback, still the same product
+    from zentrainer.harness.kernels import int8_backward, w8a8_cuda
+
+    # ConvRot's rotation, which the fallback takes from comfy_kitchen (ComfyUI's, not here)
+    monkeypatch.setattr(int8_backward, "_hadamard", lambda size, device, dtype: _regular_hadamard(size).to(device, dtype))
+
+    torch.manual_seed(4)
+    flat = torch.randn(64 * 256 + 1, device="cuda", dtype=torch.bfloat16)
+    g = flat[1:].view(64, 256)  # 2 bytes in: not aligned
+    assert g.data_ptr() % 16
+    s = torch.rand(256, device="cuda") * 0.01 + 0.001
+    q = torch.randint(-127, 128, (256, 512), device="cuda", dtype=torch.int8)
+    seed = torch.tensor([5], device="cuda", dtype=torch.int32)
+    exact = (g.double() * s.double()) @ q.double()
+    for rotate in (True, False):
+        want = (exact.view(64, 2, 256) @ _regular_hadamard(256).cuda().T).view(64, 512) if rotate else exact
+        out = w8a8_cuda.input_grad(g, q, s, seed, rotate)
+        assert out.dtype == torch.bfloat16 and out.shape == (64, 512)
+        assert ((out.double() - want).norm() / want.norm()).item() < 2e-2  # int8 rounding, then bf16

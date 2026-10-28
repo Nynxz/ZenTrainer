@@ -92,6 +92,14 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
         _count("w8a8: cuda")
         seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
         return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256)
+    return _w8a8_input_grad(grad_2d, q, scale, group)
+
+
+def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor:
+    """The Triton kernels (or plain torch without Triton): the CUDA kernel's fallback, also from
+    inside its custom op when the real tensors don't suit it (w8a8_cuda.input_grad)."""
+    m, n = grad_2d.shape
+    k = q.shape[1]
     try:
         from .w8a8_backward import TRITON_AVAILABLE, int8_matmul, quantize_rows
     except Exception:

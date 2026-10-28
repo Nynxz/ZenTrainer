@@ -94,8 +94,7 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
     if ks is None or not _aligned(grad_2d, q):  # decided while tracing: the real tensors don't suit
         from .int8_backward import _w8a8_input_grad
 
-        g = _w8a8_input_grad(grad_2d, q, scale, 256 if rotate else 0)
-        return g if residual is None else g + residual.to(g.dtype)
+        return _w8a8_input_grad(grad_2d, q, scale, 256 if rotate else 0)
     scale = scale.reshape(-1).float().contiguous()
     gq = torch.empty((m, n), device=grad_2d.device, dtype=torch.int8)
     steps = torch.empty((m,), device=grad_2d.device, dtype=torch.float32)
