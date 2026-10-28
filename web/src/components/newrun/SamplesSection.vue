@@ -25,11 +25,11 @@ function useSuggestion() {
 const TURBO = { steps: 8, cfg: 1 }
 const turboOpen = ref(!!spec.samples.turbo_lora)
 const turboCleared = ref(false)
-const plain = ref({ steps: 25, cfg: 2.5 })
+const plain = ref<{ steps: number; cfg: number } | null>(null)  // the settings from before a turbo LoRA, once seen
 const isTurboSteps = () => spec.samples.steps <= 12 && spec.samples.cfg <= 1.5
 const DISTILLED = /turbo|distill|lightning|hyper|lcm|schnell|dmd|\bfast\b/i
 const turboSteps = computed(() => DISTILLED.test(spec.samples.turbo_lora ?? '') && !isTurboSteps() && !spec.samples.sigmas?.length)
-const plainSteps = computed(() => turboCleared.value && isTurboSteps() && !spec.samples.sigmas?.length)
+const plainSteps = computed(() => turboCleared.value && !!plain.value && isTurboSteps() && !spec.samples.sigmas?.length)
 watch(() => spec.samples.turbo_lora, (v) => v && (turboOpen.value = true))  // a recipe or an import set one
 function pickTurbo(v: unknown) {
   spec.samples.turbo_lora = v == null || v === '' ? null : String(v)
@@ -297,7 +297,7 @@ async function savePromptSet(name: string) {
         <button type="button" class="add-lora" @click="turboOpen = true"><i class="mdi mdi-plus" /> Add a LoRA under samples</button>
         <p v-if="plainSteps" class="hint muted small">
           Without the turbo LoRA, {{ spec.samples.steps }} steps at CFG {{ spec.samples.cfg }} are likely too few.
-          <button type="button" class="link" @click="setSteps(plain)">Use {{ plain.steps }} steps, CFG {{ plain.cfg }}</button>
+          <button v-if="plain" type="button" class="link" @click="setSteps(plain)">Use {{ plain.steps }} steps, CFG {{ plain.cfg }}</button>
         </p>
       </div>
     </ZenField>

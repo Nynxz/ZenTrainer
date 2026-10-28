@@ -5,12 +5,12 @@
 import { ZenButton, ZenCombo, ZenNumber, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { inputChoices } from '@/api/comfy'
-import { viewUrl, type SampleRow } from '@/api/engine'
+import { engine, viewUrl, type SampleRow } from '@/api/engine'
 import { vAutosize } from '@/lib/autosize'
 import { useRunContext } from './context'
 import { isVideo, rowHasVideo, sampleItem, useSamplesContext } from './samples'
 
-const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries, send, load } = useRunContext()
+const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries, id, error, load } = useRunContext()
 const { liveManual, lb, syncing, toggleSync, hoverPlay, hoverPause } = useSamplesContext()
 
 // each try is a card: its no-LoRA render (if asked for) and every step it was rendered at
@@ -112,9 +112,11 @@ async function applyToRun() {
   if (!Object.keys(own).length || sigmaError.value) return
   applying.value = true
   try {
-    await send('samples', own)
+    await engine.control(id.value, 'samples', own)  // rejects when the run refuses them
+    Object.assign(tuned, untuned)  // the run's now; kept on screen if it refused them
     await load()
-    Object.assign(tuned, untuned)
+  } catch (e) {
+    error.value = String((e as Error).message ?? e)
   } finally {
     applying.value = false
   }
