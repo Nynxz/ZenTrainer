@@ -19,6 +19,8 @@ defineProps<{
   icon?: string
   /** the accent for the icon panel and hover */
   accent?: string
+  /** no picture, no panel: the card is its text */
+  pictureOnly?: boolean
   /** a small logo before the tags (a model maker's) */
   logo?: string | null
   tags?: string[]
@@ -34,7 +36,7 @@ defineProps<{
 
 <template>
   <RouterLink :to="to" class="tcard" :style="accent ? { '--a': accent } : undefined">
-    <div class="thumb">
+    <div v-if="!pictureOnly || image || $slots.thumb" class="thumb">
       <slot v-if="$slots.thumb" name="thumb" />
       <ZenCompare v-else-if="image && after" :before="image" :after="after" :mode="mode ?? 'slider'" :before-label="beforeLabel" :after-label="afterLabel" />
       <img v-else-if="image" :src="image" alt="" loading="lazy" />

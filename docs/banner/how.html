@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- The README's "How it works", drawn as a ComfyUI graph in the Isotope look: each step a node,
+     wired output to input. python docs/banner/render.py renders it to docs/images/how-it-works.webp. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../engine/themes/isotope/fonts.css" />
+<style>
+  :root {
+    --bg: #0b0b0c;
+    --node: #141416;
+    --head: #1c1c1f;
+    --line: #2a2a2e;
+    --text: #f2eee6;
+    --muted: #9c978c;
+    --accent: #d7ff3b;
+    --display: 'Isotope Display', 'Big Shoulders Display', sans-serif;
+    --sans: 'Isotope Sans', 'Inter Tight', 'Inter', system-ui, sans-serif;
+    --mono: 'Isotope Mono', 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; }
+  .how {
+    position: relative;
+    width: 1600px;
+    height: 440px;
+    overflow: hidden;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 39px, rgba(242, 238, 230, 0.035) 39px 40px),
+      repeating-linear-gradient(90deg, transparent 0 39px, rgba(242, 238, 230, 0.035) 39px 40px),
+      var(--bg);
+    font-family: var(--sans);
+    color: var(--text);
+  }
+  .eyebrow { position: absolute; left: 60px; top: 48px; font-family: var(--mono); font-size: 18px;
+             letter-spacing: 0.2em; color: var(--muted); }
+  .eyebrow b { color: var(--accent); font-weight: 500; margin-right: 12px; }
+
+  /* a node: ComfyUI's shape (a title bar, sockets on its edges) in the theme's colours */
+  .node { position: absolute; top: 132px; width: 300px; height: 216px; background: var(--node);
+          border: 2px solid var(--line); border-radius: 6px; }
+  .node.us { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(215, 255, 59, 0.08); }
+  .bar { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 18px; background: var(--head);
+         border-bottom: 2px solid var(--line); border-radius: 4px 4px 0 0; }
+  .node.us .bar { border-bottom-color: rgba(215, 255, 59, 0.35); }
+  .bar img, .bar svg { width: 30px; height: 30px; flex: none; }
+  .bar img { border-radius: 8px; box-shadow: 0 0 0 1px rgba(242, 238, 230, 0.18); }
+  .bar i { width: 30px; height: 30px; flex: none; display: grid; place-items: center; }
+  .title { font-family: var(--display); font-weight: 800; font-size: 30px; letter-spacing: 0.02em;
+           text-transform: uppercase; line-height: 1; padding-top: 3px; }
+  .body { padding: 20px 18px; display: grid; gap: 10px; }
+  .what { font-size: 21px; line-height: 1.3; }
+  .tag { font-family: var(--mono); font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  /* sockets: an output on the right edge, an input on the left, at the same height as the wire */
+  .sock { position: absolute; top: 140px; width: 16px; height: 16px; margin-top: -8px; border-radius: 50%;
+          background: var(--accent); border: 3px solid var(--bg); }
+  .sock.in { left: -9px; }
+  .sock.out { right: -9px; }
+  .sock.below { top: auto; bottom: -17px; left: 50%; margin: 0 0 0 -8px; }
+  svg.wires { position: absolute; inset: 0; overflow: visible; }
+</style>
+</head>
+<body>
+  <div class="how">
+    <div class="eyebrow"><b>HOW IT WORKS</b></div>
+
+    <svg class="wires" width="1600" height="440" aria-hidden="true">
+      <g fill="none" stroke="#d7ff3b" stroke-width="4" stroke-linecap="round">
+        <path d="M360,272 C410,272 410,272 460,272" />
+        <path d="M760,272 C810,272 810,272 860,272" />
+        <path d="M1160,272 C1210,272 1210,272 1260,272" />
+      </g>
+      <!-- the LoRA goes back into ComfyUI: a wire under the nodes, from the last output to ComfyUI's input -->
+      <path d="M1569,272 C1610,272 1600,404 1500,404 L660,404 C620,404 610,390 610,357" fill="none" stroke="#d7ff3b"
+            stroke-width="3" stroke-dasharray="2 10" stroke-linecap="round" opacity="0.7" />
+      <text x="1060" y="396" fill="#9c978c" font-family="Isotope Mono, monospace" font-size="14" letter-spacing="2" text-anchor="middle">BACK INTO YOUR WORKFLOWS</text>
+    </svg>
+
+    <div class="node" style="left: 60px">
+      <div class="bar"><i><svg viewBox="0 0 24 24" fill="none" stroke="#9c978c" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 3 7.5l9 4.5 9-4.5L12 3Z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg></i><span class="title">Your models</span></div>
+      <div class="body"><span class="what">The files your ComfyUI already has</span><span class="tag">Krea 2 · MOSS · Qwen…</span></div>
+      <span class="sock out"></span>
+    </div>
+
+    <div class="node" style="left: 460px">
+      <div class="bar"><img src="comfy-logo.svg" alt="" /><span class="title">ComfyUI</span></div>
+      <div class="body"><span class="what">Loads them with its own model code</span><span class="tag">As a library: no workflow</span></div>
+      <span class="sock in"></span><span class="sock out"></span><span class="sock below"></span>
+    </div>
+
+    <div class="node us" style="left: 860px">
+      <div class="bar">
+        <svg viewBox="-74 -88 148 102" aria-hidden="true" fill="#141416" stroke="#d7ff3b" stroke-width="7" stroke-linejoin="round">
+          <path d="M0,0 C24,-15 17,-40 0,-52 C-17,-40 -24,-15 0,0Z" transform="rotate(-74)"/>
+          <path d="M0,0 C24,-15 17,-40 0,-52 C-17,-40 -24,-15 0,0Z" transform="rotate(74)"/>
+          <path d="M0,0 C25,-19 18,-50 0,-65 C-18,-50 -25,-19 0,0Z" transform="rotate(-37)"/>
+          <path d="M0,0 C25,-19 18,-50 0,-65 C-18,-50 -25,-19 0,0Z" transform="rotate(37)"/>
+          <path d="M0,0 C26,-23 19,-61 0,-80 C-19,-61 -26,-23 0,0Z"/>
+        </svg>
+        <span class="title">ZenTrainer</span>
+      </div>
+      <div class="body"><span class="what">Trains a LoRA on that code, on your GPU</span><span class="tag">Live samples and loss</span></div>
+      <span class="sock in"></span><span class="sock out"></span>
+    </div>
+
+    <div class="node" style="left: 1260px">
+      <div class="bar"><i><svg viewBox="0 0 24 24" fill="none" stroke="#9c978c" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z"/><path d="M14 3v5h5"/><path d="m9.5 14.5 2 2 3.5-4"/></svg></i><span class="title">Your LoRA</span></div>
+      <div class="body"><span class="what">In ComfyUI's LoRA loaders, ready to use</span><span class="tag">output/zentrainer/loras</span></div>
+      <span class="sock in"></span><span class="sock out"></span>
+    </div>
+  </div>
+</body>
+</html>

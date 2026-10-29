@@ -43,6 +43,9 @@ const LIGHT_BASE: Record<string, string> = {
   '--input': '#e2e2e8',
 }
 
+/** the theme a first visit starts in (when its pack is installed; it ships with ZenTrainer) */
+export const DEFAULT_THEME = 'isotope'
+
 // Used only if the engine can't be reached; has both modes so the toggle always works.
 const FALLBACK = {
   id: 'zen',
@@ -145,7 +148,8 @@ export async function initTheme(): Promise<void> {
   const mode: ThemeMode =
     qMode === 'light' || qMode === 'dark' ? qMode : (saved?.preferred ?? saved?.mode ?? (prefersLight ? 'light' : 'dark'))
   const id = q.get('theme') ?? saved?.id
-  const start = id && getPack(id) ? id : 'zen'
+  // never picked one: Isotope, as the README and the Registry show it (dark only), else the built-in Zen
+  const start = id && getPack(id) ? id : getPack(DEFAULT_THEME) ? DEFAULT_THEME : 'zen'
   await packCss(start) // before the first paint: its fonts don't swap in after
   // restoring isn't choosing: only a pick made here is saved back
   setTheme(start, mode, false)

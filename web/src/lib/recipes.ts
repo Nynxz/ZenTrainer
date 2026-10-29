@@ -18,8 +18,8 @@ export interface Recipe {
   blurb: string
   /** what to put in: shown beside the drop zone */
   photos: { min: number; ideal: string; tips: string[] }
-  /** the card's accent and icon */
-  cover: { from: string; to: string; icon: string }
+  /** the icon beside its name (a picture, when there is one, is `thumb`) */
+  icon: string
   /** the card's picture, as ComfyUI's template thumbnails: one image, two that crossfade on hover
    *  ("dissolve"), or a before/after the pointer slides across ("slider"); paths in web/public */
   thumb?: { src: string; after?: string; mode?: 'slider' | 'dissolve'; before_label?: string; after_label?: string }
@@ -70,7 +70,7 @@ export const RECIPES: Recipe[] = [
     title: 'Krea 2 · Character',
     blurb: 'A person or character, photoreal. Previews on Krea 2 Turbo in 8 steps.',
     photos: character(),
-    cover: { from: '#f97316', to: '#7c2d12', icon: 'mdi mdi-account-star-outline' },
+    icon: 'mdi mdi-account-star-outline',
     files: {
       diffusion_models: ['krea2_raw_int8_convrot.safetensors', 'krea2_raw_bf16.safetensors'],
       text_encoders: ['qwen3vl_4b_int8_convrot.safetensors', 'qwen3vl_4b_fp8_scaled.safetensors'],
@@ -99,7 +99,7 @@ export const RECIPES: Recipe[] = [
     title: 'Krea 2 · Style',
     blurb: 'A look: an art style, a film stock, a mood. Apply it to anything with the trigger word.',
     photos: style,
-    cover: { from: '#a855f7', to: '#1e1b4b', icon: 'mdi mdi-palette-outline' },
+    icon: 'mdi mdi-palette-outline',
     files: {
       diffusion_models: ['krea2_raw_int8_convrot.safetensors', 'krea2_raw_bf16.safetensors'],
       text_encoders: ['qwen3vl_4b_int8_convrot.safetensors', 'qwen3vl_4b_fp8_scaled.safetensors'],
@@ -124,7 +124,7 @@ export const RECIPES: Recipe[] = [
     title: 'MOSS Image · Character',
     blurb: 'A person or character on MOSS Image Base. Trains only where a likeness lives: over twice as fast.',
     photos: character(),
-    cover: { from: '#22c55e', to: '#064e3b', icon: 'mdi mdi-account-heart-outline' },
+    icon: 'mdi mdi-account-heart-outline',
     files: {
       diffusion_models: ['moss_image_base_int8_convrot.safetensors', 'moss_image_base_bf16.safetensors'],
       text_encoders: ['qwen3.5_9b_int8_convrot.safetensors'],
@@ -148,6 +148,67 @@ export const RECIPES: Recipe[] = [
     validated: true,
   },
   {
+    id: 'moss-character-finetunes',
+    family: 'moss-image',
+    model: 'MOSS Image',
+    kind: 'character',
+    title: 'MOSS Image · Character for finetunes',
+    blurb: 'A person or character that keeps its likeness on MOSS finetunes such as Serenity, not only on Base.',
+    photos: character(),
+    icon: 'mdi mdi-account-switch-outline',
+    files: {
+      diffusion_models: ['moss_image_base_int8_convrot.safetensors', 'moss_image_base_bf16.safetensors'],
+      text_encoders: ['qwen3.5_9b_int8_convrot.safetensors'],
+      vae: ['flux2-vae.safetensors'],
+    },
+    // draft: a LoRA on every block's MLPs at 3e-4 reached likeness 0.59 on Base at 1500 steps on
+    // 37 photos (768 px) and kept 78% of it on Serenity v6 (0.46). The LoKr on blocks 24-41 above
+    // reached more on Base (0.66) but kept 61%; the same LoRA on blocks 24-41 only kept 51%, and at
+    // 1e-4 every LoRA trailed (0.49-0.52 on Base)
+    steps: 1500,
+    caption: { prompt: NL, subject: true },
+    spec: {
+      dataset: { resolution: 768 },
+      network: { algorithm: 'LoRA', rank: 16, alpha: 16, targets: 'mlp', blocks: '' },
+      // Automagic v3 stalls on MOSS without a floor under its rate
+      optim: { optimizer: 'Automagic3', learning_rate: 3e-4, lr_scheduler: 'constant', ema: 0.98, lr_floor: 0.5 },
+      objective: { timesteps: 'logit_normal', shift: 0, bias: 'high_noise', spread: true },
+      samples: { steps: 25, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple', slg_mode: 'uncond', slg_layers: [22], slg_start: 0 },
+    },
+    samples: ['[trigger], a close up portrait photo, soft window light', '[trigger] sitting in a cafe, candid photo'],
+    note: 'Slower than MOSS Image · Character (every block trains); use that one for Base alone',
+  },
+  {
+    id: 'moss-style',
+    family: 'moss-image',
+    model: 'MOSS Image',
+    kind: 'style',
+    title: 'MOSS Image · Style',
+    blurb: 'A look: an art style, a palette, a way of drawing. Apply it to anything with the trigger word.',
+    photos: style,
+    icon: 'mdi mdi-palette-outline',
+    files: {
+      diffusion_models: ['moss_image_base_int8_convrot.safetensors', 'moss_image_base_bf16.safetensors'],
+      text_encoders: ['qwen3.5_9b_int8_convrot.safetensors'],
+      vae: ['flux2-vae.safetensors'],
+    },
+    // draft, not trained yet: two MOSS style LoRAs (ai-toolkit, rank 32, attention and MLPs) cut to
+    // block ranges and rendered on fixed seeds kept nothing of their style in blocks 34-41 (0-2% of
+    // the full change), where a character's likeness lives, so those blocks stay the base's. The
+    // optimizer is the character LoRAs' above: at 1e-4 every MOSS LoRA we trained trailed
+    steps: 2000,
+    caption: { prompt: STYLE, subject: false },
+    spec: {
+      dataset: { resolution: 1024 },
+      network: { algorithm: 'LoRA', rank: 32, alpha: 32, targets: 'attn_mlp', blocks: '0-33' },
+      // Automagic v3 stalls on MOSS without a floor under its rate
+      optim: { optimizer: 'Automagic3', learning_rate: 3e-4, lr_scheduler: 'constant', ema: 0.98, lr_floor: 0.5 },
+      objective: { timesteps: 'logit_normal', shift: 0 },
+      samples: { steps: 25, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple', slg_mode: 'uncond', slg_layers: [22], slg_start: 0 },
+    },
+    samples: ['[trigger], a lighthouse on a cliff at dusk', '[trigger], a portrait of an old fisherman', '[trigger], a bowl of fruit on a table'],
+  },
+  {
     id: 'fibo2-character',
     family: 'fibo-2-0',
     model: 'Fibo 2.0',
@@ -155,7 +216,7 @@ export const RECIPES: Recipe[] = [
     title: 'Fibo 2.0 · Any subject',
     blurb: 'A person, a pet, a product or a look, on Bria’s Fibo 2.0 Dev. It learns fast, at a low rank and a gentle learning rate.',
     photos: general,
-    cover: { from: '#6366f1', to: '#1e1b4b', icon: 'mdi mdi-account-star-outline' },
+    icon: 'mdi mdi-account-star-outline',
     files: {
       diffusion_models: ['fibo2_dev_int8_convrot.safetensors'],
       text_encoders: ['qwen3vl_4b_bf16.safetensors', 'qwen3vl_4b_int8_convrot.safetensors', 'qwen3vl_4b_fp8_scaled.safetensors'],
@@ -185,7 +246,7 @@ export const RECIPES: Recipe[] = [
     title: 'MiniMax H3 · Character',
     blurb: 'A person for the H3 video model, trained from photos. Use it in image or video prompts.',
     photos: character(),
-    cover: { from: '#0ea5e9', to: '#0c4a6e', icon: 'mdi mdi-movie-star-outline' },
+    icon: 'mdi mdi-movie-star-outline',
     files: {
       diffusion_models: ['minimax_h3_fl2va_pruned_int8_convrot.safetensors'],
       text_encoders: ['qwen3vl_32b_minimax_h3_int8_convrot.safetensors', 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'],

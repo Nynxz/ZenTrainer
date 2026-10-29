@@ -1,0 +1,83 @@
+<!doctype html>
+<!-- The README's Datasets, as one picture in the banner's look: three framed crops of the app
+     (python docs/banner/shots.py takes them), as simple.html. python docs/banner/render.py renders it to
+     docs/images/datasets.webp. A panel's data-crop is the part of its page shown, in the capture's own
+     pixels (x y width height, at 1x); .wide spans both columns. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../engine/themes/isotope/fonts.css" />
+<style>
+  :root {
+    --bg: #0b0b0c;
+    --card: #141416;
+    --edge: #3a3a3f;
+    --text: #f2eee6;
+    --muted: #9c978c;
+    --accent: #d7ff3b;
+    --mono: 'Isotope Mono', 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; }
+  .sheet {
+    position: relative;
+    width: 1600px;
+    padding: 84px 64px 64px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 84px 52px;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 79px, rgba(242, 238, 230, 0.035) 79px 80px),
+      repeating-linear-gradient(90deg, transparent 0 79px, rgba(242, 238, 230, 0.035) 79px 80px),
+      var(--bg);
+  }
+  /* the frame is its lime L-brackets alone (no hairline), the step's tag just above it */
+  .framed { position: relative; background: var(--card); box-shadow: 0 30px 70px -24px rgba(0, 0, 0, 0.75); }
+  .framed i { position: absolute; width: 26px; height: 26px; border: 0 solid var(--accent); z-index: 2; }
+  .framed .tl { left: -8px; top: -8px; border-top-width: 4px; border-left-width: 4px; }
+  .framed .tr { right: -8px; top: -8px; border-top-width: 4px; border-right-width: 4px; }
+  .framed .bl { left: -8px; bottom: -8px; border-bottom-width: 4px; border-left-width: 4px; }
+  .framed .br { right: -8px; bottom: -8px; border-bottom-width: 4px; border-right-width: 4px; }
+  .view { position: absolute; left: 0; right: 0; top: 0; overflow: hidden; }
+  .framed.wide { grid-column: 1 / -1; }
+  .view img { position: absolute; display: block; }
+  .tag { position: absolute; left: 30px; top: -42px; font-family: var(--mono); font-size: 18px; font-weight: 500;
+         letter-spacing: 0.16em; color: var(--muted); line-height: 24px; }
+  .tag b { color: var(--accent); font-weight: 500; margin-right: 10px; }
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="framed wide" data-crop="20 64 1316 548"><span class="tag"><b>01</b>BROWSE</span><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><div class="view"><img src="el-ds-grid.webp" alt="" /></div></div>
+    <div class="framed" data-crop="0 0 1600 1000"><span class="tag"><b>02</b>LOOK CLOSER</span><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><div class="view"><img src="el-ds-viewer.webp" alt="" /></div></div>
+    <div class="framed" data-crop="20 60 1316 822"><span class="tag"><b>03</b>MASK IT</span><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><div class="view"><img src="el-ds-mask.webp" alt="" /></div></div>
+  </div>
+  <script>
+    // each crop scaled to fill its frame's width (the captures are 2x, data-crop is in 1x pixels); frames in
+    // a row take the tallest one's height, the rest of a shorter one in its picture's own bottom colour
+    window.layout = async () => {
+      const frames = [...document.querySelectorAll('.framed')]
+      const fit = await Promise.all(frames.map(async (f) => {
+        const img = f.querySelector('img')
+        await img.decode()
+        const [x, y, w, h] = f.dataset.crop.split(' ').map(Number)
+        const s = f.clientWidth / w
+        img.style.width = `${(img.naturalWidth / 2) * s}px`
+        img.style.left = `${-x * s}px`
+        img.style.top = `${-y * s}px`
+        f.querySelector('.view').style.height = `${h * s}px` // the crop and no more, however tall its row
+        const c = document.createElement('canvas').getContext('2d')
+        c.canvas.width = c.canvas.height = 1
+        c.drawImage(img, (x + 8) * 2, (y + h - 4) * 2, 1, 1, 0, 0, 1, 1)
+        const [r, g, b] = c.getImageData(0, 0, 1, 1).data
+        f.style.background = `rgb(${r} ${g} ${b})`
+        return { f, h: h * s, top: Math.round(f.getBoundingClientRect().top) }
+      }))
+      for (const a of fit) {
+        const row = fit.filter((b) => b.top === a.top)
+        a.f.style.height = `${Math.max(...row.map((b) => b.h))}px`
+      }
+    }
+  </script>
+</body>
+</html>

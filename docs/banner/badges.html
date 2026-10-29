@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- The badges under the README's banner, each its own picture (and link there): what ZenTrainer runs
+     on, in the banner's look. python docs/banner/render.py renders each .badge to
+     docs/images/badge-<id>.webp. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../engine/themes/isotope/fonts.css" />
+<style>
+  :root {
+    --card: #141416;
+    --line: #2a2a2e;
+    --text: #f2eee6;
+    --accent: #d7ff3b;
+    --display: 'Isotope Display', 'Big Shoulders Display', sans-serif;
+    --mono: 'Isotope Mono', 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; }
+  body { display: flex; flex-direction: column; align-items: flex-start; gap: 20px; padding: 20px; }
+  /* a pill: what it is, then a word in lime; a lime bracket on two corners like the banner's frames */
+  .badge { position: relative; display: inline-flex; align-items: center; gap: 12px; height: 38px; padding: 0 18px;
+           background: var(--card); border: 1px solid var(--line); color: var(--text); font-family: var(--mono); }
+  .badge i { position: absolute; width: 8px; height: 8px; border: 0 solid var(--accent); }
+  .badge .tl { left: -1px; top: -1px; border-top-width: 2px; border-left-width: 2px; }
+  .badge .br { right: -1px; bottom: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+  .badge img { display: block; }
+  /* each picture is a badge and a little transparent room: the brackets sit just outside its edge */
+  .pad { padding: 4px; }
+  .badge b { font-family: var(--display); font-weight: 800; font-size: 19px; letter-spacing: 0.04em;
+             text-transform: uppercase; line-height: 1; padding-top: 2px; }
+  .badge span { font-size: 12px; letter-spacing: 0.12em; color: var(--accent); } /* as written: ROCm, not ROCM */
+</style>
+</head>
+<body>
+  <div class="pad" id="comfyui"><div class="badge"><i class="tl"></i><i class="br"></i><img src="comfy-logo.svg" width="22" height="22" alt="" style="border-radius: 5px" /><b>ComfyUI</b></div></div>
+  <div class="pad" id="nvidia"><div class="badge"><i class="tl"></i><i class="br"></i><img src="nvidia-logo.svg" width="98" height="18" alt="" /><span>CUDA</span></div></div>
+  <div class="pad" id="amd"><div class="badge"><i class="tl"></i><i class="br"></i><img src="amd-logo.svg" width="64" height="16" alt="" /><span>ROCm</span></div></div>
+  <div class="pad" id="os"><div class="badge"><i class="tl"></i><i class="br"></i><b>Linux · Windows</b></div></div>
+  <div class="pad" id="license"><div class="badge"><i class="tl"></i><i class="br"></i><b>MIT</b><span>OPEN SOURCE</span></div></div>
+  <!-- Runpod's own white wordmark, as their brand kit gives it (not recoloured), for the Install section -->
+  <div class="pad" id="runpod"><div class="badge"><i class="tl"></i><i class="br"></i><span>DEPLOY ON</span><img src="runpod-logo.svg" width="92" height="21" alt="" /></div></div>
+</body>
+</html>
