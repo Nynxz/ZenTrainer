@@ -20,12 +20,18 @@ const heldOutItems = computed(() => [
 // Preserve classes: turning it on fills in what the dataset's captions call the subject and its
 // counterpart (a woman's LoRA bleeds into men too), or woman, man, person
 const classes = ref<{ captions: number; words: { word: string; count: number }[]; suggest: string[] } | null>(null)
-// preserveOn (form.ts) is its own on/off; a spec arriving with words (a recipe, a copied run)
-// turns it on. Turned on before the captions' words load, it holds a stand-in that they replace
-// when they come, unless it's been edited since (fallbackShown)
+// preserveOn (form.ts) is its own on/off. A value set from outside the words field (a recipe, an
+// import, Undo) sets it: on with words, off without; emptying the field to retype leaves it on.
+// Turned on before the captions' words load, it holds a stand-in that they replace when they
+// come, unless it's been edited since (fallbackShown)
 const FALLBACK = 'woman, man, person'
 const fallbackShown = ref(false)
-watch(() => spec.objective.preserve, (v) => { if (v?.trim()) preserveOn.value = true })
+let typed = false // the change the watcher sees came from the words field
+watch(() => spec.objective.preserve, (v) => {
+  if (v?.trim()) preserveOn.value = true
+  else if (!typed) preserveOn.value = false
+  typed = false
+})
 function setPreserve(on: boolean) {
   preserveOn.value = on
   const words = classes.value?.suggest.join(', ')
@@ -34,6 +40,7 @@ function setPreserve(on: boolean) {
 }
 function editWords(v: string) {
   fallbackShown.value = false
+  typed = v !== spec.objective.preserve // the watcher runs (and clears it) only on a change
   spec.objective.preserve = v
 }
 // a slider has no trigger to swap and the switch hides with it: turning one on turns this off
