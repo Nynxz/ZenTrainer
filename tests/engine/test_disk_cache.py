@@ -121,6 +121,44 @@ def test_a_disk_build_cut_short_carries_on_from_its_files(tmp_path):
         assert (s.cond is None) == (first[s.file].get("cond") is None)
 
 
+class VideoVAE:
+    """As ComfyUI's Wan / Qwen Image VAE: latent_dim 3, and a batch of pictures is one clip's frames
+    (one latent back, its frames squeezed 4 to 1 after the first)."""
+    latent_dim, not_video = 3, False
+
+    def __init__(self):
+        self.calls = 0
+
+    def encode(self, px):
+        self.calls += 1
+        frames = px.movedim(-1, 1)[:, :, ::8, ::8].repeat(1, 2, 1, 1).float()  # (T, 6, h/8, w/8)
+        return frames[::4].movedim(0, 1)[None]  # (1, 6, 1 + (T - 1) // 4, h/8, w/8)
+
+
+def test_a_video_vae_encodes_each_cached_picture_as_its_own(tmp_path):
+    # Krea 2 on Qwen Image's VAE with the latent cache on: the 3 pictures of one size used to go in one call,
+    # come back as one clip's latent, and the second picture found none (IndexError)
+    root = _dataset(tmp_path)
+    spec = DatasetSpec(folder="pairs", resolution=64, buckets=False, disk_cache=True)
+    vae = VideoVAE()
+    ds = data.build(spec, FakeClip(), vae, root, tmp_path / "cache", "enc")
+    assert vae.calls == 3 and len(ds.samples) == 3
+    latents = {ds.captions[s.caption]: s.latent for s in ds.samples}
+    assert all(lat.shape == (6, 1, 8, 8) for lat in latents.values())  # one frame each, as _encode gives
+    assert not torch.equal(latents["make a green"], latents["make b green"])  # each its own picture (red, blue)
+
+    # a cache the failing build left: a picture holding a batch squeezed into one clip (more than one
+    # frame), whole and readable; it's encoded again, not kept
+    s = ds.samples[0]
+    bad = torch.load(s.file, weights_only=False)
+    bad["latent"] = bad["latent"].repeat(1, 2, 1, 1)
+    torch.save(bad, s.file)
+    (Path(s.file).parent.parent / "dataset.pt").unlink()
+    vae = VideoVAE()
+    again = data.build(spec, FakeClip(), vae, root, tmp_path / "cache", "enc")
+    assert vae.calls == 1 and all(t.latent.shape == (6, 1, 8, 8) for t in again.samples)
+
+
 def test_preserve_encodes_each_caption_with_its_class_words_and_keys_the_cache(tmp_path):
     root = tmp_path / "jane"
     root.mkdir()

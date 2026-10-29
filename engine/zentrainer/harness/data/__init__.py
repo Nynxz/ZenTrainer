@@ -157,6 +157,10 @@ def _disk_samples(spec, items, variants, cap_index, sizes, vae, folder: Path, pr
                 kept = torch.load(file, weights_only=True, mmap=True)
             except Exception:  # noqa: BLE001 - unreadable: encode it again
                 kept = None
+            # a picture's video-VAE latent is one frame; more is a batch squeezed into one clip (an
+            # older build's): encode it again
+            if kept is not None and kept["latent"].ndim == 4 and kept["latent"].shape[1] != 1:
+                kept = None
             if kept is not None:
                 has = kept.get("cond") is not None
                 samples[n] = DiskSample(file, kept["latent"].shape, idx[0], idx, kept.get("refs") is not None,
@@ -220,8 +224,13 @@ def _disk_samples(spec, items, variants, cap_index, sizes, vae, folder: Path, pr
 
 
 def _encode_batch(vae, pixels: torch.Tensor, paths: list) -> list:
-    """(B, H, W, 3) pictures of one size -> their latents, one VAE call; as _encode, never a NaN cached."""
-    latents = vae.encode(pixels).detach().cpu()
+    """(B, H, W, 3) pictures of one size -> their latents, one VAE call; as _encode, never a NaN cached.
+    A video VAE (Wan's, Qwen Image's: Krea 2 and Qwen-Image train on it) takes a batch as one clip's
+    frames and gives back one latent, so its pictures go a call each."""
+    if getattr(vae, "latent_dim", 2) == 3 and not getattr(vae, "not_video", False):
+        latents = torch.cat([vae.encode(pixels[i:i + 1]).detach().cpu() for i in range(pixels.shape[0])])
+    else:
+        latents = vae.encode(pixels).detach().cpu()
     for lat, p in zip(latents, paths):
         if not torch.isfinite(lat).all():
             raise ValueError(f"the VAE returned NaN/inf for {Path(p).name}. The VAE is likely broken or missing "
