@@ -301,9 +301,11 @@ async function train() {
     if (p.value.downloads.length || p.value.adapter) {
       phase.value = 'downloading'
       for (const d of p.value.downloads) await engine.download(x.family, d.folder, d.name)
-      if (p.value.adapter) await engine.downloadAdapter(p.value.adapter.id)
+      // the adapter too: a run that starts before it lands is refused (no LoRA ... here)
+      const adapter = p.value.adapter ? await engine.downloadAdapter(p.value.adapter.id) : null
       await waitFor(() => {
         const jobs = p.value!.downloads.map((d) => downloadFor(d.folder, d.name))
+        if (adapter) jobs.push(downloadFor(adapter.folder, adapter.name))
         const bad = jobs.find((j) => j && (j.status === 'error' || j.status === 'cancelled'))
         if (bad) return `${bad.name}: ${bad.error ?? bad.status}`
         return jobs.every((j) => j?.status === 'done')
