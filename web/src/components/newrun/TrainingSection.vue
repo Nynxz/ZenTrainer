@@ -10,7 +10,7 @@ import { setSetting } from '@/stores/settings'
 import LoraUses from './LoraUses.vue'
 import { items, useRunFormContext } from './form'
 
-const { spec, loraPlaces, choices, familyId, optimizers, dataset, datasets, opt, epochs, noise, resuming } = useRunFormContext()
+const { spec, loraPlaces, choices, familyId, optimizers, dataset, datasets, opt, epochs, noise, resuming, preserveOn } = useRunFormContext()
 // validation on a held-out dataset: any but the one training
 const heldOutItems = computed(() => [
   { value: '', label: 'From the training set' },
@@ -20,14 +20,21 @@ const heldOutItems = computed(() => [
 // Preserve classes: turning it on fills in what the dataset's captions call the subject and its
 // counterpart (a woman's LoRA bleeds into men too), or woman, man, person
 const classes = ref<{ captions: number; words: { word: string; count: number }[]; suggest: string[] } | null>(null)
-// on/off of its own, so emptying the words to retype them doesn't switch it off under the cursor;
-// a spec arriving with words (a recipe, a copied run) turns it on
+// preserveOn (form.ts) is its own on/off; a spec arriving with words (a recipe, a copied run)
+// turns it on. Turned on before the captions' words load, it holds a stand-in that they replace
+// when they come, unless it's been edited since (fallbackShown)
 const FALLBACK = 'woman, man, person'
-const preserveOn = ref(!!spec.objective.preserve?.trim())
+const fallbackShown = ref(false)
 watch(() => spec.objective.preserve, (v) => { if (v?.trim()) preserveOn.value = true })
 function setPreserve(on: boolean) {
   preserveOn.value = on
-  spec.objective.preserve = on ? classes.value?.suggest.join(', ') || FALLBACK : ''
+  const words = classes.value?.suggest.join(', ')
+  fallbackShown.value = on && !words
+  spec.objective.preserve = on ? words || FALLBACK : ''
+}
+function editWords(v: string) {
+  fallbackShown.value = false
+  spec.objective.preserve = v
 }
 // a slider has no trigger to swap and the switch hides with it: turning one on turns this off
 watch(() => spec.slider?.kind, (kind) => { if (kind && preserveOn.value) setPreserve(false) })
@@ -41,7 +48,10 @@ watch(() => spec.dataset.folder, async (folder) => {
     if (ticket !== classTicket) return
     classes.value = got
     // switched on before the captions' words came: theirs replace the stand-in, never words typed
-    if (preserveOn.value && spec.objective.preserve === FALLBACK && got.suggest.length) spec.objective.preserve = got.suggest.join(', ')
+    if (preserveOn.value && fallbackShown.value && got.suggest.length) {
+      fallbackShown.value = false
+      spec.objective.preserve = got.suggest.join(', ')
+    }
   } catch {
     /* no suggestion: the field still takes words by hand */
   }
@@ -362,7 +372,7 @@ const patterns = computed({
           <div class="sw-row"><ZenSwitch :model-value="preserveOn" @update:model-value="setPreserve" /><span class="sw-state">{{ preserveOn ? 'On' : 'Off' }}</span></div>
         </ZenField>
         <ZenField v-if="preserveOn" label="Class words" stack tip="Comma-separated: what the captions call your subject, and what it shouldn't leak into. Filled in from the dataset's captions when you turn it on">
-          <ZenInput :model-value="spec.objective.preserve ?? ''" placeholder="woman, man, person" @update:model-value="spec.objective.preserve = String($event)" />
+          <ZenInput :model-value="spec.objective.preserve ?? ''" placeholder="woman, man, person" @update:model-value="editWords(String($event))" />
         </ZenField>
         <ZenField v-if="preserveOn" label="Preserve weight / every" stack tip="The preservation loss's weight beside the training loss (1 = as strong), and how often it runs: every Nth step. 2 (the default) held the class as well as every step at 1.7x the time, against 2.3x">
           <div class="inline">

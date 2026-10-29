@@ -10,7 +10,7 @@ import { useRunFormContext } from './form'
 
 const router = useRouter()
 const saveOpen = ref(false) // where you'd think of it: as you start a run
-const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error } = useRunFormContext()
+const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
 const submitting = ref(false)
 
 const warnings = computed(() => {
@@ -51,6 +51,7 @@ const missing = computed(() => {
   if (!spec.dataset.folder) return 'Pick a dataset'
   if (m.kind === 'checkpoint' && !m.ckpt_name) return 'Pick a checkpoint'
   if (m.kind === 'split' && !(m.unet_name && m.clip_name && m.clip_type && m.vae_name)) return 'Pick all model parts'
+  if (preserveOn.value && !spec.objective.preserve?.split(',').some((w) => w.trim())) return 'Give Preserve classes its class words, or turn it off'
   return null
 })
 

@@ -303,6 +303,9 @@ export function useRunForm() {
     return per ? (spec.optim.steps * spec.optim.batch_size * spec.optim.grad_accumulation_steps) / per : null
   })
   const modelLabel = computed(() => (spec.model.kind === 'checkpoint' ? spec.model.ckpt_name : spec.model.unet_name))
+  // Preserve classes' switch (TrainingSection), here so the summary can refuse it on with no words:
+  // its own on/off, so emptying the words to retype them doesn't switch it off under the cursor
+  const preserveOn = ref(!!spec.objective.preserve?.trim())
   // the picked model's own noise schedule (read from its file's header), for the Focus control
   const noise = ref<NoiseProfile>({ known: false })
   watch(
@@ -326,7 +329,7 @@ export function useRunForm() {
     datasets, optimizers, trainAttention, runPresets, promptSets, pairCount, pairItems,
     controlCounts, chosenInputs, runInputs, toggleInput, channelModel,
     editing, retrying, resuming, resumeStep, error,
-    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, opt, epochs, modelLabel, noise,
+    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, opt, epochs, modelLabel, noise, preserveOn,
   }
 }
 
