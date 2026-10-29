@@ -1,18 +1,24 @@
 <!doctype html>
-<!-- README and Registry banner. The panels are real crops of the app (maroon-volt, dark) on demo
-     content: python docs/banner/shots.py retakes them, python docs/banner/render.py renders this
-     to docs/images/banner.webp (and the Registry icon, docs/images/icon.png). -->
+<!-- README and Registry banner, in the Isotope theme's look (its colours and fonts, the corner
+     brackets of its buttons). The panels are real crops of the app (isotope, dark) on demo content:
+     python docs/banner/shots.py retakes them, python docs/banner/render.py renders this to
+     docs/images/banner.webp (and the Registry icon, docs/images/icon.png). -->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<link rel="stylesheet" href="../../engine/themes/isotope/fonts.css" />
 <style>
   :root {
-    --bg: #211927;
-    --deep: #1a1320;
-    --text: #f4eef7;
-    --muted: #bcaecb;
-    --accent: #f0ff41;
-    --border: #473655;
+    --bg: #0b0b0c;
+    --card: #141416;
+    --line: #2a2a2e;
+    --edge: #3a3a3f;
+    --text: #f2eee6;
+    --muted: #9c978c;
+    --accent: #d7ff3b;
+    --display: 'Isotope Display', 'Big Shoulders Display', sans-serif;
+    --sans: 'Isotope Sans', 'Inter Tight', 'Inter', system-ui, sans-serif;
+    --mono: 'Isotope Mono', 'JetBrains Mono', ui-monospace, monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: transparent; }
@@ -21,128 +27,79 @@
     width: 1600px;
     height: 800px;
     overflow: hidden;
-    border-radius: 32px;
     background:
-      radial-gradient(1000px 700px at 80% 25%, #3a2747 0%, transparent 70%),
-      radial-gradient(800px 500px at 100% 100%, #2d1f38 0%, transparent 70%),
-      linear-gradient(120deg, var(--deep) 0%, var(--bg) 45%, #2a1d33 100%);
-    font-family: 'Inter', system-ui, sans-serif;
+      linear-gradient(90deg, var(--bg) 0 640px, transparent 900px),
+      repeating-linear-gradient(0deg, transparent 0 79px, rgba(242, 238, 230, 0.035) 79px 80px),
+      repeating-linear-gradient(90deg, transparent 0 79px, rgba(242, 238, 230, 0.035) 79px 80px),
+      var(--bg);
+    font-family: var(--sans);
     color: var(--text);
   }
-  .copy {
-    position: absolute;
-    left: 88px;
-    top: 0;
-    bottom: 0;
-    width: 560px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    z-index: 5;
-  }
-  .brand { display: flex; align-items: center; gap: 12px; }
-  .brand svg { width: 52px; height: 37px; }
-  .eyebrow {
-    font-size: 26px;
-    font-weight: 800;
-    letter-spacing: 0.02em;
-    color: var(--accent);
-  }
-  h1 {
-    margin: 10px 0 0;
-    font-family: 'Inter Display', 'Inter', sans-serif;
-    font-size: 116px;
-    font-weight: 700;
-    letter-spacing: -0.035em;
-    line-height: 1;
-  }
-  .rule {
-    width: 104px;
-    height: 6px;
-    margin: 34px 0 30px;
-    border-radius: 3px;
-    background: var(--accent);
-  }
-  .tagline {
-    margin: 0;
-    font-size: 32px;
-    line-height: 1.3;
-    color: var(--muted);
-    font-weight: 400;
-  }
-  .pills { display: flex; gap: 12px; margin-top: 34px; }
-  .pill {
-    padding: 9px 18px;
-    border: 1.5px solid var(--accent);
-    border-radius: 999px;
-    font-size: 20px;
-    font-weight: 500;
-    color: var(--accent);
-  }
-  .pill.dim { border-color: var(--border); color: var(--muted); }
+  /* the theme's buttons: a hairline frame with lime L-brackets on its corners */
+  .framed { position: absolute; border: 2px solid var(--edge); background: var(--card); }
+  .framed i { position: absolute; width: 26px; height: 26px; border: 0 solid var(--accent); z-index: 2; }
+  .framed .tl { left: -2px; top: -2px; border-top-width: 4px; border-left-width: 4px; }
+  .framed .tr { right: -2px; top: -2px; border-top-width: 4px; border-right-width: 4px; }
+  .framed .bl { left: -2px; bottom: -2px; border-bottom-width: 4px; border-left-width: 4px; }
+  .framed .br { right: -2px; bottom: -2px; border-bottom-width: 4px; border-right-width: 4px; }
+  .framed img { display: block; width: 100%; }
 
-  /* the app: the dataset page behind, the run in front of its lower-left corner */
+  .copy { position: absolute; left: 96px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column;
+          justify-content: center; z-index: 5; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand svg { width: 96px; height: 66px; }
+  .eyebrow { font-family: var(--mono); font-size: 22px; font-weight: 500; letter-spacing: 0.18em; color: var(--muted); }
+  h1 { margin: 18px 0 0; font-family: var(--display); font-size: 136px; font-weight: 800; line-height: 0.84;
+       letter-spacing: 0.02em; text-transform: uppercase; white-space: nowrap; }  /* the sidebar wordmark's spacing */
+  h1 b { color: var(--accent); font-weight: 800; }
+  .tagline { margin: 30px 0 0; font-size: 34px; line-height: 1.25; color: var(--text); font-weight: 400; }
+  .tagline b { color: var(--accent); font-weight: 600; }
+  .specs { margin-top: 38px; display: grid; gap: 10px; font-family: var(--mono); font-size: 19px;
+           letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .specs span::before { content: ''; display: inline-block; width: 12px; height: 12px; margin-right: 14px;
+                        background: var(--accent); vertical-align: 1px; }
+
+  /* each panel is one layer with its brackets and tag: a panel laid over another hides the other's
+     brackets instead of them drawing over it. The tag sits on the top edge, past the bracket's arm */
+  .framed { isolation: isolate; box-shadow: 0 40px 90px -24px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05); }
+  /* the panels float: turned a little towards the title, in perspective */
   .stage { position: absolute; inset: 0; perspective: 2400px; }
-  .panel {
-    position: absolute;
-    display: block;
-    border-radius: 16px;
-    box-shadow: 0 40px 90px -24px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05);
-  }
-  .label {
-    position: absolute;
-    padding: 4px 10px;
-    margin-left: -10px;
-    border-radius: 8px;
-    background: rgba(26, 19, 32, 0.88);
-    font-size: 18px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-  }
-  .dataset { left: 760px; top: 110px; width: 800px; transform: rotateY(-9deg); transform-origin: right center; }
-  .dataset-label { left: 772px; top: 70px; color: var(--muted); }
-  .run { left: 680px; top: 400px; width: 560px; transform: rotateY(-9deg); transform-origin: left center; }
-  .run-label { left: 690px; top: 360px; color: var(--accent); z-index: 3; }
-  .chart { left: 1130px; top: 610px; width: 430px; transform: rotateY(-9deg); transform-origin: left center; }
-  .fade {
-    position: absolute;
-    inset: 0;
-    z-index: 4;
-    pointer-events: none;
-    background: linear-gradient(180deg, transparent 88%, rgba(33, 25, 39, 0.9) 100%);
-  }
+  .tag { position: absolute; left: 40px; top: -12px; z-index: 3; font-family: var(--mono); font-size: 17px; font-weight: 500;
+         letter-spacing: 0.16em; color: var(--muted); background: var(--bg); padding: 0 10px; line-height: 22px; }
+  .tag b { color: var(--accent); font-weight: 500; margin-right: 10px; }
+  .dataset { left: 760px; top: 96px; width: 790px; z-index: 1; transform: rotateY(-9deg); transform-origin: right center; }
+  .run { left: 700px; top: 392px; width: 560px; z-index: 2; transform: rotateY(-9deg); transform-origin: left center; }
+  .chart { left: 1140px; top: 606px; width: 420px; z-index: 3; transform: rotateY(-9deg); transform-origin: left center; }
 </style>
 </head>
 <body>
   <div class="banner">
     <div class="copy">
       <div class="brand">
-        <svg viewBox="-12 4 88 62" aria-hidden="true"><g transform="translate(32 58) scale(0.66)" fill="#f0ff41">
-          <path d="M0,0 C24,-16.2 16.8,-42.12 0,-54 C-16.8,-42.12 -24,-16.2 0,0Z" transform="rotate(-70)" opacity="0.4"/>
-          <path d="M0,0 C24,-16.2 16.8,-42.12 0,-54 C-16.8,-42.12 -24,-16.2 0,0Z" transform="rotate(70)" opacity="0.4"/>
-          <path d="M0,0 C26,-19.8 18.2,-51.48 0,-66 C-18.2,-51.48 -26,-19.8 0,0Z" transform="rotate(-36)" opacity="0.7"/>
-          <path d="M0,0 C26,-19.8 18.2,-51.48 0,-66 C-18.2,-51.48 -26,-19.8 0,0Z" transform="rotate(36)" opacity="0.7"/>
-          <path d="M0,0 C28,-23.4 19.6,-60.84 0,-78 C-19.6,-60.84 -28,-23.4 0,0Z"/>
-        </g></svg>
+        <!-- the mark: the lotus as line art, petals back to front, each filled with the background -->
+        <svg viewBox="-74 -88 148 102" aria-hidden="true" fill="#0b0b0c" stroke="#d7ff3b" stroke-width="5" stroke-linejoin="round">
+          <path d="M0,0 C24,-15 17,-40 0,-52 C-17,-40 -24,-15 0,0Z" transform="rotate(-74)"/>
+          <path d="M0,0 C24,-15 17,-40 0,-52 C-17,-40 -24,-15 0,0Z" transform="rotate(74)"/>
+          <path d="M0,0 C25,-19 18,-50 0,-65 C-18,-50 -25,-19 0,0Z" transform="rotate(-37)"/>
+          <path d="M0,0 C25,-19 18,-50 0,-65 C-18,-50 -25,-19 0,0Z" transform="rotate(37)"/>
+          <path d="M0,0 C26,-23 19,-61 0,-80 C-19,-61 -26,-23 0,0Z"/>
+        </svg>
         <div class="eyebrow">NYNXZ</div>
       </div>
-      <h1>ZenTrainer</h1>
-      <div class="rule"></div>
-      <p class="tagline">Train LoRAs inside ComfyUI,<br />and watch them learn</p>
-      <div class="pills">
-        <span class="pill">Characters · Styles · Video</span>
-        <span class="pill dim">Your ComfyUI models</span>
+      <h1>ZEN<b>TRAINER</b></h1>
+      <p class="tagline">Train LoRAs <b>inside ComfyUI</b>,<br />and watch them learn</p>
+      <div class="specs">
+        <span>Characters · Styles · Video</span>
+        <span>Your ComfyUI models</span>
+        <span>A LoRA in minutes on one GPU</span>
       </div>
     </div>
 
     <div class="stage">
-      <span class="label dataset-label">DATASETS</span>
-      <img class="panel dataset" src="el-dataset.png" alt="" />
-      <span class="label run-label">TRAINING</span>
-      <img class="panel run" src="el-samples.png" alt="" />
-      <img class="panel chart" src="el-loss.png" alt="" />
+    <div class="framed dataset"><span class="tag"><b>01</b>DATASET</span><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><img src="el-dataset.png" alt="" /></div>
+    <div class="framed run"><span class="tag"><b>02</b>SAMPLES</span><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><img src="el-samples.png" alt="" /></div>
+    <div class="framed chart"><span class="tag"><b>03</b>LOSS</span><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><img src="el-loss.png" alt="" /></div>
     </div>
-    <div class="fade"></div>
   </div>
 </body>
 </html>
