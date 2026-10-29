@@ -8,7 +8,8 @@
 // Training speed (steps over their time across a 51-step window: optimizer steps only, so samples
 // and checkpoints don't dip it, and smooth while a resolution change mixes two step sizes) is in the tooltip, and a line of its own when switched on; resolution stages are marked on
 // the x axis, where the speed changes. Each legend key shows or hides its line; the x axis is
-// steps or the run's time.
+// steps or the run's time. With class preservation (objective.preserve), its loss (smoothed) is a
+// line on its own scale from 0, like speed: it measures something else, far smaller.
 import { maxOf, minOf } from '@/lib/extent'
 import { SHARE_TIP } from '@/lib/likeness'
 import { resumed } from '@/lib/resumed'
@@ -32,7 +33,7 @@ const props = withDefaults(
 )
 
 // which lines are hidden and the x axis, remembered per browser (only a convenience)
-type Line = 'ema' | 'val' | 'like' | 'lr' | 'ckpt' | 'speed'
+type Line = 'ema' | 'val' | 'like' | 'lr' | 'ckpt' | 'speed' | 'pres'
 const PREFS = 'zentrainer.lossChart'
 function loadPrefs(): { hidden: Line[]; mode: 'step' | 'time' } {
   try {
@@ -171,19 +172,52 @@ const likeAt = (step: number) => [...props.like].reverse().find((r) => r.step <=
 // speed: steps over their seconds across 51 steps (the first, compiling, step left out, and any
 // step over 5x the window's median: a recompile isn't the pace). An average, not a median: while
 // a run blends into a new resolution its steps come at both sizes, and a median jumped between
-// the two. As a line it has its own scale from 0 (no axis; the value is on hover), like likeness
+// the two. Each step weighs less the nearer the window's ends (a triangle), so steps that differ
+// in turn (class preservation every Nth step) don't make it saw as they enter and leave. Near
+// either end the window keeps its whole width and slides in instead of shrinking (a one-sided one
+// tips with each new step): the line reaches the newest step, level over its last SPEED_HALF
+// steps at the newest window's pace. As a line it has its own scale from 0 (no axis; the value is
+// on hover), like likeness
 const SPEED_HALF = 25
 const speed = computed(() => {
   const st = points.value.map((p) => (p.step > 1 && p.step_time ? p.step_time : null))
+  const width = Math.min(2 * SPEED_HALF + 1, st.length)
   return st.map((_, i) => {
-    const w = st.slice(Math.max(0, i - SPEED_HALF), i + SPEED_HALF + 1).filter((v): v is number => v != null)
+    const lo = Math.max(0, Math.min(i - SPEED_HALF, st.length - width))
+    const mid = lo + (width - 1) / 2
+    const w: [number, number][] = []
+    for (let j = lo; j < lo + width; j++) {
+      const v = st[j]
+      if (v != null) w.push([v, (width + 1) / 2 - Math.abs(j - mid)])
+    }
     if (!w.length) return null
-    const cap = 5 * [...w].sort((a, b) => a - b)[Math.floor(w.length / 2)]!
-    const kept = w.filter((v) => v <= cap)
-    return kept.length / kept.reduce((a, b) => a + b, 0)
+    const cap = 5 * w.map(([v]) => v).sort((a, b) => a - b)[Math.floor(w.length / 2)]!
+    const kept = w.filter(([v]) => v <= cap)
+    return kept.reduce((a, [, k]) => a + k, 0) / kept.reduce((a, [v, k]) => a + v * k, 0)
   })
 })
 const hasSpeed = computed(() => speed.value.some((v) => v != null))
+
+// class preservation's loss, smoothed per step as the training loss is (a value only every
+// preserve_every-th step decays by the steps between, so it's as smooth whatever N is), on its own
+// scale from 0 with room above (no axis): a steady line reads as steady, not stretched to fill it
+const pres = computed(() => {
+  const out: { step: number; v: number }[] = []
+  let s: number | null = null
+  let at = 0
+  for (const r of resumed(props.rows)) {
+    if (r.preserve_loss == null) continue
+    const k = Math.pow(props.smoothing, Math.max(1, r.step - at))
+    s = s == null ? r.preserve_loss : k * s + (1 - k) * r.preserve_loss
+    at = r.step
+    out.push({ step: r.step, v: s })
+  }
+  return out
+})
+const pMax = computed(() => maxOf(pres.value.map((p) => p.v), 1e-9) * 2)
+const presY = (v: number) => pad.value.t + (1 - v / pMax.value) * (H.value - pad.value.t - pad.value.b)
+const presPath = computed(() => pres.value.map((p, i) => `${i ? 'L' : 'M'}${x(p.step).toFixed(1)},${presY(p.v).toFixed(1)}`).join(''))
+const presAt = (step: number) => [...pres.value].reverse().find((p) => p.step <= step) ?? null
 const sMax = computed(() => maxOf(speed.value.filter((v): v is number => v != null), 1e-6) * 1.1)
 const sy = (v: number) => pad.value.t + (1 - v / sMax.value) * (H.value - pad.value.t - pad.value.b)
 const speedPath = computed(() => {
@@ -218,6 +252,7 @@ const fmt = (v: number) => (v === 0 || Math.abs(v) >= 0.01 ? v.toFixed(4) : v.to
         <button v-if="val.length" class="key" :class="{ off: !shows('val') }" title="Show or hide" @click="toggle('val')"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" class="k-val" /><circle cx="9" cy="4" r="3" class="k-val-dot" /></svg> {{ val[val.length - 1]?.held_out ? 'Validation (held-out set)' : 'Validation (fixed set)' }}</button>
         <button v-if="like.length" class="key" :class="{ off: !shows('like') }" title="Show or hide" @click="toggle('like')"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" class="k-like" /><circle cx="9" cy="4" r="3" class="k-like-dot" /></svg> Likeness</button>
         <button v-if="lrShown" class="key muted" :class="{ off: !shows('lr') }" title="Show or hide" @click="toggle('lr')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-lr" /></svg> Learning rate (right axis)</button>
+        <button v-if="pres.length" class="key muted" :class="{ off: !shows('pres') }" title="Show or hide: class preservation's loss (how far the LoRA moves the class words from the base model), smoothed, on its own scale from 0 (values on hover). Flat is the aim" @click="toggle('pres')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-pres" /></svg> Preservation</button>
         <button v-if="hasSpeed" class="key muted" :class="{ off: !shows('speed') }" title="Show or hide: training speed, its own scale from 0 (values on hover)" @click="toggle('speed')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-speed" /></svg> Speed</button>
         <button v-if="marks.some((m) => m.kind === 'ckpt')" class="key muted" :class="{ off: !shows('ckpt') }" title="Show or hide" @click="toggle('ckpt')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-mark" /></svg> checkpoints</button>
       </span>
@@ -245,6 +280,7 @@ const fmt = (v: number) => (v === 0 || Math.abs(v) >= 0.01 ? v.toFixed(4) : v.to
           />
         </template>
         <path v-if="hasSpeed && shows('speed')" class="speed-line" :d="speedPath" />
+        <path v-if="pres.length && shows('pres')" class="pres-line" :d="presPath" />
         <path v-if="shows('ema')" class="ema" :d="emaPath" />
         <path v-if="lrShown && shows('lr')" class="lr-line" :d="lrPath" />
         <template v-if="shows('val')">
@@ -284,6 +320,10 @@ const fmt = (v: number) => (v === 0 || Math.abs(v) >= 0.01 ? v.toFixed(4) : v.to
           likeness <b class="mono">{{ likeAt(hovered.p.step)!.score.toFixed(2) }}</b>
           <span v-if="likeAt(hovered.p.step)!.share" class="muted" :title="SHARE_TIP"> · {{ likeAt(hovered.p.step)!.share }} of your photos</span>
           <span class="muted">@{{ likeAt(hovered.p.step)!.step }}</span>
+        </div>
+        <div v-if="presAt(hovered.p.step)">
+          preservation <b class="mono">{{ fmt(presAt(hovered.p.step)!.v) }}</b>
+          <span class="muted">smoothed</span>
         </div>
         <div v-if="hovered.p.lr != null" class="muted">lr <span class="mono">{{ fmtLr(hovered.p.lr) }}</span></div>
         <div v-if="hovered.v != null" class="muted">
@@ -388,6 +428,15 @@ button.key.off {
   background: var(--zen-selected-bg, var(--zen-surface-2));
   color: var(--zen-selected-text, var(--zen-text));
   box-shadow: inset 0 0 0 1px var(--zen-selected, var(--zen-accent));
+}
+.pres-line,
+.k-pres {
+  fill: none;
+  stroke: var(--chart-4, var(--zen-text));
+  stroke-width: 1.25;
+  stroke-dasharray: 6 3;
+  opacity: 0.7;
+  vector-effect: non-scaling-stroke;
 }
 .speed-line,
 .k-speed {

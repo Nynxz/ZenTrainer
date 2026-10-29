@@ -93,6 +93,17 @@ def register(server) -> None:
         except FileNotFoundError:
             return _bad("dataset not found", 404)
 
+    @routes.get("/zentrainer/api/datasets/{name}/class_words")
+    async def dataset_class_words(request):
+        """The class nouns ("woman", "man", "dog"...) the captions use, and the words to suggest for
+        objective.preserve (datasets/folders.py class_words): only the caption files are read."""
+        try:
+            return web.json_response(await asyncio.to_thread(datasets.class_words, request.match_info["name"]))
+        except FileNotFoundError:
+            return _bad("dataset not found", 404)
+        except datasets.DatasetError as e:
+            return _bad(str(e))
+
     @routes.get("/zentrainer/api/datasets/{name}/analysis")
     async def dataset_analysis(request):
         """The detail behind the health scores (datasets/analysis.py): buckets at ?resolution= (default

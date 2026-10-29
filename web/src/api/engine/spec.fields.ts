@@ -89,6 +89,10 @@ export interface SpecFields {
     bias_power: number
     weighting: string
     spread: boolean
+    preserve: string
+    preserve_weight: number
+    preserve_every: number
+    preserve_plain: number
   }
   memory: {
     training_dtype: string

@@ -117,6 +117,10 @@ export interface TrainSpec {
     weighting?: '' | 'flex' | 'balance'
     /** noise levels from an even sequence instead of random draws */
     spread?: boolean
+    preserve?: string
+    preserve_weight?: number
+    preserve_every?: number
+    preserve_plain?: number
   }
   memory: {
     training_dtype: 'bf16' | 'fp16' | 'fp32'

@@ -81,6 +81,9 @@ class Metrics(Callback):
             "step_time": round(dt, 4),
             "it_s": round(rate(self._times), 3),
         }
+        if getattr(t, "last_preserve_loss", None) is not None:  # objective.preserve: that pass's loss
+            row["preserve_loss"] = round(float(t.last_preserve_loss), 5)
+            t.last_preserve_loss = None
         if getattr(t.objective, "drawn", None):  # each sample's [percent, σ, plain loss]: the noise chart
             row["drawn"] = [[round(p, 4), round(s, 5), round(v, 5)] for p, s, v in t.objective.drawn]
         if getattr(t, "last_phases", None):

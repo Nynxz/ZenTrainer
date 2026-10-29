@@ -639,3 +639,33 @@ def thumbnail_of(src: Path, size: int, cache: Path, label: str | None = None) ->
             im.thumbnail((size, size), Image.Resampling.LANCZOS)
             im.convert("RGB").save(out, "JPEG", quality=85)
     return out
+
+
+# objective.preserve's suggestion: the class nouns captions use, each with its plural, and the
+# class a character LoRA bleeds into across (a woman's LoRA turns men into her too)
+CLASS_WORDS = {"woman": "women", "man": "men", "girl": "girls", "boy": "boys", "lady": "ladies", "person": "people",
+               "child": "children", "dog": "dogs", "cat": "cats"}
+OTHER = {"woman": "man", "man": "woman", "girl": "boy", "boy": "girl", "lady": "man"}
+
+
+def class_words(name: str, caption_ext: str = ".txt") -> dict:
+    """How many pictures' captions (any caption set) name each class (CLASS_WORDS), and the class
+    words to preserve: the most named, its counterpart, and "person" for a person. {captions, words:
+    [{word, count}], suggest: [...]} ([] when no caption names one)."""
+    d = folder(name)
+    found = {w: 0 for w in CLASS_WORDS}
+    pats = {w: re.compile(rf"\b(?:{w}|{p})\b", re.IGNORECASE) for w, p in CLASS_WORDS.items()}
+    n = 0
+    for it in scan(d, caption_ext, warn=False):
+        text = " ".join(filter(None, (it.captions or {}).values())) or it.caption or ""
+        if not text.strip():
+            continue
+        n += 1
+        for w, pat in pats.items():
+            found[w] += bool(pat.search(text))
+    words = sorted(({"word": w, "count": c} for w, c in found.items() if c), key=lambda r: -r["count"])
+    suggest = []
+    if words and words[0]["count"] >= max(1, n // 5):  # named in a fifth of the captions or more
+        top = words[0]["word"]
+        suggest = [top] + ([OTHER[top]] if top in OTHER else []) + (["person"] if top in OTHER else [])
+    return {"captions": n, "words": words, "suggest": suggest}

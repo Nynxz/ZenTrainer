@@ -119,3 +119,20 @@ def test_a_disk_build_cut_short_carries_on_from_its_files(tmp_path):
     for s in again.samples:
         assert torch.equal(s.latent, first[s.file]["latent"]) and data.has_inputs(s) == (s.refs is not None)
         assert (s.cond is None) == (first[s.file].get("cond") is None)
+
+
+def test_preserve_encodes_each_caption_with_its_class_words_and_keys_the_cache(tmp_path):
+    root = tmp_path / "jane"
+    root.mkdir()
+    Image.new("RGB", (64, 64), "red").save(root / "a.png")
+    (root / "a.txt").write_text("[trigger] standing in a kitchen")
+    spec = DatasetSpec(folder="jane", resolution=64, buckets=False, trigger="JaneDoe")
+    clip = FakeClip()
+    ds = data.build(spec, clip, FakeVAE(), root, tmp_path / "cache", "enc", preserve=("woman", "man"))
+    assert ds.captions[ds.samples[0].caption] == "JaneDoe standing in a kitchen"
+    assert {"woman standing in a kitchen", "man standing in a kitchen"} <= set(ds.captions)  # encoded with the rest
+    assert {"a photo of a woman", "a photo of a man"} <= set(ds.captions)  # preserve_plain's prompts too
+    assert all(ds.conditionings[ds.captions.index(c)] is not None for c in ds.captions)
+    plain = data.build(spec, FakeClip(), FakeVAE(), root, tmp_path / "cache", "enc")  # without: its own cache
+    assert "woman standing in a kitchen" not in plain.captions
+    assert data.as_class("janedoe, JaneDoe's coat; notjanedoe", "JaneDoe", "woman") == "woman, woman's coat; notjanedoe"

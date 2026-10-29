@@ -170,6 +170,7 @@ export function useRunForm() {
         const src = (await engine.run(from)).spec
         merge(spec as unknown as Record<string, unknown>, structuredClone(src) as unknown as Record<string, unknown>)
         spec.name = nextName(src.name)
+        syncPreserve()
       } catch {
         // run gone; keep defaults
       }
@@ -180,6 +181,7 @@ export function useRunForm() {
       try {
         const src = (await engine.run(edit)).spec
         merge(spec as unknown as Record<string, unknown>, structuredClone(src) as unknown as Record<string, unknown>)
+        syncPreserve()
         editing.value = edit
         const r = await engine.run(edit)
         // trained already: only what its LoRA and optimizer state don't depend on can change,
@@ -215,11 +217,13 @@ export function useRunForm() {
   function applyRecipe(r: { id: string; title: string }, next: TrainSpec) {
     const before = JSON.parse(JSON.stringify(spec)) as TrainSpec // a spec is plain JSON; parts of the form are proxies
     Object.assign(spec, JSON.parse(JSON.stringify(next)))
+    syncPreserve()
     recipeApplied.value = { id: r.id, title: r.title, before }
   }
   function undoRecipe() {
     if (!recipeApplied.value) return
     Object.assign(spec, recipeApplied.value.before)
+    syncPreserve()
     recipeApplied.value = null
   }
   const deleteRecipe = deleteMyRecipe
@@ -259,6 +263,7 @@ export function useRunForm() {
     try {
       const r = await engine.importSpec(doc)
       merge(spec as unknown as Record<string, unknown>, r.spec as Record<string, unknown>)
+      syncPreserve()
       if (r.name) spec.name = r.name
       recipeApplied.value = null
       imported.value = r
@@ -303,6 +308,14 @@ export function useRunForm() {
     return per ? (spec.optim.steps * spec.optim.batch_size * spec.optim.grad_accumulation_steps) / per : null
   })
   const modelLabel = computed(() => (spec.model.kind === 'checkpoint' ? spec.model.ckpt_name : spec.model.unet_name))
+  // Preserve classes' switch (TrainingSection), here so the summary can refuse it on with no words:
+  // its own on/off, so emptying the words to retype them doesn't switch it off under the cursor.
+  // Every flow that sets the spec from elsewhere (a run copied or edited, a recipe, Undo, an
+  // import) sets it from what arrived, words or none
+  const preserveOn = ref(!!spec.objective.preserve?.trim())
+  function syncPreserve() {
+    preserveOn.value = !!spec.objective.preserve?.trim()
+  }
   // the picked model's own noise schedule (read from its file's header), for the Focus control
   const noise = ref<NoiseProfile>({ known: false })
   watch(
@@ -326,7 +339,7 @@ export function useRunForm() {
     datasets, optimizers, trainAttention, runPresets, promptSets, pairCount, pairItems,
     controlCounts, chosenInputs, runInputs, toggleInput, channelModel,
     editing, retrying, resuming, resumeStep, error,
-    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, opt, epochs, modelLabel, noise,
+    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, opt, epochs, modelLabel, noise, preserveOn,
   }
 }
 

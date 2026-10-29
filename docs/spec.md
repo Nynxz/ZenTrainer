@@ -147,6 +147,10 @@ What the loss compares, and which noise levels each step trains at.
 | `objective.bias_power` | `3.0` | number, >= 1, <= 10 | How hard the bias leans: the draw to this power (3, as AI Toolkit, puts half the steps in the noisiest eighth for high_noise). 1 = not at all. |
 | `objective.weighting` | `""` | `""` or `"flex"` or `"balance"` | Per-noise-level loss weights. "flex" (flow models): AI Toolkit's "weighted", measured on Flex.1. "balance": measures the model as it trains and evens the pull of every noise level (EDM2's idea). "" = none. |
 | `objective.spread` | `false` | true/false | Noise levels from an even, low-discrepancy sequence instead of random draws: a small batch covers the schedule in a few steps, for a steadier loss. |
+| `objective.preserve` | `""` | text | Class words, e.g. "woman, man, person" (AI Toolkit's differential output preservation): a step also trains its caption with one of them in the trigger's place to give what the base model gives, so the adapter changes only what the trigger asks for and "a man" stays a man. Needs a trigger. A step with it takes about 2.3x as long (the base model's pass and the adapter's own); every 2nd step, 1.7x. "" = off. |
+| `objective.preserve_weight` | `1.0` | number, > 0 | objective.preserve: its loss's weight beside the training loss. |
+| `objective.preserve_every` | `2` | whole number, >= 1 | objective.preserve: on every Nth step. 2 held the class as well as every step (MOSS: "a woman" 0.07 likeness to the trained one either way) at 1.7x the time against 2.3x. |
+| `objective.preserve_plain` | `0.0` | number, >= 0, <= 1 | objective.preserve: the share of its passes on a plain class prompt ("a photo of a woman") at heavy noise instead of the step's own caption: holds the prompts people write, where generating from noise takes on the trained subject. 0 = the captions only. |
 
 ## memory
 

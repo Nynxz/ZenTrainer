@@ -10,7 +10,7 @@ import { useRunFormContext } from './form'
 
 const router = useRouter()
 const saveOpen = ref(false) // where you'd think of it: as you start a run
-const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error } = useRunFormContext()
+const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
 const submitting = ref(false)
 
 const warnings = computed(() => {
@@ -19,6 +19,7 @@ const warnings = computed(() => {
   if (spec.slider?.kind === 'text' && !(spec.slider.positive.trim() && spec.slider.negative.trim())) w.push('A slider needs both ends: Positive and Negative.')
   if (spec.slider?.kind === 'pairs' && !spec.slider.pair_set) w.push("An image slider needs its pairs: pick the other end's picture set.")
   if (!slider && !spec.dataset.trigger) w.push('No trigger word: the likeness has nothing specific to attach to.')
+  if (!slider && !spec.dataset.trigger && spec.objective.preserve?.trim()) w.push('Preserve classes swaps the trigger for a class word: it needs a trigger word to swap.')
   const masked = dataset.value?.masked ?? 0
   if (masked && !spec.dataset.masked_loss)
     w.push(`${masked} picture${masked === 1 ? ' has a mask' : 's have masks'}, but Masked training is off: the parts the masks leave out train too.`)
@@ -50,6 +51,7 @@ const missing = computed(() => {
   if (!spec.dataset.folder) return 'Pick a dataset'
   if (m.kind === 'checkpoint' && !m.ckpt_name) return 'Pick a checkpoint'
   if (m.kind === 'split' && !(m.unet_name && m.clip_name && m.clip_type && m.vae_name)) return 'Pick all model parts'
+  if (preserveOn.value && !spec.objective.preserve?.split(',').some((w) => w.trim())) return 'Give Preserve classes its class words, or turn it off'
   return null
 })
 

@@ -256,6 +256,9 @@ export const datasetsApi = {
     call<{ clips: number; moved: string[] }>(`${dsPath(name)}/split`, { method: 'POST', body: JSON.stringify(body) }),
   datasetStats: (name: string, set = 'default') =>
     call<DatasetStats>(`/datasets/${encodeURIComponent(name)}/stats?set=${encodeURIComponent(set)}`),
+  /** the class nouns the captions use, and the words to suggest for objective.preserve */
+  datasetClassWords: (name: string) =>
+    call<{ captions: number; words: { word: string; count: number }[]; suggest: string[] }>(`/datasets/${encodeURIComponent(name)}/class_words`),
   datasetAnalysis: (name: string, set = 'default', resolution = 1024) =>
     call<DatasetAnalysis>(`/datasets/${encodeURIComponent(name)}/analysis?${new URLSearchParams({ set, resolution: String(resolution) })}`),
   datasetMuted: (name: string, set: string, paths: string[], muted: boolean) =>
