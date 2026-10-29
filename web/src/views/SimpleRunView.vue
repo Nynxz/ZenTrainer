@@ -59,6 +59,18 @@ const pct = computed(() => (total.value ? Math.min(100, (step.value / total.valu
 const left = computed(() => (last.value?.it_s && status.value === 'training' ? (total.value - step.value) / last.value.it_s : null))
 const done = computed(() => status.value === 'done')
 const failed = computed(() => status.value === 'error' || status.value === 'rejected')
+// a finished run, in brief: what it trained on and how long it took
+const modelName = computed(() => {
+  const m = d.value?.spec.model
+  const f = m?.unet_name ?? m?.ckpt_name
+  return f ? f.split('/').pop()!.replace(/\.(safetensors|ckpt|gguf)$/i, '') : ''
+})
+// one go only: a resumed run's earlier goes aren't timed, and the gaps between them aren't training
+const took = computed(() => {
+  const r = d.value?.run
+  const resumed = r?.first_started && r.first_started !== r.started
+  return done.value && !resumed && r?.started && r.ended ? eta(r.ended - r.started).replace(/^about /, '') : ''
+})
 
 const headline = computed(() => {
   const s = status.value
@@ -80,11 +92,12 @@ const detailLine = computed(() => {
   if (sampling.value?.s_total) return `${sampling.value.s_step ?? 0} of ${sampling.value.s_total}`
   if (s === 'training' && left.value != null) return `${eta(left.value)} left`
   if (failed.value) return d.value?.run.message ?? ''
-  if (done.value) return d.value?.spec.dataset.trigger ? 'Use the word below in a prompt to bring it in.' : 'Before and after below: slide across, then try it.'
+  if (done.value) return d.value?.spec.dataset.trigger ? 'Use the word below in a prompt to bring it in.' : 'Slide across the picture to compare, then try it.'
   return ''
 })
 
 // the samples: the first prompt's, in order (before first); the newest big
+const showPreviews = computed(() => !!d.value && (!done.value || rows.value.length <= 1 || !compare.value))
 const viewUrl = (x: SampleRow) => fileUrl(x)
 const isVideo = (x: SampleRow) => /\.(mp4|webm)$/i.test(x.filename)
 const runSamples = computed(() => (d.value?.samples ?? []).filter((x) => !x.manual))
@@ -106,6 +119,13 @@ const tryFor = (lora: string) => `/apps/text-to-image?run=${props.id}&lora=${enc
 // rows newest first, one column per sample prompt (the same prompt lines up down the page)
 const prompts = computed(() => (d.value?.spec.samples.prompts ?? []).map(promptText))
 const cols = computed(() => Math.max(1, prompts.value.length))
+// the column labels without the word every prompt starts with (the trigger): what tells them apart
+const promptLabels = computed(() => {
+  const first = prompts.value.map((t) => /^\s*([^,\s]+),\s*/.exec(t))
+  const lead = first[0]?.[1]
+  const shared = prompts.value.length > 1 && lead && first.every((m) => m?.[1] === lead)
+  return prompts.value.map((t, i) => (shared ? t.slice(first[i]![0].length) : t))
+})
 const rows = computed(() => {
   const r = d.value
   if (!r) return []
@@ -202,42 +222,74 @@ async function tryIt() {
 
 <template>
   <div class="page srun">
-    <div v-if="d" class="hero card" :class="{ done, failed }">
-      <div class="top">
-        <div>
-          <div class="eyebrow">{{ d.spec.name }}</div>
-          <h1>{{ headline }}</h1>
-          <p class="muted">{{ detailLine }}</p>
-        </div>
-        <i class="big-ic" :class="done ? 'mdi mdi-check-circle' : failed ? 'mdi mdi-alert-circle-outline' : 'mdi mdi-sprout-outline'" />
-      </div>
-      <div v-if="!done && !failed" class="track">
-        <div class="bar"><span :style="{ width: `${pct}%` }" /></div>
-        <span
-          v-for="m in marks"
-          :key="m.step"
-          class="notch"
-          :class="{ done: m.done }"
-          :style="{ left: `${(m.step / total) * 100}%` }"
-          :title="`Preview at step ${m.step}${m.done ? ' (taken)' : ''}`"
-        />
-      </div>
-      <div class="meta small muted">
-        <span v-if="!done && !failed" class="mono">Step {{ step }} / {{ total }}<span class="muted"> · {{ Math.round(pct) }}%</span></span>
-        <span v-if="nextPreview">Next preview at step {{ nextPreview.step }}, {{ nextPreview.in }}</span>
-        <span v-if="d.spec.dataset.trigger">Trigger word <b class="mono">{{ d.spec.dataset.trigger }}</b></span>
-        <span class="spacer" />
-        <RouterLink :to="`/runs/${id}`" class="muted">Details</RouterLink>
-      </div>
+    <!-- the before/after beside everything about it: what it is, which checkpoint to keep, what next -->
+    <div v-if="d" class="hero card" :class="{ done, failed, 'with-media': compare || showPreviews }">
       <div v-if="compare" class="hero-compare" :style="{ aspectRatio: compare.ratio }">
         <ZenCompare :before="compare.before" :after="compare.after" before-label="Before training" :after-label="compare.label" />
       </div>
-      <p v-if="done && best && rows.length > 2" class="small muted why">
-        <i class="mdi mdi-star-outline" /> Recommended: <b>{{ rows.find((r) => r.recommended)?.label }}</b>, {{ best.why }}.
-      </p>
-      <div v-if="done" class="acts">
-        <RouterLink v-if="tryLink" :to="tryLink"><ZenButton variant="primary" icon="mdi mdi-creation-outline">Try it</ZenButton></RouterLink>
-        <RouterLink to="/simple"><ZenButton icon="mdi mdi-plus">Train another</ZenButton></RouterLink>
+      <!-- while it trains (or with nothing to compare): the preview being drawn, else the newest, and the earlier ones under it -->
+      <div v-else-if="showPreviews" class="previews">
+        <div v-if="live" class="stage live" :style="{ aspectRatio: sampleAspect }">
+          <img :src="live.preview" alt="" />
+          <span class="tag small">Drawing{{ live.s_total ? ` ${live.s_step ?? 0}/${live.s_total}` : '…' }}</span>
+          <div class="live-bar"><span :style="{ width: `${live.s_total ? ((live.s_step ?? 0) / live.s_total) * 100 : 0}%` }" /></div>
+        </div>
+        <div v-else-if="big" class="stage">
+          <video v-if="isVideo(big)" :key="big.filename" :src="viewUrl(big)" autoplay loop muted playsinline controls />
+          <img v-else :src="viewUrl(big)" alt="" />
+          <span class="tag small">{{ big.step === 0 ? 'Before training' : `After ${big.step} steps` }}</span>
+        </div>
+        <div v-else class="muted small">The first preview shows up in a few minutes.</div>
+        <div v-if="strip.length > 1" class="strip">
+          <button v-for="(x, i) in strip" :key="x.filename" :class="{ on: big === x }" @click="pick = i === strip.length - 1 ? null : i">
+            <video v-if="isVideo(x)" :src="viewUrl(x)" muted preload="metadata" />
+            <img v-else :src="viewUrl(x)" loading="lazy" alt="" />
+            <span class="small">{{ x.step === 0 ? 'Before' : x.step }}</span>
+          </button>
+        </div>
+      </div>
+      <div class="hero-side">
+        <div class="top">
+          <div>
+            <div class="eyebrow">{{ d.spec.name }}</div>
+            <h1>{{ headline }}</h1>
+            <p class="muted">{{ detailLine }}</p>
+          </div>
+          <i v-if="!done" class="big-ic" :class="failed ? 'mdi mdi-alert-circle-outline' : 'mdi mdi-sprout-outline'" />
+        </div>
+        <div v-if="!done && !failed" class="track">
+          <div class="bar"><span :style="{ width: `${pct}%` }" /></div>
+          <span
+            v-for="m in marks"
+            :key="m.step"
+            class="notch"
+            :class="{ done: m.done }"
+            :style="{ left: `${(m.step / total) * 100}%` }"
+            :title="`Preview at step ${m.step}${m.done ? ' (taken)' : ''}`"
+          />
+        </div>
+        <div v-if="done && best && rows.length > 2" class="why">
+          <div class="eyebrow"><i class="mdi mdi-star-outline" /> Recommended</div>
+          <b>{{ rows.find((r) => r.recommended)?.label }}</b>
+          <span class="small muted">{{ best.why[0]?.toUpperCase() }}{{ best.why.slice(1) }}.</span>
+        </div>
+        <dl class="facts small">
+          <template v-if="!done && !failed">
+            <dt>Step</dt><dd class="mono">{{ step }} / {{ total }} <span class="muted">· {{ Math.round(pct) }}%</span></dd>
+          </template>
+          <template v-if="nextPreview"><dt>Next preview</dt><dd>step {{ nextPreview.step }}, {{ nextPreview.in }}</dd></template>
+          <template v-if="d.spec.dataset.trigger"><dt>Trigger word</dt><dd><b class="mono">{{ d.spec.dataset.trigger }}</b></dd></template>
+          <template v-if="done && modelName"><dt>Model</dt><dd class="mono">{{ modelName }}</dd></template>
+          <template v-if="done"><dt>Trained</dt><dd>{{ total.toLocaleString() }} steps<template v-if="took">, {{ took }}</template></dd></template>
+        </dl>
+        <div class="acts">
+          <template v-if="done">
+            <RouterLink v-if="tryLink" :to="tryLink"><ZenButton variant="primary" icon="mdi mdi-creation-outline">Try it</ZenButton></RouterLink>
+            <RouterLink to="/simple"><ZenButton icon="mdi mdi-plus">Train another</ZenButton></RouterLink>
+          </template>
+          <span class="spacer" />
+          <RouterLink :to="`/runs/${id}`" class="small muted">All the details <i class="mdi mdi-chevron-right" /></RouterLink>
+        </div>
       </div>
     </div>
 
@@ -276,7 +328,7 @@ async function tryIt() {
       <div class="ptable" :style="{ '--cols': cols }">
         <div class="phead">
           <span />
-          <span v-for="(p, i) in prompts" :key="i" class="pp ellipsis" :title="p">{{ i + 1 }}. {{ p }}</span>
+          <span v-for="(p, i) in promptLabels" :key="i" class="pp" :title="prompts[i]">{{ p }}</span>
         </div>
         <div v-for="(r, ri) in rows" :key="r.key" class="prow" :class="{ rec: r.recommended }">
           <div class="pinfo">
@@ -300,27 +352,6 @@ async function tryIt() {
       <ZenLightbox v-if="lb != null" v-model:index="lb" :items="lbItems" :grid="cols" :searchable="false" @close="lb = null" />
     </section>
 
-    <section v-if="d && (!done || rows.length <= 1)" class="card previews">
-      <div class="eyebrow">Previews</div>
-      <div v-if="live" class="stage live" :style="{ aspectRatio: sampleAspect }">
-        <img :src="live.preview" alt="" />
-        <span class="tag small">Drawing{{ live.s_total ? ` ${live.s_step ?? 0}/${live.s_total}` : '…' }}</span>
-        <div class="live-bar"><span :style="{ width: `${live.s_total ? ((live.s_step ?? 0) / live.s_total) * 100 : 0}%` }" /></div>
-      </div>
-      <div v-else-if="big" class="stage">
-        <video v-if="isVideo(big)" :key="big.filename" :src="viewUrl(big)" autoplay loop muted playsinline controls />
-        <img v-else :src="viewUrl(big)" alt="" />
-        <span class="tag small">{{ big.step === 0 ? 'Before training' : `After ${big.step} steps` }}</span>
-      </div>
-      <div v-else class="muted small">The first preview shows up in a few minutes.</div>
-      <div v-if="strip.length > 1" class="strip">
-        <button v-for="(x, i) in strip" :key="x.filename" :class="{ on: big === x }" @click="pick = i === strip.length - 1 ? null : i">
-          <video v-if="isVideo(x)" :src="viewUrl(x)" muted preload="metadata" />
-          <img v-else :src="viewUrl(x)" loading="lazy" alt="" />
-          <span class="small">{{ x.step === 0 ? 'Before' : x.step }}</span>
-        </button>
-      </div>
-    </section>
   </div>
 </template>
 
@@ -329,22 +360,63 @@ async function tryIt() {
   max-width: 1120px;
 }
 .hero-compare {
-  width: min(100%, 560px);
+  width: 100%;
   max-height: 70vh;
   border-radius: var(--r-lg, 12px);
   overflow: hidden;
 }
-.why {
-  margin: 0;
-}
-.why i {
-  color: var(--zen-accent);
-}
 .hero {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 22px;
   padding: 22px;
+}
+/* the picture on the left, the rest beside it; stacked on a narrow screen */
+.hero.with-media {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 1fr);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .hero.with-media {
+    grid-template-columns: 1fr;
+  }
+}
+.hero-side {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.why {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--zen-accent) 35%, var(--zen-border));
+  background: color-mix(in srgb, var(--zen-accent) 6%, transparent);
+}
+.why .eyebrow i {
+  color: var(--zen-accent);
+}
+.why b {
+  font-size: 18px;
+}
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0;
+}
+.facts dt {
+  color: var(--zen-muted);
+}
+.facts dd {
+  margin: 0;
+}
+.facts:empty {
+  display: none;
 }
 .top {
   display: flex;
@@ -465,13 +537,9 @@ async function tryIt() {
   height: 100%;
   background: var(--zen-accent);
 }
-.meta {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-}
 .acts {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 .previews {
@@ -490,7 +558,6 @@ async function tryIt() {
 }
 .stage.live {
   width: 100%;
-  max-height: 60vh;
 }
 .stage.live img {
   width: 100%;
@@ -572,6 +639,7 @@ async function tryIt() {
 .ptable {
   display: flex;
   flex-direction: column;
+  align-items: flex-start; /* rows as wide as their pictures, not the card */
   gap: 8px;
   overflow-x: auto;
   scrollbar-width: thin;
@@ -579,13 +647,23 @@ async function tryIt() {
 .phead,
 .prow {
   display: grid;
-  grid-template-columns: 170px repeat(var(--cols), minmax(140px, 240px));
+  grid-template-columns: 170px repeat(var(--cols), minmax(120px, 180px));
   gap: 8px;
   align-items: center;
 }
+/* the header lines up with the rows' cells: their padding and border */
+.phead {
+  padding: 0 9px;
+  align-items: end;
+}
 .pp {
   font-size: 11px;
+  line-height: 1.35;
   color: var(--zen-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .prow {
   padding: 8px;

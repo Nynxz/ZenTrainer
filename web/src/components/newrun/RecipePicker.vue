@@ -31,7 +31,7 @@ interface Entry {
   adapter: string
   meta: string
   thumb: string | null
-  cover: { from: string; to: string; icon: string }
+  icon: string
   draft: boolean
   note?: string
   recipe?: Recipe
@@ -43,7 +43,7 @@ const builtIn = (r: Recipe): Entry => {
   const adapter = r.spec.network?.algorithm ?? 'LoRA' // a LoKr's rank isn't a LoRA's, so it's named
   return {
     id: r.id, title: r.title, name: r.title.split(' · ')[1] ?? r.title, model: r.model, blurb: r.blurb, adapter,
-    meta: `${adapter} · ${r.photos.ideal}`, thumb: r.thumb ? asset(r.thumb.src) : null, cover: r.cover, draft: !r.validated,
+    meta: `${adapter} · ${r.photos.ideal}`, thumb: r.thumb ? asset(r.thumb.src) : null, icon: r.icon, draft: !r.validated,
     note: r.note, recipe: r,
   }
 }
@@ -54,7 +54,7 @@ const yours = (p: Mine): Entry => {
     id: `mine:${p.id}`, title: p.name, name: p.name, model: 'Yours', adapter,
     blurb: p.description || (file ? `Your settings, on ${short(file)}.` : 'Your settings (keeps the model you pick).'),
     meta: `${adapter}${p.data.optim?.steps ? ` · ${p.data.optim.steps.toLocaleString()} steps` : ''}`,
-    thumb: null, cover: { from: 'var(--zen-accent)', to: 'color-mix(in srgb, var(--zen-accent) 35%, #000)', icon: 'mdi mdi-account-outline' },
+    thumb: null, icon: 'mdi mdi-account-outline',
     draft: false, mine: p,
   }
 }
@@ -110,7 +110,7 @@ const step = ref<'list' | 'detail'>('list')
 
 // on opening, and as the view appears in the open dialog (a tab switch): after setup, so it
 // reads what's declared further down
-async function reset(o: boolean) {
+function reset(o: boolean) {
   if (!o) return
   void planAll()
   query.value = ''
@@ -118,10 +118,6 @@ async function reset(o: boolean) {
   confirmDelete.value = false
   picked.value = flat.value.find((e) => e.id === props.start) ?? flat.value[0] ?? null // never an empty detail
   if (props.start && picked.value?.id === props.start) step.value = 'detail'
-  if (!phone.value) {
-    await nextTick()
-    document.querySelector<HTMLInputElement>('.recipe-search input')?.focus()
-  }
 }
 watch(open, reset)
 onMounted(() => open.value && reset(true))
@@ -228,7 +224,6 @@ const changeCount = computed(() => grouped.value.reduce((n, g) => n + g.rows.len
 function short(name: string | null | undefined) {
   return name?.split('/').pop() ?? '—'
 }
-const cover = (e: Entry) => ({ background: `linear-gradient(135deg, ${e.cover.from}, ${e.cover.to})` })
 
 const confirmDelete = ref(false)
 async function remove() {
@@ -277,12 +272,11 @@ function apply() {
               type="button"
               class="item recipe-item"
               :class="{ on: picked?.id === e.id && !phone }"
-              :style="{ '--a': e.cover.from }"
               @click="choose(e)"
             >
-              <span class="thumb" :style="e.thumb ? undefined : cover(e)">
+              <span class="thumb">
                 <img v-if="e.thumb" :src="e.thumb" alt="" loading="lazy" />
-                <i v-else :class="e.cover.icon" />
+                <i v-else :class="e.icon" />
               </span>
               <span class="item-text">
                 <span class="item-title">
@@ -307,9 +301,8 @@ function apply() {
 
       <ScrollArea ref="detailScroll" class="detail">
         <article v-if="picked" class="detail-in">
-          <div class="hero" :style="picked.thumb ? undefined : cover(picked)">
+          <div class="hero" :class="{ plain: !picked.thumb }">
             <img v-if="picked.thumb" :src="picked.thumb" alt="" />
-            <i v-else :class="picked.cover.icon" class="hero-icon" />
             <div class="hero-text">
               <span class="hero-kind">{{ picked.recipe ? `${KINDS[picked.recipe.kind]} · ${picked.model}` : 'Your recipe' }}</span>
               <h3 class="zt-title">{{ picked.name }}</h3>
@@ -522,7 +515,8 @@ function apply() {
   overflow: hidden;
   display: grid;
   place-items: center;
-  color: #fff;
+  background: var(--zen-surface-2);
+  color: var(--zen-muted);
   font-size: 18px;
 }
 .thumb img {
@@ -615,7 +609,7 @@ function apply() {
 .detail-in {
   padding: 0 24px 24px;
 }
-/* a compact band: the recipe's name bottom left, its icon large and faint on the right */
+/* a compact band: the recipe's picture, its name bottom left */
 .hero {
   position: relative;
   margin: 0 -24px;
@@ -635,14 +629,23 @@ function apply() {
   inset: 0;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0) 60%);
 }
-.hero-icon {
-  position: absolute;
-  right: 28px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 92px;
-  line-height: 1;
-  color: rgba(255, 255, 255, 0.28);
+/* no picture: just the heading, in the page's own colours */
+.hero.plain {
+  height: auto;
+  margin: 0;
+  padding: 24px 0 4px;
+  overflow: visible;
+}
+.hero.plain::after {
+  content: none;
+}
+.hero.plain .hero-text {
+  position: static;
+  color: var(--zen-text);
+}
+.hero.plain .hero-kind {
+  color: var(--zen-muted);
+  opacity: 1;
 }
 .hero-text {
   position: absolute;
@@ -857,6 +860,10 @@ h4 {
 .picker.phone .hero {
   margin: 0 -16px;
   height: 150px;
+}
+.picker.phone .hero.plain {
+  margin: 0;
+  height: auto;
 }
 .picker.phone .hero-text {
   left: 16px;

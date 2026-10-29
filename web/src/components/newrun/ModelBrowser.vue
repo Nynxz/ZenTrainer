@@ -191,7 +191,7 @@ function details(id: string | null) {
               @click="recipe(r.id)"
               @keydown.enter.self.prevent="recipe(r.id)"
             >
-              <span class="cover" :style="{ background: `linear-gradient(135deg, ${r.cover.from}, ${r.cover.to})` }"><i :class="r.cover.icon" /></span>
+              <span class="cover"><i :class="r.icon" /></span>
               <span class="r-text">
                 <span class="r-title">{{ KINDS[r.kind] ?? r.kind }}<span v-if="!r.validated" class="draft">draft</span></span>
                 <span class="r-meta">{{ r.spec.network?.algorithm ?? 'LoRA' }} · {{ r.photos.ideal }}</span>
@@ -411,7 +411,8 @@ h4 {
   border-radius: var(--r-md);
   display: grid;
   place-items: center;
-  color: #fff;
+  background: var(--zen-surface-2);
+  color: var(--zen-muted);
   font-size: 20px;
 }
 .r-text {

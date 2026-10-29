@@ -29,6 +29,25 @@ const kinds = [
 ] as const
 const kind = ref<(typeof kinds)[number]['id']>('all')
 const shown = computed(() => RECIPES.filter((x) => kind.value === 'all' || x.kind === kind.value))
+// All: the recipes under a title per kind (one kind picked: just its cards)
+const groups = computed(() =>
+  kinds.filter((k) => k.id !== 'all' && (kind.value === 'all' || kind.value === k.id))
+    .map((k) => ({ ...k, recipes: shown.value.filter((x) => x.kind === k.id) }))
+    .filter((g) => g.recipes.length),
+)
+// the photos: two whole rows, then the rest on asking (38 squares push the rest of the page away)
+const allPhotos = ref(false)
+const thumbsEl = ref<HTMLElement | null>(null)
+const perRow = ref(7)
+const FEW = computed(() => perRow.value * 2)
+const rowWatch = new ResizeObserver(([e]) => {
+  const w = e?.contentRect.width ?? 0
+  perRow.value = Math.max(1, Math.floor((w + 6) / (72 + 6))) // the grid's 72px columns and 6px gap
+})
+watch(thumbsEl, (el, was) => {
+  if (was) rowWatch.unobserve(was)
+  if (el) rowWatch.observe(el)
+})
 
 // ---- the photos ----------------------------------------------------------------------------
 const name = ref('')
@@ -40,6 +59,7 @@ watch(name, (n) => {
 const datasets = ref<DatasetInfo[]>([])
 const source = ref<'new' | 'existing'>('new')
 const existing = ref('')
+const choosing = ref(true) // the list open; picking one closes it to that one, Change opens it again
 // the datasets you have, newest first; searchable once there are many
 const dsQuery = ref('')
 const dsShown = computed(() => {
@@ -323,7 +343,10 @@ onMounted(async () => {
 })
 watch(finished, () => r.value && plan(r.value).then((x) => phase.value === 'idle' && (p.value = x)))
 let leaving = false
-onUnmounted(() => (leaving = true))
+onUnmounted(() => {
+  leaving = true
+  rowWatch.disconnect()
+})
 void leaving
 </script>
 
@@ -341,28 +364,29 @@ void leaving
       <div class="kinds">
         <button v-for="k in kinds" :key="k.id" :class="{ on: kind === k.id }" @click="kind = k.id">{{ k.label }}</button>
       </div>
-      <div class="cards">
-        <TemplateCard
-          v-for="x in shown"
-          :key="x.id"
-          :to="`/simple/${x.id}`"
-          :title="x.title.split(' · ')[1] ?? x.title"
-          :description="x.blurb"
-          :image="x.thumb ? asset(x.thumb.src) : null"
-          :after="x.thumb?.after ? asset(x.thumb.after) : null"
-          :mode="x.thumb?.mode"
-          :before-label="x.thumb?.before_label"
-          :after-label="x.thumb?.after_label"
-          :icon="x.cover.icon"
-          :accent="x.cover.from"
-          :logo="makerLogo(x.family)?.src ?? null"
-          :tags="[x.model]"
-          :badge="{ character: 'Character', style: 'Style', video: 'Video', general: 'Any subject' }[x.kind]"
-          :flag="x.validated ? undefined : 'draft'"
-          flag-title="Not trained and checked end to end yet: settings from similar runs"
-          :meta="[x.photos.ideal]"
-        />
-      </div>
+      <section v-for="g in groups" :key="g.id" class="group">
+        <div v-if="kind === 'all'" class="group-title">{{ g.label }}<span>{{ g.recipes.length }}</span></div>
+        <div class="cards">
+            <TemplateCard
+              v-for="x in g.recipes"
+              :key="x.id"
+              :to="`/simple/${x.id}`"
+              :title="x.title.split(' · ')[1] ?? x.title"
+              :description="x.blurb"
+              :image="x.thumb ? asset(x.thumb.src) : null"
+              :after="x.thumb?.after ? asset(x.thumb.after) : null"
+              :mode="x.thumb?.mode"
+              :before-label="x.thumb?.before_label"
+              :after-label="x.thumb?.after_label"
+              picture-only
+              :logo="makerLogo(x.family)?.src ?? null"
+              :tags="[x.model]"
+              :flag="x.validated ? undefined : 'draft'"
+              flag-title="Not trained and checked end to end yet: settings from similar runs"
+              :meta="[x.photos.ideal]"
+            />
+        </div>
+      </section>
     </template>
 
     <!-- one recipe -->
@@ -407,9 +431,19 @@ void leaving
                 </div>
               </div>
               <div v-if="source === 'existing'" class="ds-pick">
-                <ZenInput v-if="datasets.length > 8" v-model="dsQuery" size="sm" placeholder="Search your datasets" />
-                <div class="ds-grid">
-                  <button v-for="d in dsShown" :key="d.folder" class="ds" :class="{ on: existing === d.folder }" :title="d.folder" @click="existing = d.folder">
+                <div v-if="existing && !choosing" class="ds-chosen">
+                  <template v-for="d in datasets.filter((x) => x.folder === existing)" :key="d.folder">
+                    <img v-if="d.thumbs[0]" class="ds-thumb" :src="dsThumb(d, d.thumbs[0])" alt="" />
+                    <span class="ds-text">
+                      <span class="ds-name ellipsis">{{ d.folder }}</span>
+                      <span class="ds-meta small muted">{{ d.images }} {{ d.images === 1 ? 'image' : 'images' }}<template v-if="d.modified"> · {{ ago(d.modified) }}</template></span>
+                    </span>
+                  </template>
+                  <ZenButton size="sm" icon="mdi mdi-swap-horizontal" @click="choosing = true">Change</ZenButton>
+                </div>
+                <ZenInput v-if="choosing && datasets.length > 8" v-model="dsQuery" size="sm" placeholder="Search your datasets" />
+                <div v-if="choosing" class="ds-grid">
+                  <button v-for="d in dsShown" :key="d.folder" class="ds" :class="{ on: existing === d.folder }" :title="d.folder" @click="(existing = d.folder), (choosing = false)">
                     <img v-if="d.thumbs[0]" class="ds-thumb" :src="dsThumb(d, d.thumbs[0])" loading="lazy" alt="" />
                     <span v-else class="ds-thumb none"><i class="mdi mdi-image-off-outline" /></span>
                     <span class="ds-text">
@@ -446,14 +480,17 @@ void leaving
                   <span v-if="checking" class="muted"><i class="mdi mdi-loading mdi-spin" /> checking…</span>
                   <span v-else-if="verdict" class="muted">{{ verdict }}</span>
                 </div>
-                <div class="thumbs">
-                  <div v-for="(it, i) in items" :key="it.path" class="th" :class="{ bad: serious(it), meh: !serious(it) && issuesOf(it).length }"
+                <div ref="thumbsEl" class="thumbs">
+                  <div v-for="(it, i) in allPhotos ? items : items.slice(0, FEW)" :key="it.path" class="th" :class="{ bad: serious(it), meh: !serious(it) && issuesOf(it).length }"
                        :title="issuesOf(it).length ? issuesOf(it).map((x) => WORDS[x] ?? x).join(', ') : 'Looks good'" @click="lb = i">
                     <img :src="thumbUrl(dsName, it.path, 192)" loading="lazy" alt="" />
                     <span v-if="issuesOf(it).length" class="flag"><i :class="serious(it) ? 'mdi mdi-alert' : 'mdi mdi-information-outline'" /></span>
                     <button v-if="source === 'new'" class="x" title="Remove" @click.stop="removeItem(it)"><i class="mdi mdi-close" /></button>
                   </div>
                 </div>
+                <button v-if="items.length > FEW" class="more small" @click="allPhotos = !allPhotos">
+                  {{ allPhotos ? 'Show fewer' : `Show all ${items.length}` }} <i :class="allPhotos ? 'mdi mdi-chevron-up' : 'mdi mdi-chevron-down'" />
+                </button>
                 <ZenLightbox v-if="lb != null" v-model:index="lb" :items="lbItems" :searchable="false" @close="lb = null" />
                 <div class="describe">
                   <i class="mdi mdi-text-box-outline" />
@@ -477,10 +514,7 @@ void leaving
 
         <!-- what you'll get -->
         <aside class="card get">
-          <div class="cover" :style="{ background: `linear-gradient(135deg, ${r.cover.from}, ${r.cover.to})` }">
-            <img v-if="r.thumb" :src="asset(r.thumb.src)" alt="" />
-            <i v-else :class="r.cover.icon" />
-          </div>
+          <div v-if="r.thumb" class="cover"><img :src="asset(r.thumb.src)" alt="" /></div>
           <div class="get-body">
             <div class="model">
               <img v-if="makerLogo(r.family)" class="maker" :class="{ mono: makerLogo(r.family)!.mono }" :src="makerLogo(r.family)!.src" alt="" />
@@ -531,9 +565,9 @@ void leaving
               </ZenButton>
             </div>
             <div class="eyebrow">Try it with prompts like</div>
-            <ul class="examples">
-              <li v-for="e in examples" :key="e" class="small">{{ e }}</li>
-            </ul>
+            <div class="examples">
+              <span v-for="e in examples" :key="e" class="small">{{ e }}</span>
+            </div>
             <p v-if="r.note" class="muted small note">{{ r.note }}</p>
             <p v-if="!r.validated" class="muted small note"><i class="mdi mdi-flask-outline" /> A new recipe: its settings come from similar runs, not yet one trained end to end.</p>
           </div>
@@ -579,6 +613,37 @@ void leaving
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
+}
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.group + .group {
+  margin-top: 10px;
+}
+.group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--zen-muted);
+}
+.group-title span {
+  font-weight: 400;
+  opacity: 0.7;
+}
+.more {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--zen-accent);
+  font: inherit;
+  cursor: pointer;
 }
 .titles h1 {
   display: flex;
@@ -662,11 +727,18 @@ void leaving
 }
 .examples {
   margin: -4px 0 0;
-  padding-left: 16px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   color: var(--zen-text);
+}
+/* each a prompt you could paste: on the field's colour, the word it brings in first */
+.examples span {
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  background: var(--zen-surface-2);
+  border-left: 2px solid var(--zen-accent);
+  line-height: 1.4;
 }
 .step.locked .num {
   opacity: 0.45;
@@ -841,6 +913,15 @@ void leaving
   flex-direction: column;
   gap: 8px;
 }
+.ds-chosen {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 6px;
+  border: 1px solid var(--zen-selected, var(--zen-accent));
+  border-radius: var(--r-md);
+  background: var(--zen-selected-bg, color-mix(in srgb, var(--zen-selected, var(--zen-accent)) 8%, transparent));
+}
 .ds-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -906,7 +987,7 @@ void leaving
 }
 .thumbs {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
   gap: 6px;
 }
 .th {

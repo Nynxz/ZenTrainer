@@ -2,11 +2,25 @@ import vue from '@vitejs/plugin-vue'
 import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, type ProxyOptions } from 'vite'
 
 // In dev, Vite serves the app and proxies everything else to a running ComfyUI.
 // In prod, ComfyUI serves web/dist itself at /zentrainer/ (see engine/zentrainer/routes.py).
 const comfy = process.env.COMFY_URL ?? 'http://127.0.0.1:8188'
+// ComfyUI refuses a request whose Origin isn't the address it was reached at (its CSRF guard); the
+// proxy reaches it at its own (changeOrigin), so the browser's Origin, Vite's, is set to that too.
+// Without it every POST from the dev server (saving, starting a run, a mask) came back 403. Only
+// the dev server's own pages get that: another site's Origin goes through as it is, and is refused
+const toComfy: ProxyOptions = {
+  target: comfy,
+  changeOrigin: true,
+  configure: (proxy) =>
+    proxy.on('proxyReq', (proxyReq, req) => {
+      const origin = req.headers.origin
+      if (origin && req.headers.host && new URL(origin).host === req.headers.host)
+        proxyReq.setHeader('origin', new URL(comfy).origin)
+    }),
+}
 
 // What this build is, for Settings > Versions: web/dist isn't in git, so a tab can be an older
 // build than the engine it talks to. No git (a downloaded copy): just the version.
@@ -39,15 +53,15 @@ export default defineConfig({
     // engine/catalog/families.json is imported from outside web/
     fs: { allow: ['..'] },
     proxy: {
-      '/zentrainer/api': comfy,
-      '/zenkit': comfy,
-      '/object_info': comfy,
-      '/settings': comfy,
-      '/internal': comfy,
-      '/prompt': comfy,
-      '/view': comfy,
-      '/upload': comfy,
-      '/templates': comfy,
+      '/zentrainer/api': toComfy,
+      '/zenkit': toComfy,
+      '/object_info': toComfy,
+      '/settings': toComfy,
+      '/internal': toComfy,
+      '/prompt': toComfy,
+      '/view': toComfy,
+      '/upload': toComfy,
+      '/templates': toComfy,
       '/ws': { target: comfy.replace(/^http/, 'ws'), ws: true },
     },
   },

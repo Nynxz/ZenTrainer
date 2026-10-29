@@ -75,6 +75,21 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   plain lines instead (a numbered list to pick from, Enter for the default).
 
 ### Run form and look
+- **Isotope is the theme a first visit starts in** (the README's look), instead of Zen. A theme
+  you picked stays picked.
+- **Simple mode, tidied:** recipe cards are grouped by kind (People & characters, Styles, Any
+  subject) and lead with the model's maker; recipes have no colour panels until they have pictures.
+  A recipe's page shows two rows of your photos (Show all for the rest), and a dataset you picked
+  closes to one row with Change. A run's page puts the picture beside what it says: the preview
+  being drawn and the earlier ones while it trains, before and after when it's done, with the
+  recommended checkpoint, the model and how long it took. The checkpoint table's labels line up
+  with their columns.
+- **The mask editor fades what's left out into the theme's background;** **High-vis** (beside
+  Overlay) brings back the magenta checker, for edges against dark or busy pictures.
+- **The recipes dialog** no longer jumps to its search box, and a recipe without a picture has its
+  name as a heading instead of a coloured band.
+- **`zt dev` can save:** ComfyUI turned down every change made through the dev server ("Forbidden":
+  saving, starting a run, finding a mask), its Origin not matching the address the proxy reached.
 - **A run's rail reads like a dataset's side panel**, the same spacing and headers, and every card
   in it (Time, Learning, Setup, In VRAM, Checkpoints) folds from its header, remembered in this
   browser. The Datasets page and a dataset's page take the header Jobs and Models have (a dataset's
@@ -502,6 +517,10 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **The loss chart's speed line is smooth whatever the steps:** it averages a triangle-weighted
   window the same on both sides, which slides in at the ends instead of shrinking, so steps that
   differ in turn (preservation every Nth step) no longer make it saw.
+- **Two MOSS Image recipes (drafts):** *Character for finetunes*, a LoRA on every block's MLPs at
+  3e-4 that kept 78% of its likeness on Serenity v6 (the blocks 24-41 recipe keeps about 60%), for
+  LoRAs meant for finetunes as well as Base; and *Style*, which leaves blocks 34-41 untrained: two
+  MOSS style LoRAs cut to block ranges kept none of their style there.
 
 ## 0.3.0 (2026-10-25)
 

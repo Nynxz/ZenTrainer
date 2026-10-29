@@ -8,10 +8,11 @@
 // have), with a preview first and an undo after.
 // Keys: [ / ] brush size, B brush, E eraser, P points, R box, ←/→ previous/next image, Ctrl+S save,
 // Ctrl+→ save and next.
-import { ZenButton, ZenInput, ZenModal, ZenSlider } from '@nynxz/zenkit-ui'
+import { ZenButton, ZenInput, ZenModal, ZenSlider, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EngineError, engine, thumbUrl, viewUrl, type DatasetItem } from '@/api/engine'
+import { remembered } from '@/lib/remembered'
 
 const props = defineProps<{ name: string }>()
 const route = useRoute()
@@ -45,6 +46,9 @@ const brush = ref(40)
 const grow = ref(0) // px, negative shrinks
 const feather = ref(0) // px
 const show = ref<'overlay' | 'mask'>('overlay')
+// what's left out: faded into the theme's background, or (High-vis) a magenta checker nothing in a
+// picture looks like, for edges against dark or busy ones
+const highVis = remembered('zentrainer.maskHighVis', false)
 const text = ref('')
 const threshold = ref(0.5)
 const points = ref<{ x: number; y: number; keep: boolean }[]>([])
@@ -125,19 +129,35 @@ function finalMask(): HTMLCanvasElement {
   return out
 }
 
-// what a mask leaves out, shown as Source's purple/black missing-texture checker (it can't be
-// mistaken for a dark part of the picture), fading in as the mask goes from keep to drop; cells
-// scale with the picture so the pattern reads at any size
-function checkerOut(d: ImageData, w: number, alpha: number) {
+// the theme's background as rgb (any CSS colour it's written in)
+function themeBg(): [number, number, number] {
+  const c = document.createElement('canvas').getContext('2d')!
+  c.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--zen-bg').trim() || '#000'
+  c.fillRect(0, 0, 1, 1)
+  const [r, g, b] = c.getImageData(0, 0, 1, 1).data
+  return [r!, g!, b!]
+}
+
+// what a mask leaves out, fading in as the mask goes from keep to drop: the theme's background,
+// or High-vis, Source's purple/black missing-texture checker (it can't be mistaken for a dark
+// part of the picture), its cells scaled with the picture so the pattern reads at any size
+function shadeOut(d: ImageData, w: number, alpha: number) {
   const cell = Math.max(6, Math.round(w / 40))
+  const bg = highVis.value ? null : themeBg()
   for (let i = 0; i < d.data.length; i += 4) {
     const keep = d.data[i]! / 255
-    const px = (i / 4) % w
-    const py = Math.floor(i / 4 / w)
-    const magenta = (Math.floor(px / cell) + Math.floor(py / cell)) % 2 === 0
-    d.data[i] = magenta ? 255 : 0
-    d.data[i + 1] = 0
-    d.data[i + 2] = magenta ? 220 : 0
+    if (bg) {
+      d.data[i] = bg[0]
+      d.data[i + 1] = bg[1]
+      d.data[i + 2] = bg[2]
+    } else {
+      const px = (i / 4) % w
+      const py = Math.floor(i / 4 / w)
+      const magenta = (Math.floor(px / cell) + Math.floor(py / cell)) % 2 === 0
+      d.data[i] = magenta ? 255 : 0
+      d.data[i + 1] = 0
+      d.data[i + 2] = magenta ? 220 : 0
+    }
     d.data[i + 3] = Math.round((1 - keep) * alpha)
   }
 }
@@ -166,7 +186,7 @@ function render() {
     c.drawImage(mask, x, y, W.value * s, H.value * s)
   } else {
     c.drawImage(img, x, y, W.value * s, H.value * s)
-    // what's excluded (black in the mask) under the checker, the picture still showing through
+    // what's excluded (black in the mask) shaded over, the picture still showing through
     // enough to draw an edge against
     const tint = document.createElement('canvas')
     tint.width = W.value
@@ -174,7 +194,7 @@ function render() {
     const t = tint.getContext('2d', { willReadFrequently: true })!
     t.drawImage(mask, 0, 0)
     const d = t.getImageData(0, 0, W.value, H.value)
-    checkerOut(d, W.value, 170)
+    shadeOut(d, W.value, highVis.value ? 170 : 215)
     t.putImageData(d, 0, 0)
     c.drawImage(tint, x, y, W.value * s, H.value * s)
   }
@@ -196,7 +216,7 @@ function render() {
     c.setLineDash([])
   }
 }
-watch([grow, feather, show], render)
+watch([grow, feather, show, highVis], render)
 
 // ---- input ---------------------------------------------------------------------------------
 const toImage = (e: PointerEvent) => {
@@ -498,7 +518,7 @@ async function previewTile(it: DatasetItem, mask: HTMLCanvasElement): Promise<st
     mc.drawImage(await loadImg(thumb(it.mask, 256)), 0, 0, w, h)
   }
   const d = mc.getImageData(0, 0, w, h)
-  checkerOut(d, w, 200)
+  shadeOut(d, w, highVis.value ? 200 : 225)
   mc.globalCompositeOperation = 'source-over'
   mc.putImageData(d, 0, 0)
   const out = document.createElement('canvas')
@@ -695,6 +715,9 @@ watch(path, load)
             <button :class="{ on: show === 'overlay' }" @click="show = 'overlay'">Overlay</button>
             <button :class="{ on: show === 'mask' }" @click="show = 'mask'">Mask only</button>
           </div>
+          <label v-if="show === 'overlay'" class="row small" title="What's left out as a magenta checker, for edges against dark or busy pictures">
+            <ZenSwitch v-model="highVis" /> High-vis
+          </label>
           <label class="f small">
             <span class="muted">{{ grow >= 0 ? 'Grow' : 'Shrink' }} {{ Math.abs(grow) }} px</span>
             <ZenSlider v-model="grow" :min="-60" :max="60" :step="1" />
