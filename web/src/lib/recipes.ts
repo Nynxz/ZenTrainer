@@ -252,10 +252,11 @@ export const RECIPES: Recipe[] = [
       text_encoders: ['qwen_3_06b_base.safetensors'],
       vae: ['qwen_image_vae.safetensors'],
     },
-    // draft: the makers' advice (huggingface.co/circlestone-labs/Anima, "Finetuning Tips"): rank 32 at
-    // 2e-5, the LLM adapter left alone (ZenTrainer never adapts it). At 2e-5 a 37-photo set was
-    // cleaner than at 1e-4 by step 250 and slower to the likeness; 1e-4 had it by 500
-    steps: 2000,
+    // validated: the makers' advice (huggingface.co/circlestone-labs/Anima, "Finetuning Tips"), rank 32
+    // at 2e-5 with the LLM adapter left alone (ZenTrainer never adapts it), on 37 photos at 1024:
+    // likeness 0.41 at 500 steps, 0.60 at 1500 and still climbing, clean throughout. 1e-4 had the
+    // likeness by 500 but drew rougher
+    steps: 1500,
     caption: { prompt: NL, subject: true },
     spec: {
       dataset: { resolution: 1024 },
@@ -267,6 +268,7 @@ export const RECIPES: Recipe[] = [
     },
     samples: ['[trigger], 1girl, solo, close-up portrait, soft window light', '[trigger] sitting in a cafe, candid photo'],
     note: 'An anime model: prompts in its own tag style ("1girl, solo, ...") come out cleanest',
+    validated: true,
   },
   {
     id: 'h3-character',
