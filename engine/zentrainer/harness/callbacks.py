@@ -880,7 +880,13 @@ def _preview_url(previewer, x0) -> str | None:
 
 
 def write_metadata(spec_dict: dict, step: int) -> dict[str, str]:
-    meta = {"zentrainer.spec": json.dumps(spec_dict), "zentrainer.step": str(step)}
+    """A LoRA file's metadata: its run's settings, as the share export has them (sharing.export):
+    without what only means something on this machine (the dataset folder, which can be a person's
+    name, the folders LoRAs go in, a LoRA to continue from, edit samples' pictures). A shared LoRA
+    carries how it was trained, not where."""
+    from .. import sharing
+
+    meta = {"zentrainer.spec": json.dumps(sharing.export(spec_dict)["spec"]), "zentrainer.step": str(step)}
     net = spec_dict.get("network") or {}
     if net.get("base_lora"):  # trained on top of it: it belongs beside this LoRA wherever it's used
         meta["zentrainer.base_lora"] = net["base_lora"]
