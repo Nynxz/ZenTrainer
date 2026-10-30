@@ -1,0 +1,40 @@
+{
+  "families": ["anima"],
+  "status": "recipe",
+  "summary": "Circlestone Labs' fine-tuning advice (a rank 32 LoRA at 2e-5, the LLM adapter left alone) and ComfyUI's Anima template sampling (Euler, 30 steps, CFG 4, with its negative prompt).",
+  "sources": [
+    {
+      "label": "Anima model card: Finetuning Tips (Circlestone Labs)",
+      "url": "https://huggingface.co/circlestone-labs/Anima"
+    },
+    {
+      "label": "ComfyUI's Anima Base template (image_anima_base_v1)",
+      "url": "https://github.com/Comfy-Org/workflow_templates"
+    },
+    {
+      "label": "NVIDIA's Cosmos Predict2 text-to-image LoRA defaults (cosmos_predict2/models/text2image_model.py)",
+      "url": "https://github.com/nvidia-cosmos/cosmos-predict2"
+    }
+  ],
+  "train": {
+    "dataset": {"resolution": 1024},
+    "network": {"algorithm": "LoRA", "rank": 32, "alpha": 32},
+    "optim": {"optimizer": "AdamW", "learning_rate": 2e-05}
+  },
+  "samples": {
+    "steps": 30,
+    "cfg": 4.0,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "negative": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+  },
+  "notes": [
+    "The makers: don't train the LLM adapter, which shapes the text before the model sees it and is easy to degrade. ZenTrainer never adapts it.",
+    "The makers: a light touch. It's a base model with no aesthetic tuning to fight, and it knows a great many concepts already: start at 2e-5 for rank 32 and move up or down from there.",
+    "Keep a negative prompt: at CFG 4 an empty one draws streaks of noise, before any training (the base model in plain ComfyUI does the same).",
+    "An anime model: prompts in its own style (\"1girl, solo, long silver hair, ...\") come out cleanest; photo prompts drift.",
+    "A trigger that's a real word is read as one (\"aurora\" draws the northern lights): a made-up word trains cleaner.",
+    "Shift 3 is ComfyUI's default for Anima already.",
+    "ZenTrainer's LoRA on Anima trains the layers NVIDIA's Cosmos Predict2 LoRA does: each block's attention q/k/v/output and its two MLP layers. The AdaLN modulation and Anima's text adapter stay frozen."
+  ]
+}

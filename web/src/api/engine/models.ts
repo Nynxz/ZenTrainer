@@ -108,6 +108,11 @@ export interface ModelFamily {
   profile: ModelProfile | null
   /** ISO date: first template, or repo creation */
   added: string | null
+  /** listed under "Other models": few people train it (engine/catalog/families.json) */
+  other?: boolean
+  /** trained end to end here (families.json's `tested`); false: listed as untested. An older
+   *  engine sends neither */
+  tested?: boolean
   /** the repo asks you to accept a license (and set HF_TOKEN) before downloading */
   gated: boolean
   recommended: { train: Partial<Record<ModelFolder, string | null>>; sample: SampleDefaults | null }

@@ -1,0 +1,39 @@
+{
+  "id": "anima-general",
+  "title": "Anima · Any subject",
+  "model": "Anima",
+  "family": "anima",
+  "kind": "general",
+  "validated": true,
+  "blurb": "A character, a person or a look on Circlestone Labs’ Anima, an anime model. Its makers’ light touch: a rank 32 LoRA at a low learning rate.",
+  "note": "An anime model: prompts in its own tag style (\"1girl, solo, ...\") come out cleanest",
+  "notes": [
+    "Validated: the makers' advice (huggingface.co/circlestone-labs/Anima, \"Finetuning Tips\"), a rank 32 LoRA at 2e-5 with the LLM adapter left alone (ZenTrainer never adapts it), on 37 photos at 1024: likeness 0.41 at 500 steps, 0.60 at 1500 and still climbing, clean throughout. 1e-4 had the likeness by 500 but drew rougher.",
+    "samples.negative: ComfyUI's Anima template's; at CFG 4 an empty negative prompt draws noise."
+  ],
+  "icon": "mdi mdi-account-star-outline",
+  "photos": "general",
+  "files": {
+    "diffusion_models": ["anima-base-v1.0.safetensors"],
+    "text_encoders": ["qwen_3_06b_base.safetensors"],
+    "vae": ["qwen_image_vae.safetensors"]
+  },
+  "steps": 1500,
+  "caption": {"prompt": "nl", "subject": true},
+  "samples": [
+    "[trigger], 1girl, solo, close-up portrait, soft window light",
+    "[trigger] sitting in a cafe, candid photo"
+  ],
+  "spec": {
+    "dataset": {"resolution": 1024},
+    "network": {"algorithm": "LoRA", "rank": 32, "alpha": 32, "targets": "attn_mlp", "blocks": ""},
+    "optim": {"optimizer": "AdamW", "learning_rate": 2e-05, "lr_scheduler": "constant"},
+    "samples": {
+      "steps": 30,
+      "cfg": 4,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "negative": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+    }
+  }
+}

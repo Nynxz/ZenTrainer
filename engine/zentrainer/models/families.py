@@ -131,6 +131,7 @@ class Family:
         e = correction(self.id)
         d["maker"], d["logo"], d["mono"] = e.get("maker"), e.get("logo"), bool(e.get("mono"))
         d["other"] = bool(e.get("other"))  # listed under "Other models", out of the main list
+        d["tested"] = self.id in (_catalog().get("tested") or [])  # trained end to end here (see its _about)
         d["profile"] = profiles.for_family(self.id)
         d["recommended"] = recommend(self)
         d["missing"] = missing(self, d["recommended"]["train"])

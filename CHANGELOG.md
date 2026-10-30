@@ -454,6 +454,12 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 - **Fused q/k norm + rope on by default (Auto):** used whenever the blocks run uncompiled, off
   while they're compiled (compile fuses those ops itself). 6–9% faster a step on Krea 2, MOSS and
   MiniMax H3 without compile, with nothing to set. On or Off in Memory still force it.
+- **Fixed: Anima couldn't train** (and Cosmos Predict2, which it's built on). Every run stopped at
+  its first step with "Trying to backward through comfy_kitchen.rms_rope_split_half.default but no
+  autograd formula was registered": ComfyUI runs the attention's q/k norms and rope as one fused
+  kernel that only samples. In training they run as ZenTrainer's own op, which trains and
+  computes the same (to bf16's rounding); sampling is ComfyUI's as before. A real-ComfyUI test
+  trains a small Anima too.
 - **Fixed: the automatic VRAM fit undid itself on video:** after putting more of the model on the
   card it checks the steps didn't get slower, but it compared raw step times, and video clips of
   different lengths take very different times (1.4 to 3 s a step on H3). It often "measured" a
