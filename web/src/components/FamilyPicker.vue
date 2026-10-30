@@ -271,12 +271,23 @@ const familyItems = computed(() => [
     : []),
   { value: CUSTOM, label: 'Custom: pick the files yourself', keywords: 'custom manual files', f: null },
 ])
-// the catalog's files, and the one picked when it's one of yours (listed so it shows, tagged)
+// the catalog's files, then every other file of yours in that folder, tagged: a finetune the catalog
+// doesn't know (Pony or Illustrious for SDXL, say) is picked here, with the family's settings
 const fileItems = (folder: ModelFolder, current?: string | null) => {
-  const items = (fam.value?.files[folder] ?? []).map((f) => ({ value: f.name, label: f.name, keywords: f.name, file: f, mine: false }))
-  const own = yours(folder, current)
-  if (own && !items.some((i) => i.value === own.name)) items.push({ value: own.name, label: own.name, keywords: own.name, file: own, mine: true })
-  return items
+  const items = (fam.value?.files[folder] ?? [])
+    .map((f) => ({ value: f.name, label: f.name, keywords: f.name, file: f, mine: false }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  const listed = new Set(items.map((i) => i.value))
+  const own: ModelFile[] = []
+  for (const n of [...(onDisk.value[folder] ?? []), ...(current ? [current] : [])]) {
+    const f = yours(folder, n)
+    if (f && !listed.has(f.name)) {
+      listed.add(f.name)
+      own.push(f)
+    }
+  }
+  own.sort((a, b) => a.installed!.localeCompare(b.installed!))
+  return [...items, ...own.map((f) => ({ value: f.name, label: f.installed!, keywords: f.installed!, file: f, mine: true }))]
 }
 // installed: the tick alone; else what's left to fetch, by size (the count on hover)
 const statusOf = (f: ModelFamily) => {
@@ -381,6 +392,7 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
         <ZenCombo
           :model-value="base(model[p.key] as string)"
           :items="fileItems(p.folder, model[p.key] as string)"
+          :sorted="false"
           :item-height="34"
           :menu-width="440"
           @update:model-value="setFile(p.folder, p.key, $event)"
