@@ -43,8 +43,9 @@ const CUSTOM = '__custom'
 const families = ref<ModelFamily[]>([])
 const famId = ref<string>('')
 let userPicked = false
-// the model file last picked from this family's own list (one of yours, say): not a change from outside
-let pickedHere: string | null = null
+// the model file last picked from a family's own list (one of yours, say), and that family: the spec
+// changing to it isn't a change from outside. Cleared when the family changes
+let pickedHere: { fam: string; value: string } | null = null
 const fam = ref<ModelFamily | null>(null)
 const loadingRepo = ref(false)
 const error = ref<string | null>(null)
@@ -97,7 +98,13 @@ const pickedValue = (folder: ModelFolder, value?: string | null) => {
   if (f && (fam.value?.files[folder] ?? []).includes(f)) return f.name
   // one of yours only when the spec names its path: a bare name that matches it stays as written
   // (missing) until it's picked, so the list never shows a file the spec doesn't load
-  return f?.installed && f.installed === value ? f.installed : base(value)
+  return f?.installed && f.installed === value ? f.installed : (value ?? '')
+}
+/** a part's file is here: a catalog file installed, or one of yours by the exact path the spec names */
+const installedFor = (folder: ModelFolder, value?: string | null) => {
+  const f = fileOf(folder, value)
+  if (!f?.installed) return false
+  return (fam.value?.files[folder] ?? []).includes(f) || f.installed === value
 }
 
 // which family the current spec already uses (a duplicated run, a preset)
@@ -141,13 +148,14 @@ function redetect() {
   if (!families.value.length) return
   const m = model.value
   const key = base(m.kind === 'checkpoint' ? m.ckpt_name : m.unet_name)
-  if (famId.value && pickedHere && pickedHere === (m.kind === 'checkpoint' ? m.ckpt_name : m.unet_name)) return
+  if (pickedHere && pickedHere.fam === famId.value && pickedHere.value === (m.kind === 'checkpoint' ? m.ckpt_name : m.unet_name)) return
   const cur = families.value.find((f) => f.id === famId.value)
   if (cur && (cur.files[m.kind === 'checkpoint' ? 'checkpoints' : 'diffusion_models'] ?? []).some((x) => x.name === key)) return
   if (!key && famId.value) return
   const next = detect(families.value)
   if (next !== famId.value) {
     userPicked = false
+    pickedHere = null
     famId.value = next
   }
 }
@@ -202,13 +210,14 @@ watch(famId, async (id, old) => {
 })
 const pick = (id: string | number) => {
   userPicked = true
+  pickedHere = null
   famId.value = String(id)
 }
 
 function setFile(folder: ModelFolder, key: keyof ModelValue, name: string | number) {
   const f = fileOf(folder, String(name))
   const value = f ? (f.installed ?? f.name) : String(name)
-  if (folder === 'checkpoints' || folder === 'diffusion_models') pickedHere = value
+  if (folder === 'checkpoints' || folder === 'diffusion_models') pickedHere = { fam: famId.value, value }
   model.value = { ...model.value, [key]: value }
 }
 
@@ -226,7 +235,7 @@ watch(finished, async () => {
   families.value = families.value.map((x) => (x.id === full.id ? { ...x, missing: full.missing } : x))
 })
 
-const missingParts = computed(() => parts.value.filter((p) => !fileOf(p.folder, model.value[p.key] as string)?.installed))
+const missingParts = computed(() => parts.value.filter((p) => !installedFor(p.folder, model.value[p.key] as string)))
 watch(
   [missingParts, fam],
   () => emit('missing', fam.value ? missingParts.value.length : 0),
