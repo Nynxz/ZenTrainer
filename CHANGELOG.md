@@ -88,6 +88,10 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
 ### Run form and look
 - **A run started from the form with no sample prompts gets two plain ones** (with the trigger),
   so it has previews; nothing from the dataset.
+- **MOSS Image · Character for finetunes is gone.** A draft meant to keep a likeness on MOSS
+  finetunes as well as Base, and it didn't really: a LoRA on every block's MLPs kept 78% of it on
+  Serenity, the LoKr on blocks 24-41 61%. A finetune that has changed those layers loses it either
+  way. MOSS Image · Character (the validated LoKr) stays.
 - **Recipes are data now**, one JSON file each in `engine/catalog/recipes/` instead of code in the
   web app: easier to read, change and add to, with the runs behind each one's settings in its
   `notes`. The app reads them from the engine (`GET /zentrainer/api/recipes`) as it starts, so a
