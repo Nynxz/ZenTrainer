@@ -3,6 +3,7 @@
 *
 !comfy.lock
 !LICENSE
+!THIRD_PARTY_NOTICES.md
 !cli/
 !engine/
 !web/
