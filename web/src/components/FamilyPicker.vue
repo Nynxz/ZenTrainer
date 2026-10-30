@@ -100,12 +100,14 @@ const pickedValue = (folder: ModelFolder, value?: string | null) => {
   // (missing) until it's picked, so the list never shows a file the spec doesn't load
   return f?.installed && f.installed === value ? f.installed : (value ?? '')
 }
-/** a part's file is here: a catalog file installed, or one of yours by the exact path the spec names */
-const installedFor = (folder: ModelFolder, value?: string | null) => {
+/** the file a part's status is about: a catalog file, or one of yours only at the exact path the spec
+ *  names (a bare name that matches yours isn't loadable as written: pick your copy) */
+const partFile = (folder: ModelFolder, value?: string | null) => {
   const f = fileOf(folder, value)
-  if (!f?.installed) return false
-  return (fam.value?.files[folder] ?? []).includes(f) || f.installed === value
+  return f && !(fam.value?.files[folder] ?? []).includes(f) && f.installed !== value ? undefined : f
 }
+/** a part's file is here: a catalog file installed, or one of yours by the exact path the spec names */
+const installedFor = (folder: ModelFolder, value?: string | null) => !!partFile(folder, value)?.installed
 
 // which family the current spec already uses (a duplicated run, a preset)
 function detect(list: ModelFamily[]): string {
@@ -210,7 +212,7 @@ watch(famId, async (id, old) => {
 })
 const pick = (id: string | number) => {
   userPicked = true
-  pickedHere = null
+  if (String(id) !== famId.value) pickedHere = null
   famId.value = String(id)
 }
 
@@ -442,8 +444,9 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
         </ZenCombo>
         <!-- fixed-width status column: installed / download / progress, without shifting the row -->
         <div class="p-state">
-          <template v-for="f in [fileOf(p.folder, model[p.key] as string)]" :key="p.folder">
+          <template v-for="f in [partFile(p.folder, model[p.key] as string)]" :key="p.folder">
             <FileState v-if="f && fam" :family="fam.id" :file="f" @error="error = $event" />
+            <span v-else-if="fileOf(p.folder, model[p.key] as string)" class="muted" title="Your copy is at another path: pick it from the list">not at this path: pick it</span>
             <span v-else class="muted">not in the catalog</span>
           </template>
         </div>
