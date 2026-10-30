@@ -11,7 +11,9 @@
 Train LoRAs inside ComfyUI, and watch them learn. ZenTrainer trains on ComfyUI's own model code,
 with the models and GPU it already has.
 
-- **Characters, styles and video**: Krea 2, MOSS Image, Qwen-Image, Z-Image, SDXL, MiniMax H3 and more
+- **Characters, styles and video**: MOSS Image, Krea 2, FLUX 3, FLUX.2 Klein, Qwen Image 2.1, Z-Image,
+  Anima, Fibo 2.0, SDXL (and its finetunes) and MiniMax H3 video, each trained end to end here; more
+  are listed as untested
 - **Straight into ComfyUI**: trained LoRAs show up in its LoRA loaders
 - **Simple or Advanced**: a recipe sets everything, or set every option yourself
 
