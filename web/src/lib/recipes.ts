@@ -239,6 +239,38 @@ export const RECIPES: Recipe[] = [
     note: 'Bria’s own recipe (rank 64, 8 accumulated samples) is the Fibo 2.0 profile in the full form',
   },
   {
+    id: 'anima-general',
+    family: 'anima',
+    model: 'Anima',
+    kind: 'general',
+    title: 'Anima · Any subject',
+    blurb: 'A character, a person or a look on Circlestone Labs’ Anima, an anime model. Its makers’ light touch: a rank 32 LoRA at a low learning rate.',
+    photos: general,
+    icon: 'mdi mdi-account-star-outline',
+    files: {
+      diffusion_models: ['anima-base-v1.0.safetensors'],
+      text_encoders: ['qwen_3_06b_base.safetensors'],
+      vae: ['qwen_image_vae.safetensors'],
+    },
+    // validated: the makers' advice (huggingface.co/circlestone-labs/Anima, "Finetuning Tips"), rank 32
+    // at 2e-5 with the LLM adapter left alone (ZenTrainer never adapts it), on 37 photos at 1024:
+    // likeness 0.41 at 500 steps, 0.60 at 1500 and still climbing, clean throughout. 1e-4 had the
+    // likeness by 500 but drew rougher
+    steps: 1500,
+    caption: { prompt: NL, subject: true },
+    spec: {
+      dataset: { resolution: 1024 },
+      network: { algorithm: 'LoRA', rank: 32, alpha: 32, targets: 'attn_mlp', blocks: '' },
+      optim: { optimizer: 'AdamW', learning_rate: 2e-5, lr_scheduler: 'constant' },
+      // ComfyUI's Anima template: at CFG 4 an empty negative prompt draws noise
+      samples: { steps: 30, cfg: 4, sampler: 'euler', scheduler: 'simple',
+                 negative: 'worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia' },
+    },
+    samples: ['[trigger], 1girl, solo, close-up portrait, soft window light', '[trigger] sitting in a cafe, candid photo'],
+    note: 'An anime model: prompts in its own tag style ("1girl, solo, ...") come out cleanest',
+    validated: true,
+  },
+  {
     id: 'h3-character',
     family: 'minimax-h3',
     model: 'MiniMax H3',

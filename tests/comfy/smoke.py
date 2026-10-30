@@ -80,9 +80,24 @@ def h3():
                                        operations=ops), 64, (24, 16))
 
 
+def anima():
+    from comfy.ldm.anima.model import Anima
+
+    # Cosmos Predict2 with a text adapter. detection: model_channels from the patch embedder, the
+    # blocks counted, 16 heads at a width it doesn't know, the rest fixed (rope3d, AdaLN-LoRA 256,
+    # 1024-wide text); its adapter is full size. Wan 2.1's latents: a picture is a one-frame clip
+    return (lambda ops: Anima(max_img_h=240, max_img_w=240, max_frames=128, in_channels=16, out_channels=16,
+                              patch_spatial=2, patch_temporal=1, model_channels=512, num_blocks=2, num_heads=16,
+                              crossattn_emb_channels=1024, pos_emb_cls="rope3d", pos_emb_learnable=True,
+                              use_adaln_lora=True, adaln_lora_dim=256, extra_per_block_abs_pos_emb=False,
+                              rope_h_extrapolation_ratio=4.0, rope_w_extrapolation_ratio=4.0,
+                              rope_t_extrapolation_ratio=1.0, image_model="anima", operations=ops),
+            1024, (16, 8))
+
+
 # each: (the model at a tiny size, from ComfyUI's operations), its text width, its VAE's (latent
 # channels, downscale)
-FAMILIES = {"moss": moss, "krea2": krea2, "fibo2": fibo2, "flux3": flux3, "h3": h3}
+FAMILIES = {"moss": moss, "krea2": krea2, "fibo2": fibo2, "flux3": flux3, "h3": h3, "anima": anima}
 
 
 class Clip:

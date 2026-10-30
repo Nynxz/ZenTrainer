@@ -182,6 +182,7 @@ def test_targets_match_by_structure_across_families():
         "diffusion_model.layers.2.self_attn.q_proj",  # Llama-style DiT
         "diffusion_model.layers.5.proj.q",  # MOSS Image: only the layer's own name says it
         "diffusion_model.text_embedder.blocks.0.qkv",
+        "diffusion_model.blocks.3.self_attn.q_proj",  # Cosmos Predict2 / Anima
     ]
     mlp = [
         "diffusion_model.input_blocks.4.1.transformer_blocks.0.ff.net.0.proj",
@@ -190,9 +191,13 @@ def test_targets_match_by_structure_across_families():
         "diffusion_model.single_blocks.0.linear1",
         "diffusion_model.layers.5.proj.ffn_up_gate",
         "diffusion_model.text_embedder.blocks.0.ffn_down",
+        "diffusion_model.blocks.3.mlp.layer1",
     ]
     other = ["diffusion_model.first", "diffusion_model.last.linear", "diffusion_model.time_in.in_layer",
-             "diffusion_model.video_embedder", "diffusion_model.shared_block_modulation", "diffusion_model.q"]  # leaf names count only in blocks
+             "diffusion_model.video_embedder", "diffusion_model.shared_block_modulation", "diffusion_model.q",  # leaf names count only in blocks
+             # Cosmos Predict2's AdaLN modulation, named for what it modulates; Anima's text adapter
+             "diffusion_model.blocks.3.adaln_modulation_self_attn.1", "diffusion_model.blocks.3.adaln_modulation_mlp.2",
+             "diffusion_model.llm_adapter.blocks.0.self_attn.q_proj"]
     assert all(matches(n, "attn") for n in attn) and not any(matches(n, "attn") for n in mlp)
     fused = "diffusion_model.single_blocks.0.linear1"  # attention and MLP in one: only attn_mlp has it
     assert all(matches(n, "mlp") for n in mlp if n != fused) and not any(matches(n, "mlp") for n in attn + other + [fused])

@@ -34,10 +34,17 @@ _FUSED = re.compile(r"^(linear1|linear2)$")
 _ATTN_LEAF = re.compile(r"^(q|k|v|o|qkv|wq|wk|wv|wo|to_[qkvo]\w*|[qkvo]_proj|qkv_proj|out_proj)$")
 _MLP_LEAF = re.compile(r"^(ffn_\w+|ff_\w+|fc[12]|w[123]|gate_proj|up_proj|down_proj|mlp_\w+)$")
 _BLOCK = re.compile(r"^\d+$")
+# AdaLN modulation: the timestep's scale, shift and gate for each block, which no adapter trains.
+# Cosmos Predict2's (and Anima's) are named for what they modulate (adaln_modulation_self_attn,
+# _cross_attn, _mlp), which reads as attention and MLP: 6 of each block's 16 layers took an
+# adapter, and every noise level's modulation moved with it
+_MODULATION = re.compile(r"adaln|modulation", re.I)
 # layers an adapter would never train: text-side ones that run once per caption outside the
 # denoising graph (MiniMax H3's token refiner, under no_grad when conds are prepared), and
-# H3's sparse-attention gate, which the dense forward never calls
-_PREPARED = re.compile(r"(^|\.)(token_refiner|condition_proj|to_gate_compress)(\.|$)")
+# H3's sparse-attention gate, which the dense forward never calls. Anima's llm_adapter is text-side
+# too (the text encoder's output into what the blocks read), run in the graph while training:
+# frozen, as the text encoder is
+_PREPARED = re.compile(r"(^|\.)(token_refiner|condition_proj|to_gate_compress|llm_adapter)(\.|$)")
 
 
 _BLOCK_INDEX = re.compile(r"(?:^|\.)(?:blocks|double_blocks|single_blocks|joint_blocks|transformer_blocks|layers)\.(\d+)(?:\.|$)")
@@ -82,6 +89,8 @@ def matches(name: str, targets: str | list[str]) -> bool:
     if _PREPARED.search(name):
         return False
     *parents, leaf = name.split(".")
+    if any(_MODULATION.search(p) for p in parents):
+        return False
     in_block = any(_BLOCK.match(p) for p in parents)
     in_attn = any(_ATTN.search(p) for p in parents) or (in_block and bool(_ATTN_LEAF.match(leaf)))
     if targets == "attn":
