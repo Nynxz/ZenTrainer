@@ -10,7 +10,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { EngineError, defaultSpec, engine, thumbUrl, type DatasetFaces, type DatasetInfo, type DatasetItem } from '@/api/engine'
 import { captionJobs, startCaptionSync } from '@/stores/captions'
-import { downloadFor, finished, fmtBytes, startDownloadSync } from '@/stores/downloads'
+import { downloadFor, downloads, finished, fmtBytes, startDownloadSync } from '@/stores/downloads'
 import { RECIPES, buildSpec, plan, recipe as findRecipe, triggerFrom, type Plan, type Recipe } from '@/lib/recipes'
 import { settings } from '@/stores/settings'
 
@@ -305,7 +305,8 @@ async function train() {
       const adapter = p.value.adapter ? await engine.downloadAdapter(p.value.adapter.id) : null
       await waitFor(() => {
         const jobs = p.value!.downloads.map((d) => downloadFor(d.folder, d.name))
-        if (adapter) jobs.push(downloadFor(adapter.folder, adapter.name))
+        // by its own id: an older try at the same file (failed, say) mustn't stand in for it
+        if (adapter) jobs.push(downloads[adapter.id] ?? adapter)
         const bad = jobs.find((j) => j && (j.status === 'error' || j.status === 'cancelled'))
         if (bad) return `${bad.name}: ${bad.error ?? bad.status}`
         return jobs.every((j) => j?.status === 'done')
