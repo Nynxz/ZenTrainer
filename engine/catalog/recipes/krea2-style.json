@@ -1,0 +1,35 @@
+{
+  "id": "krea2-style",
+  "title": "Krea 2 · Style",
+  "model": "Krea 2",
+  "family": "krea-2",
+  "kind": "style",
+  "blurb": "A look: an art style, a film stock, a mood. Apply it to anything with the trigger word.",
+  "icon": "mdi mdi-palette-outline",
+  "photos": "style",
+  "files": {
+    "diffusion_models": ["krea2_raw_int8_convrot.safetensors", "krea2_raw_bf16.safetensors"],
+    "text_encoders": ["qwen3vl_4b_int8_convrot.safetensors", "qwen3vl_4b_fp8_scaled.safetensors"],
+    "vae": ["qwen_image_vae.safetensors"]
+  },
+  "steps": 2000,
+  "caption": {"prompt": "style", "subject": false},
+  "samples": [
+    "[trigger], a lighthouse on a cliff at dusk",
+    "[trigger], a portrait of an old fisherman",
+    "[trigger], a bowl of fruit on a table"
+  ],
+  "spec": {
+    "dataset": {"resolution": 1024},
+    "network": {"rank": 32},
+    "optim": {"optimizer": "AdamW", "learning_rate": 0.0001, "lr_scheduler": "constant"},
+    "objective": {"timesteps": "uniform", "shift": 0},
+    "samples": {
+      "steps": 8,
+      "cfg": 1,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "model_name": "krea2_turbo_int8_convrot.safetensors"
+    }
+  }
+}

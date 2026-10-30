@@ -1,0 +1,45 @@
+{
+  "id": "h3-character",
+  "title": "MiniMax H3 · Character",
+  "model": "MiniMax H3",
+  "family": "minimax-h3",
+  "kind": "character",
+  "blurb": "A person for the H3 video model, trained from photos. Use it in image or video prompts.",
+  "note": "Needs the circlestone image training adapter (downloaded for you)",
+  "icon": "mdi mdi-movie-star-outline",
+  "photos": "character",
+  "files": {
+    "diffusion_models": ["minimax_h3_fl2va_pruned_int8_convrot.safetensors"],
+    "text_encoders": [
+      "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+    ],
+    "vae": [
+      "minimax_h3_video_vae_fp16.safetensors",
+      "minimax_h3_video_vae_int8_convrot.safetensors"
+    ]
+  },
+  "steps": 2000,
+  "caption": {"prompt": "nl", "subject": true},
+  "samples": [
+    "[trigger], a close up portrait photo, soft window light",
+    "[trigger] on a city street at night, candid photo, neon signs"
+  ],
+  "spec": {
+    "dataset": {"resolution": 1024},
+    "network": {
+      "rank": 16,
+      "blocks": "20-49",
+      "training_adapter": "training_adapters/minimax_h3_image_training_adapter.safetensors"
+    },
+    "optim": {
+      "optimizer": "AdamW",
+      "learning_rate": 0.0001,
+      "lr_scheduler": "constant",
+      "batch_size": 1
+    },
+    "objective": {"timesteps": "logit_normal", "shift": 3},
+    "memory": {"offloading": true},
+    "samples": {"steps": 30, "cfg": 1, "sampler": "res_multistep", "scheduler": "simple"}
+  }
+}

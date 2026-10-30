@@ -8,6 +8,7 @@ import App from './App.vue'
 import { registerLoraSource } from '@/lib/loraSource'
 import { initSettings } from '@/stores/settings'
 import { initTheme } from '@/lib/theme'
+import { loadRecipes } from '@/lib/recipes'
 
 const router = createRouter({
   history: createWebHistory('/zentrainer/'),
@@ -44,5 +45,5 @@ const router = createRouter({
 })
 
 registerLoraSource()
-await Promise.all([initTheme(), initSettings()])
+await Promise.all([initTheme(), initSettings(), loadRecipes()])
 createApp(App).use(router).mount('#app')

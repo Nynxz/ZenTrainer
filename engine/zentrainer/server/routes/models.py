@@ -23,6 +23,13 @@ def register(server) -> None:
 
         return web.json_response({"families": await asyncio.to_thread(families.list_families)})
 
+    @routes.get("/zentrainer/api/recipes")
+    async def list_recipes(_request):
+        """Simple mode's recipes (engine/catalog/recipes/), each a run's settings for a model."""
+        from ...models import recipes
+
+        return web.json_response({"recipes": await asyncio.to_thread(recipes.load)})
+
     @routes.post("/zentrainer/api/families/relist")
     async def relist_families(_request):
         """Re-list the model makers' Hugging Face repos now (new models, without waiting for the cache)."""

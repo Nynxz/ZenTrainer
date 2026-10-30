@@ -1,0 +1,50 @@
+{
+  "id": "fibo2-character",
+  "title": "Fibo 2.0 · Any subject",
+  "model": "Fibo 2.0",
+  "family": "fibo-2-0",
+  "kind": "general",
+  "blurb": "A person, a pet, a product or a look, on Bria’s Fibo 2.0 Dev. It learns fast, at a low rank and a gentle learning rate.",
+  "note": "Bria’s own recipe (rank 64, 8 accumulated samples) is the Fibo 2.0 profile in the full form",
+  "notes": [
+    "From a run that trained well: AdamW 3e-5, rank 16, 3000 steps on ~120 photos (~25 a photo). Fibo moves fast: 1e-4 on single samples had rebuilt a 12-image test's whole look in 30 steps.",
+    "caption.style: Fibo is trained on, and prompted with, structured JSON captions (Bria's VGL format)."
+  ],
+  "icon": "mdi mdi-account-star-outline",
+  "photos": "general",
+  "files": {
+    "diffusion_models": ["fibo2_dev_int8_convrot.safetensors"],
+    "text_encoders": [
+      "qwen3vl_4b_bf16.safetensors",
+      "qwen3vl_4b_int8_convrot.safetensors",
+      "qwen3vl_4b_fp8_scaled.safetensors"
+    ],
+    "vae": ["flux2-vae.safetensors"]
+  },
+  "steps": 2000,
+  "caption": {"prompt": "nl", "subject": true, "style": "fibo_json"},
+  "samples": [
+    "[trigger] in soft window light, a close up photo",
+    "[trigger] outdoors on a sunny afternoon, candid photo, shallow depth of field"
+  ],
+  "spec": {
+    "dataset": {
+      "resolution": 1024,
+      "stages": [{"resolution": 768, "until": 0.6}],
+      "stage_blend": 0.2
+    },
+    "network": {"algorithm": "LoRA", "rank": 16, "targets": "attn_mlp"},
+    "optim": {
+      "optimizer": "AdamW",
+      "learning_rate": 3e-05,
+      "lr_scheduler": "constant",
+      "warmup_steps": 50,
+      "weight_decay": 0,
+      "batch_size": 1,
+      "grad_accumulation_steps": 1
+    },
+    "objective": {"timesteps": "uniform", "shift": 0},
+    "memory": {"int8_forward": true, "int8_backward": "w8a8"},
+    "samples": {"steps": 30, "cfg": 5, "sampler": "euler", "scheduler": "simple", "negative": ""}
+  }
+}

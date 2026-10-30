@@ -1,0 +1,48 @@
+{
+  "_about": "What the recipes in this folder share: the order Simple mode lists them in (ones not named here come after, by id), the caption prompts a recipe's caption.prompt names, and the photo guidance its photos names. Read by the engine (zentrainer/models/recipes.py), which serves them at GET /zentrainer/api/recipes for the web app to fetch as it starts: a change shows on a reload. A recipe's caption.prompt or photos can also be written out in full instead of named.",
+  "order": [
+    "krea2-character",
+    "krea2-style",
+    "moss-character",
+    "moss-character-finetunes",
+    "moss-style",
+    "fibo2-character",
+    "anima-general",
+    "h3-character"
+  ],
+  "captions": {
+    "nl": "Describe this image for training an image model: the subject, their appearance, clothing and pose, the setting, lighting and photographic or artistic style. One detailed paragraph. Start directly with the description; no preamble.",
+    "style": "Describe what this image shows (subjects, objects, setting, composition, colours) in one paragraph, without naming or describing its artistic style, medium or technique. Start directly; no preamble."
+  },
+  "photos": {
+    "character": {
+      "min": 8,
+      "ideal": "15–40 photos",
+      "tips": [
+        "Only one person, clearly visible",
+        "Different outfits, places and lighting",
+        "A few close-ups and a few full-body shots",
+        "Sharp photos: skip blurry or tiny ones"
+      ]
+    },
+    "general": {
+      "min": 10,
+      "ideal": "15–50 images",
+      "tips": [
+        "One subject or one look across them all",
+        "Varied backgrounds, angles and light",
+        "Sharp, well-lit pictures",
+        "No text or watermarks if you can help it"
+      ]
+    },
+    "style": {
+      "min": 10,
+      "ideal": "20–60 images",
+      "tips": [
+        "All in the one style you want",
+        "Different subjects and scenes",
+        "No text or watermarks if you can help it"
+      ]
+    }
+  }
+}

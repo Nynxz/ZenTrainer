@@ -1,0 +1,50 @@
+{
+  "id": "moss-character-finetunes",
+  "title": "MOSS Image · Character for finetunes",
+  "model": "MOSS Image",
+  "family": "moss-image",
+  "kind": "character",
+  "blurb": "A person or character that keeps its likeness on MOSS finetunes such as Serenity, not only on Base.",
+  "note": "Slower than MOSS Image · Character (every block trains); use that one for Base alone",
+  "notes": [
+    "Draft: a LoRA on every block's MLPs at 3e-4 reached likeness 0.59 on Base at 1500 steps on 37 photos (768 px) and kept 78% of it on Serenity v6 (0.46). The LoKr on blocks 24-41 (MOSS Image · Character) reached more on Base (0.66) but kept 61%; the same LoRA on blocks 24-41 only kept 51%, and at 1e-4 every LoRA trailed (0.49-0.52 on Base).",
+    "optim.lr_floor: Automagic v3 stalls on MOSS without a floor under its rate."
+  ],
+  "icon": "mdi mdi-account-switch-outline",
+  "photos": "character",
+  "files": {
+    "diffusion_models": [
+      "moss_image_base_int8_convrot.safetensors",
+      "moss_image_base_bf16.safetensors"
+    ],
+    "text_encoders": ["qwen3.5_9b_int8_convrot.safetensors"],
+    "vae": ["flux2-vae.safetensors"]
+  },
+  "steps": 1500,
+  "caption": {"prompt": "nl", "subject": true},
+  "samples": [
+    "[trigger], a close up portrait photo, soft window light",
+    "[trigger] sitting in a cafe, candid photo"
+  ],
+  "spec": {
+    "dataset": {"resolution": 768},
+    "network": {"algorithm": "LoRA", "rank": 16, "alpha": 16, "targets": "mlp", "blocks": ""},
+    "optim": {
+      "optimizer": "Automagic3",
+      "learning_rate": 0.0003,
+      "lr_scheduler": "constant",
+      "ema": 0.98,
+      "lr_floor": 0.5
+    },
+    "objective": {"timesteps": "logit_normal", "shift": 0, "bias": "high_noise", "spread": true},
+    "samples": {
+      "steps": 25,
+      "cfg": 2.5,
+      "sampler": "er_sde",
+      "scheduler": "simple",
+      "slg_mode": "uncond",
+      "slg_layers": [22],
+      "slg_start": 0
+    }
+  }
+}
