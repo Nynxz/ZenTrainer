@@ -43,6 +43,8 @@ const CUSTOM = '__custom'
 const families = ref<ModelFamily[]>([])
 const famId = ref<string>('')
 let userPicked = false
+// the model file last picked from this family's own list (one of yours, say): not a change from outside
+let pickedHere: string | null = null
 const fam = ref<ModelFamily | null>(null)
 const loadingRepo = ref(false)
 const error = ref<string | null>(null)
@@ -92,7 +94,10 @@ function fileOf(folder: ModelFolder, name?: string | null): ModelFile | undefine
 /** what a part's list shows as picked: a catalog file by its name, one of yours by its path */
 const pickedValue = (folder: ModelFolder, value?: string | null) => {
   const f = fileOf(folder, value)
-  return f && (fam.value?.files[folder] ?? []).includes(f) ? f.name : (f?.installed ?? base(value))
+  if (f && (fam.value?.files[folder] ?? []).includes(f)) return f.name
+  // one of yours only when the spec names its path: a bare name that matches it stays as written
+  // (missing) until it's picked, so the list never shows a file the spec doesn't load
+  return f?.installed && f.installed === value ? f.installed : base(value)
 }
 
 // which family the current spec already uses (a duplicated run, a preset)
@@ -136,6 +141,7 @@ function redetect() {
   if (!families.value.length) return
   const m = model.value
   const key = base(m.kind === 'checkpoint' ? m.ckpt_name : m.unet_name)
+  if (famId.value && pickedHere && pickedHere === (m.kind === 'checkpoint' ? m.ckpt_name : m.unet_name)) return
   const cur = families.value.find((f) => f.id === famId.value)
   if (cur && (cur.files[m.kind === 'checkpoint' ? 'checkpoints' : 'diffusion_models'] ?? []).some((x) => x.name === key)) return
   if (!key && famId.value) return
@@ -201,7 +207,9 @@ const pick = (id: string | number) => {
 
 function setFile(folder: ModelFolder, key: keyof ModelValue, name: string | number) {
   const f = fileOf(folder, String(name))
-  model.value = { ...model.value, [key]: f ? (f.installed ?? f.name) : String(name) }
+  const value = f ? (f.installed ?? f.name) : String(name)
+  if (folder === 'checkpoints' || folder === 'diffusion_models') pickedHere = value
+  model.value = { ...model.value, [key]: value }
 }
 
 // install state changes as downloads land: refresh the family and swap in the local names
