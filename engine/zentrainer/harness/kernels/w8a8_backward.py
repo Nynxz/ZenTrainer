@@ -27,6 +27,30 @@ except ImportError:  # pragma: no cover
 
 if TRITON_AVAILABLE:
 
+    # Tile configs, per vendor. NVIDIA keeps the set these kernels were measured with. The AMD set
+    # was swept on an RX 7800 XT (gfx1101, RDNA3, ROCm 10.3 / Triton 3.8): 24 tiles x MOSS's four
+    # ConvRot shapes (9216x3072, 3072x3072, 16384x3072, 3072x8192) at 2304, 4096 and 4352 tokens.
+    # 128x128x64 w4 s3 won 9 of 12 shapes and 128x128x128 w8 s3 the other 3; the NVIDIA set's
+    # 128x256x64 and 64x256x64 were 5-12% slower here. Kept generic rather than RDNA3-only: tiles
+    # that fit RDNA3's 64 KB LDS also fit CDNA's, a config that doesn't fit is skipped by the
+    # autotuner (OutOfResources, triton/runtime/autotuner.py), and 256x128x64 is the tile CDNA
+    # usually prefers even though it never wins on RDNA3. Nothing here is a guess for gfx11; MI
+    # cards are untested and should be swept the same way before their numbers are quoted.
+    _NVIDIA_TILES = [
+        (128, 128, 64, 8, 4), (128, 256, 64, 8, 3), (64, 256, 64, 4, 4),
+        (128, 128, 128, 8, 3), (256, 128, 64, 8, 3), (64, 128, 128, 4, 4),
+    ]
+    _AMD_TILES = [
+        (128, 128, 64, 4, 3), (128, 128, 128, 8, 3), (64, 128, 64, 4, 3), (256, 128, 64, 8, 3),
+    ]
+
+    def _tile_configs() -> list:
+        """triton.Configs for this vendor. `torch.version.hip` is a constant of the build, so no
+        device is touched at import (the engine imports before ComfyUI picks a device)."""
+        tiles = _AMD_TILES if torch.version.hip else _NVIDIA_TILES
+        return [triton.Config({"BM": bm, "BK": bk, "BN": bn}, num_stages=st, num_warps=w)
+                for bm, bk, bn, w, st in tiles]
+
     @triton.jit
     def _quantize_rows_kernel(G, S, Q, R, N, stride_g, stride_q, SEED, BLOCK: tl.constexpr):
         row = tl.program_id(0)
@@ -51,14 +75,7 @@ if TRITON_AVAILABLE:
         tl.store(R + row, step)
 
     @triton.autotune(
-        configs=[
-            triton.Config({"BM": 128, "BK": 128, "BN": 64}, num_stages=4, num_warps=8),
-            triton.Config({"BM": 128, "BK": 256, "BN": 64}, num_stages=3, num_warps=8),
-            triton.Config({"BM": 64, "BK": 256, "BN": 64}, num_stages=4, num_warps=4),
-            triton.Config({"BM": 128, "BK": 128, "BN": 128}, num_stages=3, num_warps=8),
-            triton.Config({"BM": 256, "BK": 128, "BN": 64}, num_stages=3, num_warps=8),
-            triton.Config({"BM": 64, "BK": 128, "BN": 128}, num_stages=4, num_warps=4),
-        ],
+        configs=_tile_configs(),
         # the token count bucketed to its power of 2 (as Fizgig's W8A16 kernel): a run tunes once
         # per shape bucket, not once per caption length
         key=["M_KEY", "N", "K"],
