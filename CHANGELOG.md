@@ -3,7 +3,7 @@
 What changed in each ZenTrainer release, newest first. Versions are the ones the ComfyUI Registry
 and Manager show.
 
-## Unreleased
+## 0.4.0 (2026-10-30)
 
 ### Security
 ZenTrainer's API has no login (as ComfyUI's hasn't), so what someone who can reach it could do
@@ -31,6 +31,24 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   a picture too big or broken to open is refused instead of failing.
 - **The Hugging Face token** goes only to huggingface.co, and not on to where a download is
   redirected.
+
+### Models
+- **Ten models trained end to end here, and the rest marked untested.** MOSS Image, Krea 2, Fibo
+  2.0, FLUX 3 Image, FLUX.2 Klein 9B, Qwen Image 2.1, Z-Image, Anima, SDXL and MiniMax H3 are listed
+  as Models in the model browser and the family picker. Every other family the catalog finds (a new
+  template or repo included) is under Other models, tagged untested, until someone trains it; a
+  model goes on the list (`tested` in `engine/catalog/families.json`) once it has. Ming 3.0 TTS, a
+  text-to-speech model, is left out of the catalog. Circlestone Labs' logo is their avatar now.
+- **FLUX.2 trains** (Klein, Dev; FLUX.1 shares its blocks). Two things stopped it at the first
+  step: its blocks add into the residual stream in place ("modified by an inplace operation"), and
+  in training each block now adds into its own copy; and an fp8 layer's saved tensors were read
+  twice in the int8 backward ("already unpacked once"), as any fp8, nvfp4 or mxfp8 layer's were.
+  FLUX.2 Klein 9B (fp8) reached likeness 0.61-0.66 by step 250 on 37 photos.
+- **Your own files under their model.** A model's file list (checkpoint, diffusion model, text
+  encoder, VAE) has the catalog's files, then every other file of yours in that folder, by path and
+  tagged yours, with search: a Pony or Illustrious checkpoint under SDXL, a MOSS finetune under MOSS.
+  Picking one keeps the model's settings. SDXL trains as it is (one checkpoint file, a UNet on noise
+  prediction): Pony V6 learned a person by step 250 on the defaults.
 
 ### Run settings (spec version 2)
 - **Specs have a version now** (`spec_version: 2`), and older ones are brought up to date as
@@ -231,6 +249,8 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   the N key no longer opens New run.
 
 ### AMD
+- **A faster int8 backward on RDNA3,** a tile set swept by @aksugat on an RX 7800 XT: 0-15% on
+  each of MOSS's ConvRot shapes, about 1% a step. NVIDIA's tiles are unchanged.
 - **AMD GPUs on Windows and Linux:** `zt setup` finds a Radeon or Instinct card from its display
   driver alone and installs PyTorch's ROCm build from AMD's wheel index, with only that GPU's
   kernels; no ROCm or HIP SDK install is needed. The ROCm build the setup used to pick no longer
@@ -393,6 +413,11 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   masks too.
 
 ### Training
+- **Fixed: Krea 2's character recipe ran out of VRAM where it changes resolution** (768 px, then
+  1024 blended in over 20% of the run), at step 1258 on a 32 GB card. The kept blocks' fit grew
+  again on the blend's 768 steps, whose peaks are lower, and kept more than 1024 holds; now only
+  steps at the higher resolution count, it starts from that resolution's own peak, and an
+  out-of-VRAM step halves the kept blocks rather than dropping one, then keeps none on its last try.
 - **Fixed: an open ZenTrainer page cost training about 13% of its speed.** Progress bars and the
   sidebar's job ring eased every change, but a run updates them every step, faster than the easing
   ends, so the page redrew 60 times a second for the whole run, on the GPU training uses: MOSS at
