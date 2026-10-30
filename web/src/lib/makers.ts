@@ -2,6 +2,7 @@
 // corrections, shared with the engine) says each family's maker and logo; the logos are in
 // web/public/logos/ (64 px, transparent). Read at build time, so a logo needs no engine restart.
 // "mono" logos are black ink on transparent: shown white on dark themes.
+import type { ModelFamily } from '@/api/engine'
 import catalog from '../../../engine/catalog/families.json'
 
 interface Entry {
@@ -9,18 +10,16 @@ interface Entry {
   maker?: string
   logo?: string
   mono?: boolean
-  other?: boolean
 }
 const ENTRIES = ((catalog as { families?: Entry[] }).families ?? []).map((e) => ({ ...e, re: new RegExp(e.match) }))
-const TESTED = new Set((catalog as { tested?: string[] }).tested ?? [])
 
-/** a family that has trained end to end here (families.json's `tested`); the rest are untested */
-export const isTested = (familyId: string | null | undefined) => TESTED.has((familyId ?? '').toLowerCase())
+/** not trained end to end here: the engine's `tested` is false (an older engine sends none, and
+ *  then nothing is called untested) */
+export const isUntested = (f: Pick<ModelFamily, 'tested'>) => f.tested === false
 
 /** listed under "Other models" in the pickers, out of the main list: a family few people train, or
- *  one nobody has trained here yet */
-export const isOther = (familyId: string | null | undefined) =>
-  !isTested(familyId) || !!ENTRIES.find((e) => e.re.test((familyId ?? '').toLowerCase()))?.other
+ *  one nobody has trained here yet. Both come from the engine's catalog with the family */
+export const isOther = (f: Pick<ModelFamily, 'other' | 'tested'>) => !!f.other || isUntested(f)
 
 /** the family's maker and logo (served from the app's web/public/logos/), or null */
 export function makerLogo(familyId: string | null | undefined): { src: string; mono: boolean; maker: string } | null {

@@ -8,7 +8,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { engine, type ModelFamily } from '@/api/engine'
 import ScrollArea from '@/components/ScrollArea.vue'
 import StarButton from '@/components/StarButton.vue'
-import { isOther, isTested, makerLogo } from '@/lib/makers'
+import { isOther, isUntested, makerLogo } from '@/lib/makers'
 import { RECIPES } from '@/lib/recipes'
 import { fmtBytes } from '@/stores/downloads'
 import { isStarred } from '@/stores/favorites'
@@ -73,8 +73,8 @@ watch(listed, (l) => {
 })
 const groups = computed(() => {
   const starred = listed.value.filter((f) => isStarred(f.id))
-  const main = listed.value.filter((f) => !isStarred(f.id) && !isOther(f.id))
-  const other = listed.value.filter((f) => !isStarred(f.id) && isOther(f.id))
+  const main = listed.value.filter((f) => !isStarred(f.id) && !isOther(f))
+  const other = listed.value.filter((f) => !isStarred(f.id) && isOther(f))
   return [
     ...(starred.length ? [{ key: 'starred', label: 'Starred', items: starred }] : []),
     ...(main.length ? [{ key: 'main', label: 'Models', items: main }] : []),
@@ -138,7 +138,7 @@ function details(id: string | null) {
                 <i v-else class="mdi mdi-cube-outline" />
               </span>
               <span class="item-text">
-                <span class="item-title">{{ f.name }}<span v-if="!isTested(f.id)" class="untested" title="Nobody has trained this model with ZenTrainer yet: it may work, or not">untested</span><span v-if="f.id === current" class="here">in this run</span></span>
+                <span class="item-title"><span class="item-name">{{ f.name }}</span><span v-if="isUntested(f)" class="untested" title="Nobody has trained this model with ZenTrainer yet: it may work, or not">untested</span><span v-if="f.id === current" class="here">in this run</span></span>
                 <span class="item-blurb">
                   <template v-if="ready(f)"><i class="mdi mdi-check-circle ok" /> installed</template>
                   <template v-else>{{ f.missing.length }} to download</template>
@@ -342,6 +342,15 @@ function details(id: string | null) {
   font-size: 10px;
   font-weight: 500;
   color: var(--zen-accent);
+}
+.item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.untested,
+.here {
+  flex: none;
 }
 .untested {
   font-size: 10px;
