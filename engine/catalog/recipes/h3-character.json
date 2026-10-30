@@ -4,8 +4,12 @@
   "model": "MiniMax H3",
   "family": "minimax-h3",
   "kind": "character",
+  "validated": true,
   "blurb": "A person for the H3 video model, trained from photos. Use it in image or video prompts.",
   "note": "Needs the circlestone image training adapter (downloaded for you)",
+  "notes": [
+    "Validated as written: AdamW at 1e-4, rank 16 on blocks 20-49, 1024 px throughout, on 38 photos: likeness 0.47 at 500 steps, 0.59 at 1500, 0.64 at 1750, 0.53 at 2000. Keep the 1750 checkpoint if the last one drifts."
+  ],
   "icon": "mdi mdi-movie-star-outline",
   "photos": "character",
   "files": {
