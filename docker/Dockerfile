@@ -15,8 +15,9 @@ ARG TORCH=cu130
 FROM node:24-slim AS web
 RUN npm install --global pnpm@11.1.1
 WORKDIR /src
-# the app imports engine/catalog/families.json from outside web/
+# the app imports engine/catalog/families.json from outside web/, and reads its version from the engine
 COPY engine/catalog engine/catalog
+COPY engine/zentrainer/__init__.py engine/zentrainer/__init__.py
 COPY web web
 RUN cd web && pnpm install --frozen-lockfile && pnpm build
 
