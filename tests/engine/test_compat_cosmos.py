@@ -56,6 +56,7 @@ def _install(monkeypatch, in_training):
         monkeypatch.setitem(sys.modules, name, mod)
     sys.modules["comfy"].model_management = mm
     monkeypatch.setattr(compat, "_applied", set())
+    monkeypatch.setattr(compat, "fused_qk_rope", True)
     patch.apply()
     return Attention, calls
 
@@ -94,3 +95,43 @@ def test_sampling_and_cross_attention_stay_comfyuis(monkeypatch):
     assert Attention(selfattn=False).compute_qkv(x, x, rope_emb=None) == "comfy"
     assert Attention().compute_qkv(x, None, rope_emb=None) == "comfy"  # no rope: nothing to fuse
     assert calls == [False, False]
+
+
+def test_with_the_fused_op_off_its_torch_and_the_same(monkeypatch):
+    # memory.fused_qk_rope off (or compiled blocks): the op isn't called, and the maths is the same
+    Attention, _ = _install(monkeypatch, in_training=True)
+    torch.manual_seed(0)
+    a, x, rope = Attention(), torch.randn(B, L, H * D, dtype=torch.float64), _rope()
+    fused = a.compute_qkv(x, None, rope_emb=rope)
+    import zentrainer.harness.kernels.qk_norm_rope as kernel
+
+    def refuse(*args, **kw):
+        raise AssertionError("the fused op ran with fused_qk_rope off")
+
+    monkeypatch.setattr(kernel, "qk_norm_rope", refuse)
+    monkeypatch.setattr(compat, "fused_qk_rope", False)
+    plain = a.compute_qkv(x, None, rope_emb=rope)
+    assert all(torch.allclose(f, p, atol=1e-10) for f, p in zip(fused, plain))
+
+
+def test_a_comfyui_without_cosmos_is_skipped_but_a_broken_one_raises(monkeypatch):
+    import builtins
+
+    import pytest
+
+    real = builtins.__import__
+
+    def fake(missing):
+        def imp(name, *args, **kw):
+            if name == "comfy.ldm.cosmos.predict2":
+                raise ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+            return real(name, *args, **kw)
+        return imp
+
+    monkeypatch.setattr(compat, "_applied", set())
+    monkeypatch.setattr(builtins, "__import__", fake("comfy.ldm.cosmos"))
+    patch.apply()  # an older ComfyUI: nothing to patch
+    assert "cosmos" not in compat._applied
+    monkeypatch.setattr(builtins, "__import__", fake("einops"))  # Cosmos there, a dependency missing
+    with pytest.raises(ModuleNotFoundError):
+        patch.apply()

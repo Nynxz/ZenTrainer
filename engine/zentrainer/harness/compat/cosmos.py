@@ -2,9 +2,10 @@
 - Attention: self-attention's q/k RMSNorms and split-half rope run as comfy_kitchen's fused
   rms_rope_split_half, which has no backward ("Trying to backward through
   comfy_kitchen.rms_rope_split_half.default but no autograd formula was registered"): the first
-  step of every run failed. In training they run as kernels/qk_norm_rope.py's op, which trains,
-  or plain torch when a norm's weight trains too. Its rope is (1, L, 1, D/2, 2, 2) for
-  (B, L, heads, D) queries, as MOSS's. Cross-attention (no rope) is ComfyUI's own.
+  step of every run failed. In training they run as kernels/qk_norm_rope.py's op, which trains
+  (memory.fused_qk_rope), or plain torch with it off or when a norm's weight trains too. Its rope
+  is (1, L, 1, D/2, 2, 2) for (B, L, heads, D) queries, as MOSS's. Cross-attention (no rope) is
+  ComfyUI's own.
 """
 
 from __future__ import annotations
@@ -19,7 +20,9 @@ def apply() -> None:
         return
     try:
         import comfy.ldm.cosmos.predict2 as predict2
-    except Exception:  # an older ComfyUI without Cosmos Predict2
+    except ModuleNotFoundError as e:  # an older ComfyUI without Cosmos Predict2; anything else is raised
+        if e.name not in ("comfy.ldm.cosmos", "comfy.ldm.cosmos.predict2"):
+            raise
         return
     import comfy.model_management as mm
 
@@ -48,7 +51,9 @@ def apply() -> None:
         wq = mm.cast_to(self.q_norm.weight, dtype=torch.float32, device=q.device)
         wk = mm.cast_to(self.k_norm.weight, dtype=torch.float32, device=k.device)
         eps = self.q_norm.eps
-        if wq.requires_grad or wk.requires_grad:  # the norms train: torch, which takes their gradient
+        # torch when the fused op is off (memory.fused_qk_rope, or compiled blocks, which fuse these
+        # themselves) or the norms train (torch takes their gradient)
+        if not compat.fused_qk_rope or wq.requires_grad or wk.requires_grad:
             return (reference(q, wq, rope_emb, eps, split_half=True, seq_first=True),
                     reference(k, wk, rope_emb, eps, split_half=True, seq_first=True), v)
         q, k = qk_norm_rope(q, k, wq, wk, rope_emb, eps, split_half=True, seq_first=True)
