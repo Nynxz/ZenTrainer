@@ -64,7 +64,8 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   runs of 500 steps or more with Triton installed; with kept attention and the fused q/k rope
   running without it, it saves a few percent on most models, against seconds to minutes of
   compiling on NVIDIA and 10 minutes or more on ROCm. A saved spec's `"auto"` still loads, as off,
-  and the log says so; the Fibo 2.0 recipe still asks for it.
+  and the log says so. No recipe turns it on: the Fibo 2.0 one did, a setting carried over from the
+  run it came from rather than one chosen for Fibo.
 
 ### Command line
 - **Specs from the command line:** `zt new [--profile ID] > spec.json` writes a complete spec with
