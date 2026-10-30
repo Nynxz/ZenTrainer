@@ -12,7 +12,7 @@ const { spec, choices, datasets, dataset, pairCount, stage0, resuming, controlCo
 const NK2E_TEMPLATE =
   'Make the following edit to the reference image, changing only what is requested and keeping everything else identical: {}'
 // start lower: one earlier stage at a lower resolution (the engine takes several; the form edits one)
-const LOWER = [512, 640, 768, 896]
+const LOWER = [256, 384, 512, 640, 768, 896]
 const lowerChoices = computed(() => LOWER.filter((r) => r < spec.dataset.resolution))
 const startLower = computed({
   get: () => !!spec.dataset.stages?.length,
@@ -98,9 +98,9 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
       </button>
     </div>
     <ZenField label="Add if missing" stack tip="Puts the trigger word at the start of any caption that doesn't have it, so every picture teaches it. Only while training: your caption files stay as they are"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
-    <ZenField label="Resolution" stack>
+    <ZenField label="Resolution" stack tip="Most models are made for about 1024. Lower has fewer pixels a step (256: a sixteenth), which on big models trains much faster and suits quick tests and coarse styles; on small models the saving is smaller. A LoRA trained low looks soft at full size">
       <div class="chips">
-        <button v-for="r in [512, 768, 1024, 1280]" :key="r" class="chip-btn" :class="{ on: spec.dataset.resolution === r }" @click="spec.dataset.resolution = r">
+        <button v-for="r in [256, 512, 768, 1024, 1280]" :key="r" class="chip-btn" :class="{ on: spec.dataset.resolution === r }" @click="spec.dataset.resolution = r">
           {{ r }}
         </button>
       </div>
@@ -112,7 +112,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
       </div>
     </ZenField>
     <template v-if="stage0">
-      <ZenField label="Lower resolution" stack :tip="`Steps at ${stage0.resolution} cost about 1/${lowerSpeedup} of one at ${spec.dataset.resolution}`">
+      <ZenField label="Lower resolution" stack :tip="`Steps at ${stage0.resolution} have 1/${lowerSpeedup} of the pixels of one at ${spec.dataset.resolution}: on big models they cost about that much less, on small ones the saving is smaller`">
         <div class="chips">
           <button v-for="r in lowerChoices" :key="r" class="chip-btn" :class="{ on: stage0.resolution === r }" @click="stage0.resolution = r">{{ r }}</button>
         </div>

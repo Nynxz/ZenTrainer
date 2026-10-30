@@ -12,7 +12,7 @@ const props = defineProps<{ name: string }>()
 const route = useRoute()
 const router = useRouter()
 
-const RESOLUTIONS = ['512', '768', '1024', '1280', '1536']
+const RESOLUTIONS = ['256', '512', '768', '1024', '1280', '1536']
 const resolution = ref<string>(RESOLUTIONS.includes(route.query.resolution as string) ? (route.query.resolution as string) : '1024')
 const set = computed(() => (route.query.set as string) || 'default')
 const data = ref<DatasetAnalysis | null>(null)
