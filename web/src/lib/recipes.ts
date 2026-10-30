@@ -232,7 +232,7 @@ export const RECIPES: Recipe[] = [
       network: { algorithm: 'LoRA', rank: 16, targets: 'attn_mlp' },
       optim: { optimizer: 'AdamW', learning_rate: 3e-5, lr_scheduler: 'constant', warmup_steps: 50, weight_decay: 0, batch_size: 1, grad_accumulation_steps: 1 },
       objective: { timesteps: 'uniform', shift: 0 },
-      memory: { int8_forward: true, int8_backward: 'w8a8', compile_blocks: true },
+      memory: { int8_forward: true, int8_backward: 'w8a8' },
       samples: { steps: 30, cfg: 5, sampler: 'euler', scheduler: 'simple', negative: '' },
     },
     samples: ['[trigger] in soft window light, a close up photo', '[trigger] outdoors on a sunny afternoon, candid photo, shallow depth of field'],

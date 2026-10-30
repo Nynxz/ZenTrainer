@@ -836,16 +836,12 @@ def test_skipped_blocks_get_no_adapters():
         TrainSpec.from_dict({**_spec(), "network": {"skip_blocks": "layers.22"}})
 
 
-def test_compile_is_auto_unless_set(monkeypatch):
+def test_compile_is_only_when_turned_on():
     from zentrainer.harness.kernels import compile as comp
 
     assert comp.wanted(True, 10) == (True, "") and comp.wanted(False, 5000) == (False, "")
-    monkeypatch.setattr(comp.os, "name", "posix")
-    monkeypatch.setattr("importlib.util.find_spec", lambda name: object() if name == "triton" else None)
-    assert comp.wanted("auto", comp.AUTO_STEPS)[0]
-    assert not comp.wanted("auto", comp.AUTO_STEPS - 1)[0]  # too short to repay the compile
-    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
-    assert not comp.wanted("auto", 5000)[0]  # no Triton
+    on, why = comp.wanted("auto", 100_000)  # an older spec's "auto" is off, and says so
+    assert not on and "off unless turned on" in why
 
 
 def test_the_fused_qk_rope_is_auto_by_default():

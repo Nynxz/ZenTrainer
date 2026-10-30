@@ -46,7 +46,7 @@ def test_a_spec_file_can_name_the_schema():
 
 def test_the_defaults_pass_their_own_checks():
     s = TrainSpec.from_dict(BASE)
-    assert s.memory.compile_blocks == "auto" and s.validation.noise_levels == 4
+    assert s.memory.compile_blocks is False and s.validation.noise_levels == 4
 
 
 @pytest.mark.parametrize("section,field,value,says", [

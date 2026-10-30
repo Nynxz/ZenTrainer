@@ -121,9 +121,9 @@ lists the rest. Guides: [docs/cli.md](docs/cli.md), [docs/api.md](docs/api.md) (
 - `zt attach /path/to/ComfyUI` links the engine into a ComfyUI you already have instead
 - Your work lives in `comfyui/input/` (datasets), `comfyui/output/zentrainer/loras/` and
   `comfyui/user/zentrainer/` (runs): reinstall with `zt update`, not by deleting `comfyui/`
-- **Compiled blocks**: the first run at a new resolution builds its kernels, a few minutes on
-  Linux with NVIDIA and 10–25 on ROCm or Windows. They're cached in `~/.triton`, so later runs
-  start fast
+- **Compiled blocks** (off unless turned on, in Memory → Compile blocks): the first run at a new
+  resolution builds its kernels, a few minutes on Linux with NVIDIA and 10–25 on ROCm or Windows.
+  They're cached in `~/.triton`, so later runs start fast
 
 ## How it works
 
