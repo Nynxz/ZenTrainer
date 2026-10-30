@@ -171,4 +171,5 @@ uv run --with playwright --with pillow --no-project python docs/banner/render.py
 - **[Fizgig](https://github.com/shootthesound/Fizgig)** by Peter Neill: the W8A16 int8 backward
   kernel (by mabseyuk; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), and the measurements
   behind a few defaults: EMA 0.98, MiniMax H3's adapter blocks 20-49 and the sharpest-frame clip stills.
+- **@0xDELUXA:** AMD support's start: the ROCm PyTorch setup and whole-card VRAM on Windows (#1).
 - **@aksugat:** the RDNA3 int8 tile set, swept on an RX 7800 XT.
