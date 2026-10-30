@@ -551,7 +551,7 @@ class Trainer:
                             progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
             if s.slider.kind == "pairs":
                 self._keep_pairs(ds)
-            self._stages.append((float(st["until"]), res, ds, data.Batches(ds, s.optim.batch_size, s.seed + res)))
+            self._stages.append((float(st["until"]), res, ds, data.Batches(ds, st.get("batch_size") or s.optim.batch_size, s.seed + res)))
         self._final_stage = (s.dataset.resolution, self.dataset, self.batches)
         self._res_seen = 0
         if self._stages:
@@ -626,9 +626,10 @@ class Trainer:
         self.objective = Objective(s.objective)
         self.denoiser = Denoiser(patcher, attention_override(s.memory.attention))
         self.streams = Streams(patcher.model)
-        if self.streams.multi and s.optim.batch_size > 1:
+        biggest = max([s.optim.batch_size] + [int(st.get("batch_size") or 1) for st in s.dataset.stages])
+        if self.streams.multi and biggest > 1:
             raise ValueError(f"{type(patcher.model).__name__} trains one image per step: set batch size 1 "
-                             f"and use gradient accumulation {s.optim.batch_size} instead")
+                             f"and use gradient accumulation {biggest} instead")
         self._shift = s.objective.shift
         if self._shift and not is_flow(self.denoiser.model_sampling):
             raise ValueError(f"objective.shift is for flow-matching models; {type(self.denoiser.model_sampling).__name__} isn't one. Set it to 0.")
