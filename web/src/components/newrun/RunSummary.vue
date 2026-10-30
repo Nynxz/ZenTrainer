@@ -7,6 +7,7 @@ import { useRouter } from 'vue-router'
 import { EngineError, engine, promptText } from '@/api/engine'
 import SaveRecipe from '@/components/SaveRecipe.vue'
 import { useRunFormContext } from './form'
+import { captionPrompts } from '@/lib/recipes'
 
 const router = useRouter()
 const saveOpen = ref(false) // where you'd think of it: as you start a run
@@ -23,7 +24,8 @@ const warnings = computed(() => {
   const masked = dataset.value?.masked ?? 0
   if (masked && !spec.dataset.masked_loss)
     w.push(`${masked} picture${masked === 1 ? ' has a mask' : 's have masks'}, but Masked training is off: the parts the masks leave out train too.`)
-  if (!spec.samples.prompts.length) w.push('No sample prompts: you will only see the loss curves.')
+  if (!slider && !spec.samples.prompts.length) w.push("No sample prompts: two of the dataset's captions will be used, so the run has previews.")
+  else if (slider && !spec.samples.prompts.length) w.push('No sample prompts: you will only see the loss curves.')
   else if (!spec.samples.every) w.push('Samples are off (Every 0): only Sample now renders them, so checkpoints get no samples or likeness. Set Every to the save interval.')
   else if (spec.output.save_every && spec.output.save_every % spec.samples.every && !spec.output.keep.startsWith('likeness')) w.push(`Samples every ${spec.samples.every} don't land on the saves every ${spec.output.save_every}: checkpoints get no samples or likeness to compare.`)
   else if (!slider && spec.dataset.trigger && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
@@ -70,10 +72,23 @@ async function saveEdit() {
   }
 }
 
+/** a run started with no sample prompts still gets previews: two of the dataset's own captions (the
+ *  caption set it trains on), with the trigger, as Simple mode's recipes do; just the trigger if none
+ *  are long enough. A slider's previews are its own, so it's left as it is */
+async function defaultPrompts() {
+  if (spec.samples.prompts.length || spec.slider?.kind || !spec.dataset.folder) return
+  const set = spec.dataset.caption_set
+  const items = await engine.dataset(spec.dataset.folder).then((d) => d.items).catch(() => [])
+  const captions = items.map((i) => (set && set !== 'default' ? i.captions?.[set] : i.caption) ?? i.caption ?? '')
+  const picked = captionPrompts(captions, spec.dataset.trigger, 'general')
+  spec.samples.prompts = picked.length ? picked : ['[trigger]']
+}
+
 async function start(position: 'next' | 'end' = 'next') {
   submitting.value = true
   error.value = null
   try {
+    await defaultPrompts()
     const run = await engine.start(spec, position)
     router.push(`/runs/${run.run_id}`)
   } catch (e) {
