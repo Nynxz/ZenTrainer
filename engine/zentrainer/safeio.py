@@ -29,10 +29,23 @@ def write_bytes(path: str | os.PathLike, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _replace(tmp: Path, path: Path) -> None:
+    # Windows: os.replace fails with WinError 5 while another process (the web app polling run.json,
+    # an antivirus scan) has the target open; the lock is brief, so retry for a few seconds
+    for attempt in range(100):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 99:
+                raise
+            time.sleep(0.05)
 
 
 def write_text(path: str | os.PathLike, text: str, encoding: str = "utf-8") -> None:
