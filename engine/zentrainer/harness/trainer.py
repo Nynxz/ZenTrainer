@@ -914,6 +914,7 @@ class Trainer:
             # no room at all (Krea 2: 24.8 GB of 25.8 at 1024, none kept)
             self._peak = 0
             if torch.cuda.is_available():
+                torch.cuda.empty_cache()  # the lower stage's cached reservations, or the peak keeps them
                 torch.cuda.reset_peak_memory_stats()
         if not self._auto_vram() or not getattr(self, "_first_resident", None):
             return
@@ -1102,7 +1103,9 @@ class Trainer:
         cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
-        if getattr(self, "_backoffs", 0):  # the margin's worth wasn't enough: half of them, not one more
+        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES - 1:  # the last retry: none kept, all checkpointed
+            drop = was
+        elif getattr(self, "_backoffs", 0):  # the margin's worth wasn't enough: half of them, not one more
             drop = max(drop, (was + 1) // 2)
         self._keep_ceiling = self._kept(max(0, was - drop))
         logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)

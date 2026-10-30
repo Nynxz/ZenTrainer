@@ -43,6 +43,8 @@ def test_an_out_of_vram_step_halves_the_kept_blocks_once_the_margin_wasnt_enough
     t._backoffs = 1
     assert t._back_off_kept() and t._ckpt.kept == 4  # again: half
     assert t._keep_ceiling == 4  # and never more again
+    t._backoffs = T.TIGHTEN_RETRIES - 1
+    assert t._back_off_kept() and t._ckpt.kept == 0  # the last retry tries none kept
 
 
 def test_a_new_resolution_measures_its_peak_afresh():
