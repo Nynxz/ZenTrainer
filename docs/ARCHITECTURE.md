@@ -131,7 +131,12 @@ and calls ComfyUI **as a library** for everything else.
   weights for sampling, validation and saving.
 - **Presets** (`presets.py`): partial specs the user saves that layer, and sample-prompt
   sets, under `<user>/zentrainer/presets/`. The run form's ready-made starting points are
-  Simple mode's recipes (`web/src/lib/recipes.ts`), applied from its "Apply a recipe" dialog.
+  Simple mode's recipes, applied from its "Apply a recipe" dialog.
+- **Recipes** (`engine/catalog/recipes/`): one JSON file each, a run's settings for a model
+  (its files, length, captions, sample prompts) with `notes` on the runs behind them; what they
+  share (order, caption prompts, photo guidance) is `_shared.json`. Built into the web app
+  (`web/src/lib/recipes.ts`), served at `GET /zentrainer/api/recipes` (`models/recipes.py`), and
+  every one checked against the spec by `tests/engine/test_recipes.py`.
 - **Timing**: `train_time` counts optimizer steps only; `it_s` is per step, so sampling
   and validation don't read as slowdowns.
 

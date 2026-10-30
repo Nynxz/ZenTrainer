@@ -1,0 +1,42 @@
+{
+  "id": "krea2-character",
+  "title": "Krea 2 · Character",
+  "model": "Krea 2",
+  "family": "krea-2",
+  "kind": "character",
+  "blurb": "A person or character, photoreal. Previews on Krea 2 Turbo in 8 steps.",
+  "notes": [
+    "Validated: Automagic v3 at 1e-4 on 37 photos reached likeness 0.53 at 1500 steps and was still climbing, so ~46 steps a photo (1700 for that set).",
+    "dataset.stages: 768 for the first 60%, blending into 1024 by 80%: identity is learned early, detail last. Not validated with the stage yet (the 0.53 above was 1024 throughout)."
+  ],
+  "icon": "mdi mdi-account-star-outline",
+  "photos": "character",
+  "files": {
+    "diffusion_models": ["krea2_raw_int8_convrot.safetensors", "krea2_raw_bf16.safetensors"],
+    "text_encoders": ["qwen3vl_4b_int8_convrot.safetensors", "qwen3vl_4b_fp8_scaled.safetensors"],
+    "vae": ["qwen_image_vae.safetensors"]
+  },
+  "steps": 2000,
+  "caption": {"prompt": "nl", "subject": true},
+  "samples": [
+    "[trigger], a close up portrait photo, soft window light",
+    "[trigger] walking down a city street at night, candid photo, neon signs"
+  ],
+  "spec": {
+    "dataset": {
+      "resolution": 1024,
+      "stages": [{"resolution": 768, "until": 0.6}],
+      "stage_blend": 0.2
+    },
+    "network": {"rank": 16},
+    "optim": {"optimizer": "Automagic3", "learning_rate": 0.0001, "lr_scheduler": "constant"},
+    "objective": {"timesteps": "uniform", "shift": 0},
+    "samples": {
+      "steps": 8,
+      "cfg": 1,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "model_name": "krea2_turbo_int8_convrot.safetensors"
+    }
+  }
+}

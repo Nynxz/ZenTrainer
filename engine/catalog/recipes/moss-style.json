@@ -1,0 +1,56 @@
+{
+  "id": "moss-style",
+  "title": "MOSS Image · Style",
+  "model": "MOSS Image",
+  "family": "moss-image",
+  "kind": "style",
+  "blurb": "A look: an art style, a palette, a way of drawing. Apply it to anything with the trigger word.",
+  "notes": [
+    "Draft, not trained yet: two MOSS style LoRAs (ai-toolkit, rank 32, attention and MLPs) cut to block ranges and rendered on fixed seeds kept nothing of their style in blocks 34-41 (0-2% of the full change), where a character's likeness lives, so those blocks stay the base's.",
+    "optim: the character LoRAs' (at 1e-4 every MOSS LoRA we trained trailed); Automagic v3 stalls on MOSS without a floor under its rate."
+  ],
+  "icon": "mdi mdi-palette-outline",
+  "photos": "style",
+  "files": {
+    "diffusion_models": [
+      "moss_image_base_int8_convrot.safetensors",
+      "moss_image_base_bf16.safetensors"
+    ],
+    "text_encoders": ["qwen3.5_9b_int8_convrot.safetensors"],
+    "vae": ["flux2-vae.safetensors"]
+  },
+  "steps": 2000,
+  "caption": {"prompt": "style", "subject": false},
+  "samples": [
+    "[trigger], a lighthouse on a cliff at dusk",
+    "[trigger], a portrait of an old fisherman",
+    "[trigger], a bowl of fruit on a table"
+  ],
+  "spec": {
+    "dataset": {"resolution": 1024},
+    "network": {
+      "algorithm": "LoRA",
+      "rank": 32,
+      "alpha": 32,
+      "targets": "attn_mlp",
+      "blocks": "0-33"
+    },
+    "optim": {
+      "optimizer": "Automagic3",
+      "learning_rate": 0.0003,
+      "lr_scheduler": "constant",
+      "ema": 0.98,
+      "lr_floor": 0.5
+    },
+    "objective": {"timesteps": "logit_normal", "shift": 0},
+    "samples": {
+      "steps": 25,
+      "cfg": 2.5,
+      "sampler": "er_sde",
+      "scheduler": "simple",
+      "slg_mode": "uncond",
+      "slg_layers": [22],
+      "slg_start": 0
+    }
+  }
+}

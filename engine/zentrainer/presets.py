@@ -5,7 +5,7 @@
 
 The user's live in <user>/zentrainer/presets/<kind>/. Built-ins would ship in
 engine/presets/<kind>/ and lose to the user's on an id clash; none ship now (the run form's
-starting points are the recipes, web/src/lib/recipes.ts).
+starting points are the recipes, engine/catalog/recipes/).
 """
 
 from __future__ import annotations

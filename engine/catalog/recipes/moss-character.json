@@ -1,0 +1,55 @@
+{
+  "id": "moss-character",
+  "title": "MOSS Image · Character",
+  "model": "MOSS Image",
+  "family": "moss-image",
+  "kind": "character",
+  "validated": true,
+  "blurb": "A person or character on MOSS Image Base. Trains only where a likeness lives: over twice as fast.",
+  "notes": [
+    "Validated: LoKr factor 4 on the MLPs of blocks 24-41 (36 of 176 layers, where a full run's change concentrated) reached likeness 0.63 at 1750 steps on 37 photos, 87% of the set's own 0.72, against ~0.67 for every layer. 0.2 s a step against 0.53, a 170 MB file against 620 MB.",
+    "optim.lr_floor: Automagic v3 stalls on MOSS without a floor under its rate.",
+    "samples: previews on the trained Base model, as the likeness above was measured."
+  ],
+  "icon": "mdi mdi-account-heart-outline",
+  "photos": "character",
+  "files": {
+    "diffusion_models": [
+      "moss_image_base_int8_convrot.safetensors",
+      "moss_image_base_bf16.safetensors"
+    ],
+    "text_encoders": ["qwen3.5_9b_int8_convrot.safetensors"],
+    "vae": ["flux2-vae.safetensors"]
+  },
+  "steps": 1750,
+  "caption": {"prompt": "nl", "subject": true},
+  "samples": [
+    "[trigger], a close up portrait photo, soft window light",
+    "[trigger] sitting in a cafe, candid photo"
+  ],
+  "spec": {
+    "dataset": {
+      "resolution": 1024,
+      "stages": [{"resolution": 768, "until": 0.6}],
+      "stage_blend": 0.2
+    },
+    "network": {"algorithm": "LoKr", "rank": 4, "targets": "mlp", "blocks": "24-41"},
+    "optim": {
+      "optimizer": "Automagic3",
+      "learning_rate": 0.0005,
+      "lr_scheduler": "constant",
+      "ema": 0.98,
+      "lr_floor": 0.5
+    },
+    "objective": {"timesteps": "logit_normal", "shift": 0, "bias": "high_noise", "spread": true},
+    "samples": {
+      "steps": 25,
+      "cfg": 2.5,
+      "sampler": "er_sde",
+      "scheduler": "simple",
+      "slg_mode": "uncond",
+      "slg_layers": [22],
+      "slg_start": 0
+    }
+  }
+}

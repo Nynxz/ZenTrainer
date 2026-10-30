@@ -81,6 +81,10 @@ was looked over, route by route. ComfyUI only listens on this machine unless it'
   plain lines instead (a numbered list to pick from, Enter for the default).
 
 ### Run form and look
+- **Recipes are data now**, one JSON file each in `engine/catalog/recipes/` instead of code in the
+  web app: easier to read, change and add to, with the runs behind each one's settings in its
+  `notes`. The engine serves them too (`GET /zentrainer/api/recipes`), and a test checks every one
+  against the run settings, so a mistyped setting fails there rather than when someone trains.
 - **Isotope is the theme a first visit starts in** (the README's look), instead of Zen. A theme
   you picked stays picked.
 - **Simple mode, tidied:** recipe cards are grouped by kind (People & characters, Styles, Any
