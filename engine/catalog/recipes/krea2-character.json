@@ -4,10 +4,10 @@
   "model": "Krea 2",
   "family": "krea-2",
   "kind": "character",
+  "validated": true,
   "blurb": "A person or character, photoreal. Previews on Krea 2 Turbo in 8 steps.",
   "notes": [
-    "Validated: Automagic v3 at 1e-4 on 37 photos reached likeness 0.53 at 1500 steps and was still climbing, so ~46 steps a photo (1700 for that set).",
-    "dataset.stages: 768 for the first 60%, blending into 1024 by 80%: identity is learned early, detail last. Not validated with the stage yet (the 0.53 above was 1024 throughout)."
+    "Validated as written: Automagic v3 at 1e-4, 768 px for the first 60% then 1024 blended in over 20%, on 37 photos: likeness 0.65 at 250 steps, 0.69 at 500, 0.78 at 1500, 0.73-0.75 at 2000. 1024 throughout had reached 0.53 at 1500."
   ],
   "icon": "mdi mdi-account-star-outline",
   "photos": "character",
