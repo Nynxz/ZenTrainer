@@ -43,6 +43,9 @@ const CUSTOM = '__custom'
 const families = ref<ModelFamily[]>([])
 const famId = ref<string>('')
 let userPicked = false
+// the model file last picked from a family's own list (one of yours, say), and that family: the spec
+// changing to it isn't a change from outside. Cleared when the family changes
+let pickedHere: { fam: string; value: string } | null = null
 const fam = ref<ModelFamily | null>(null)
 const loadingRepo = ref(false)
 const error = ref<string | null>(null)
@@ -92,8 +95,19 @@ function fileOf(folder: ModelFolder, name?: string | null): ModelFile | undefine
 /** what a part's list shows as picked: a catalog file by its name, one of yours by its path */
 const pickedValue = (folder: ModelFolder, value?: string | null) => {
   const f = fileOf(folder, value)
-  return f && (fam.value?.files[folder] ?? []).includes(f) ? f.name : (f?.installed ?? base(value))
+  if (f && (fam.value?.files[folder] ?? []).includes(f)) return f.name
+  // one of yours only when the spec names its path: a bare name that matches it stays as written
+  // (missing) until it's picked, so the list never shows a file the spec doesn't load
+  return f?.installed && f.installed === value ? f.installed : (value ?? '')
 }
+/** the file a part's status is about: a catalog file, or one of yours only at the exact path the spec
+ *  names (a bare name that matches yours isn't loadable as written: pick your copy) */
+const partFile = (folder: ModelFolder, value?: string | null) => {
+  const f = fileOf(folder, value)
+  return f && !(fam.value?.files[folder] ?? []).includes(f) && f.installed !== value ? undefined : f
+}
+/** a part's file is here: a catalog file installed, or one of yours by the exact path the spec names */
+const installedFor = (folder: ModelFolder, value?: string | null) => !!partFile(folder, value)?.installed
 
 // which family the current spec already uses (a duplicated run, a preset)
 function detect(list: ModelFamily[]): string {
@@ -136,12 +150,14 @@ function redetect() {
   if (!families.value.length) return
   const m = model.value
   const key = base(m.kind === 'checkpoint' ? m.ckpt_name : m.unet_name)
+  if (pickedHere && pickedHere.fam === famId.value && pickedHere.value === (m.kind === 'checkpoint' ? m.ckpt_name : m.unet_name)) return
   const cur = families.value.find((f) => f.id === famId.value)
   if (cur && (cur.files[m.kind === 'checkpoint' ? 'checkpoints' : 'diffusion_models'] ?? []).some((x) => x.name === key)) return
   if (!key && famId.value) return
   const next = detect(families.value)
   if (next !== famId.value) {
     userPicked = false
+    pickedHere = null
     famId.value = next
   }
 }
@@ -196,12 +212,15 @@ watch(famId, async (id, old) => {
 })
 const pick = (id: string | number) => {
   userPicked = true
+  if (String(id) !== famId.value) pickedHere = null
   famId.value = String(id)
 }
 
 function setFile(folder: ModelFolder, key: keyof ModelValue, name: string | number) {
   const f = fileOf(folder, String(name))
-  model.value = { ...model.value, [key]: f ? (f.installed ?? f.name) : String(name) }
+  const value = f ? (f.installed ?? f.name) : String(name)
+  if (folder === 'checkpoints' || folder === 'diffusion_models') pickedHere = { fam: famId.value, value }
+  model.value = { ...model.value, [key]: value }
 }
 
 // install state changes as downloads land: refresh the family and swap in the local names
@@ -218,7 +237,7 @@ watch(finished, async () => {
   families.value = families.value.map((x) => (x.id === full.id ? { ...x, missing: full.missing } : x))
 })
 
-const missingParts = computed(() => parts.value.filter((p) => !fileOf(p.folder, model.value[p.key] as string)?.installed))
+const missingParts = computed(() => parts.value.filter((p) => !installedFor(p.folder, model.value[p.key] as string)))
 watch(
   [missingParts, fam],
   () => emit('missing', fam.value ? missingParts.value.length : 0),
@@ -425,8 +444,9 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
         </ZenCombo>
         <!-- fixed-width status column: installed / download / progress, without shifting the row -->
         <div class="p-state">
-          <template v-for="f in [fileOf(p.folder, model[p.key] as string)]" :key="p.folder">
+          <template v-for="f in [partFile(p.folder, model[p.key] as string)]" :key="p.folder">
             <FileState v-if="f && fam" :family="fam.id" :file="f" @error="error = $event" />
+            <span v-else-if="fileOf(p.folder, model[p.key] as string)" class="muted" title="Your copy is at another path: pick it from the list">not at this path: pick it</span>
             <span v-else class="muted">not in the catalog</span>
           </template>
         </div>
