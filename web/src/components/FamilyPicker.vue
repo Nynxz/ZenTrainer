@@ -11,7 +11,7 @@ import { fmtAdded, fmtBytes, finished, hfToken, isNew, startDownloadSync, target
 import FileState from './FileState.vue'
 import StarButton from './StarButton.vue'
 import { isStarred, starredFirst } from '@/stores/favorites'
-import { isOther, makerLogo } from '@/lib/makers'
+import { isOther, isUntested, makerLogo } from '@/lib/makers'
 import type { ModelValue } from './ModelPicker.vue'
 
 export interface SampleSuggestion extends SampleDefaults {
@@ -258,7 +258,7 @@ const logoOf = (item: unknown) => {
   const f = (item as { f?: ModelFamily | null } | null)?.f
   return f ? makerLogo(f.id) : null
 }
-const hidden = (f: ModelFamily) => isOther(f.id) && !isStarred(f.id) && f.id !== famId.value
+const hidden = (f: ModelFamily) => isOther(f) && !isStarred(f.id) && f.id !== famId.value
 const otherCount = computed(() => families.value.filter(hidden).length)
 const familyItems = computed(() => [
   ...starredFirst(families.value, (f) => f.id)
@@ -339,6 +339,7 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
             :class="(item.f as ModelFamily).profile!.status === 'verified' ? 'mdi-check-decagram' : 'mdi-check-circle-outline'"
             :title="(item.f as ModelFamily).profile!.status === 'verified' ? 'Tuned: trained and checked with hand-picked settings' : 'Hand-picked settings from the model makers'"
           />
+          <span v-if="item.f && isUntested(item.f as ModelFamily)" class="tag untested" title="Nobody has trained this model with ZenTrainer yet: it may work, or not">untested</span>
           <span v-if="item.f && isNew((item.f as ModelFamily).added)" class="tag new" :title="`Added ${fmtAdded((item.f as ModelFamily).added)}`">new</span>
           <span v-if="item.f" class="fam-status" :class="{ ready: !(item.f as ModelFamily).missing.length }" :title="statusTip(item.f as ModelFamily)">
             <i :class="(item.f as ModelFamily).missing.length ? 'mdi mdi-download-outline' : 'mdi mdi-check-circle'" />
@@ -609,6 +610,10 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
 .tag.new {
   background: color-mix(in srgb, var(--zen-ok) 18%, transparent);
   color: var(--zen-ok);
+}
+.tag.untested {
+  background: color-mix(in srgb, var(--zen-muted) 14%, transparent);
+  color: var(--zen-muted);
 }
 .tag {
   font-size: 10px;
