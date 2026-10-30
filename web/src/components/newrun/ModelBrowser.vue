@@ -8,7 +8,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { engine, type ModelFamily } from '@/api/engine'
 import ScrollArea from '@/components/ScrollArea.vue'
 import StarButton from '@/components/StarButton.vue'
-import { isOther, makerLogo } from '@/lib/makers'
+import { isOther, isTested, makerLogo } from '@/lib/makers'
 import { RECIPES } from '@/lib/recipes'
 import { fmtBytes } from '@/stores/downloads'
 import { isStarred } from '@/stores/favorites'
@@ -138,7 +138,7 @@ function details(id: string | null) {
                 <i v-else class="mdi mdi-cube-outline" />
               </span>
               <span class="item-text">
-                <span class="item-title">{{ f.name }}<span v-if="f.id === current" class="here">in this run</span></span>
+                <span class="item-title">{{ f.name }}<span v-if="!isTested(f.id)" class="untested" title="Nobody has trained this model with ZenTrainer yet: it may work, or not">untested</span><span v-if="f.id === current" class="here">in this run</span></span>
                 <span class="item-blurb">
                   <template v-if="ready(f)"><i class="mdi mdi-check-circle ok" /> installed</template>
                   <template v-else>{{ f.missing.length }} to download</template>
@@ -342,6 +342,11 @@ function details(id: string | null) {
   font-size: 10px;
   font-weight: 500;
   color: var(--zen-accent);
+}
+.untested {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--zen-muted);
 }
 .detail-in {
   padding: 18px 20px 20px;

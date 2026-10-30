@@ -196,3 +196,14 @@ def test_profiles_load_and_validate(tmp_path):
     (tmp_path / "ok.json").write_text(json.dumps({"families": ["a", "b"], "status": "verified", "samples": {"steps": 8}}))
     got = profiles.load(tmp_path)
     assert set(got) == {"a", "b"} and got["a"]["id"] == "ok" and got["a"]["notes"] == []  # bad one skipped, defaults filled
+
+
+def test_only_families_trained_here_are_tested(monkeypatch):
+    # families.json's `tested`: those are listed as models; one the catalog finds that nobody has
+    # trained (a new template, a new repo) is untested, under Other models
+    cat = families._catalog()
+    assert cat["tested"] and len(set(cat["tested"])) == len(cat["tested"])
+    for fid, want in (("moss-image", True), ("some-new-model", False)):
+        assert Family(fid, fid, "split", None, [], []).public()["tested"] is want
+    # what ZenTrainer can't train at all is left out of the catalog
+    assert families.correction("ming-3-0-tts").get("hide")

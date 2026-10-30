@@ -12,9 +12,15 @@ interface Entry {
   other?: boolean
 }
 const ENTRIES = ((catalog as { families?: Entry[] }).families ?? []).map((e) => ({ ...e, re: new RegExp(e.match) }))
+const TESTED = new Set((catalog as { tested?: string[] }).tested ?? [])
 
-/** a family few people train: listed under "Other models" in the picker, out of the main list */
-export const isOther = (familyId: string | null | undefined) => !!ENTRIES.find((e) => e.re.test((familyId ?? '').toLowerCase()))?.other
+/** a family that has trained end to end here (families.json's `tested`); the rest are untested */
+export const isTested = (familyId: string | null | undefined) => TESTED.has((familyId ?? '').toLowerCase())
+
+/** listed under "Other models" in the pickers, out of the main list: a family few people train, or
+ *  one nobody has trained here yet */
+export const isOther = (familyId: string | null | undefined) =>
+  !isTested(familyId) || !!ENTRIES.find((e) => e.re.test((familyId ?? '').toLowerCase()))?.other
 
 /** the family's maker and logo (served from the app's web/public/logos/), or null */
 export function makerLogo(familyId: string | null | undefined): { src: string; mono: boolean; maker: string } | null {
