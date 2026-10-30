@@ -1,0 +1,24 @@
+{
+  "families": ["anima"],
+  "status": "recipe",
+  "summary": "Sampling as ComfyUI's Anima template does: Euler, 30 steps, CFG 4, with its negative prompt.",
+  "sources": [
+    {"label": "ComfyUI's Anima Base template (image_anima_base_v1)", "url": "https://github.com/Comfy-Org/workflow_templates"}
+  ],
+  "train": {
+    "dataset": {"resolution": 1024}
+  },
+  "samples": {
+    "steps": 30,
+    "cfg": 4.0,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "negative": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+  },
+  "notes": [
+    "Keep a negative prompt: at CFG 4 an empty one draws streaks of noise, before any training (the base model in plain ComfyUI does the same).",
+    "An anime model: prompts in its own style (\"1girl, solo, long silver hair, ...\") come out cleanest; photo prompts drift.",
+    "A trigger that's a real word is read as one (\"aurora\" draws the northern lights): a made-up word trains cleaner.",
+    "Shift 3 is ComfyUI's default for Anima already."
+  ]
+}
