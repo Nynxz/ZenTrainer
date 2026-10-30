@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-zentrainer"
-version = "0.4.0"
+version = "0.4.1"
 description = "LoRA training and inference apps for ComfyUI: open /zentrainer/ after installing."
 license = { text = "MIT" }
 requires-python = ">=3.10"

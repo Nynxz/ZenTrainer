@@ -3,6 +3,13 @@
 What changed in each ZenTrainer release, newest first. Versions are the ones the ComfyUI Registry
 and Manager show.
 
+## 0.4.1 (2026-10-31)
+
+- **The container image builds again.** 0.4.0's didn't (the app's build reads its version from
+  the engine, which the image's web stage didn't copy), so `ghcr.io/nynxz/zentrainer:latest` and
+  the RunPod template stayed on the release before. This one publishes `:0.4.1` and `:latest`.
+- The README credits the start of ZenTrainer's AMD support.
+
 ## 0.4.0 (2026-10-30)
 
 ### Security
