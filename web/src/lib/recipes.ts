@@ -148,7 +148,7 @@ export function buildSpec(
   r: Recipe,
   p: Plan,
   base: TrainSpec,
-  o: { name: string; trigger: string; dataset: string; captions?: string[]; masks?: number },
+  o: { name: string; trigger: string; dataset: string; masks?: number },
 ): TrainSpec {
   const spec = structuredClone(base)
   merge(spec as unknown as Record<string, unknown>, r.spec as Record<string, unknown>)
@@ -170,10 +170,9 @@ export function buildSpec(
   spec.dataset.masked_loss = (o.masks ?? 0) > 0
   spec.optim.steps = r.steps
   spec.output.save_every = spec.samples.every = checkpointEvery(spec.optim.steps)
-  // the recipe's first prompt (somewhere new), plus two of the dataset's own captions: the
-  // closest check that it learned what's in the photos
-  spec.samples.prompts = [r.samples[0]!, ...captionPrompts(o.captions ?? [], o.trigger, r.kind)].slice(0, 3)
-  if (spec.samples.prompts.length < 2) spec.samples.prompts = r.samples
+  // the recipe's own prompts: not the dataset's captions, which would go into every LoRA's metadata
+  // with the spec
+  spec.samples.prompts = r.samples
   spec.samples.baseline = true
   spec.samples.model_name = p.sampleModel
   if (!p.sampleModel && r.spec.samples?.model_name) {
@@ -183,19 +182,6 @@ export function buildSpec(
   }
   spec.validation.every = 0
   return spec
-}
-
-/** Two captions as sample prompts: shortish ones, spread through the set, with the trigger. */
-export function captionPrompts(captions: string[], trigger: string, kind: Recipe['kind']): string[] {
-  const usable = captions.map((c) => c.trim()).filter((c) => c.length > 20)
-  if (!usable.length) return []
-  const pick = [usable[Math.floor(usable.length / 3)]!, usable[Math.floor((usable.length * 2) / 3)]!]
-  return [...new Set(pick)].map((c) => {
-    const short = c.length > 300 ? `${c.slice(0, 300).replace(/[^.,;]*$/, '').replace(/[,;\s]+$/, '')}` : c
-    const has = trigger && short.toLowerCase().includes(trigger.toLowerCase())
-    void kind
-    return has ? short : `[trigger], ${short}`
-  })
 }
 
 /** A recipe over a run that's already set up (the run form's recipes): its settings, model files

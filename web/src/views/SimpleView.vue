@@ -330,7 +330,6 @@ async function train() {
       name: name.value.trim(),
       trigger: trigger.value,
       dataset: dsName.value,
-      captions: items.value.map((i) => i.caption),
       masks: items.value.filter((i) => i.mask).length,
     })
     const run = await engine.start(spec)
