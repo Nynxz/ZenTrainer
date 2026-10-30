@@ -16,7 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 COMFYUI = Path(os.environ.get("ZT_COMFYUI") or ROOT / "comfyui")
-FAMILIES = ["moss", "krea2", "fibo2", "flux3", "h3"]  # smoke.py's FAMILIES
+FAMILIES = ["moss", "krea2", "fibo2", "flux3", "h3", "anima"]  # smoke.py's FAMILIES
 
 
 def _python() -> str:

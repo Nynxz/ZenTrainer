@@ -21,9 +21,9 @@ fused_qk_rope = False  # memory.fused_qk_rope, set by the trainer before each ru
 def apply(qk_rope: bool = False) -> None:
     global fused_qk_rope
     fused_qk_rope = qk_rope
-    from . import flux3, krea2, minimax_h3, moss, qwen_image21
+    from . import cosmos, flux3, krea2, minimax_h3, moss, qwen_image21
 
-    for model in (minimax_h3, flux3, krea2, moss, qwen_image21):
+    for model in (minimax_h3, flux3, krea2, moss, qwen_image21, cosmos):
         model.apply()
     if qk_rope:
         logging.info("[ZenTrainer] fused q/k norm + rope while training, for Krea 2, MOSS and MiniMax H3 (memory.fused_qk_rope)")
