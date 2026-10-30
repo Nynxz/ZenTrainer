@@ -5,7 +5,7 @@
   in the black (not trained) part of a picture's mask doesn't count: mask out a bystander and they
   stop being an "extra face" (with Masked training on, they aren't trained either).
 - Likeness: how much a sample's face looks like the dataset's, per sample and checkpoint, so the
-  best checkpoint of a character LoRA is a number instead of a guess (Fizgig's likeness scoring).
+  best checkpoint of a character LoRA is a number instead of a guess.
 
 The recognition model is a setting (face_model): buffalo_l's ArcFace R50, antelopev2's larger
 R100, which tells similar faces apart better and is slower on the CPU, or AuraFace with YuNet for

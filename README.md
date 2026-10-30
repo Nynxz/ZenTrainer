@@ -160,3 +160,13 @@ comfyui/.venv/bin/python scripts/devrun.py examples/sdxl-quick.json --comfy comf
 uv run --with playwright --with pillow --no-project python docs/banner/shots.py --url http://127.0.0.1:8188 --run <id> --dataset <folder>
 uv run --with playwright --with pillow --no-project python docs/banner/render.py
 ```
+
+## Credits
+
+- **Faces:** likeness scoring and the dataset face report run on [InsightFace](https://github.com/deepinsight/insightface)'s
+  ArcFace models, or for commercial use on fal's [AuraFace](https://huggingface.co/fal/AuraFace-v1)
+  with OpenCV's YuNet detector.
+- **[Fizgig](https://github.com/shootthesound/Fizgig)** by Peter Neill: the W8A16 int8 backward
+  kernel (by mabseyuk; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), and the measurements
+  behind a few defaults: EMA 0.98, MiniMax H3's adapter blocks 20-49 and the sharpest-frame clip stills.
+- **@aksugat:** the RDNA3 int8 tile set, swept on an RX 7800 XT.
