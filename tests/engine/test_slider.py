@@ -149,3 +149,22 @@ def test_the_data_build_gets_each_pictures_partner():
     assert (built.edit, built.edit_method, built.control_sets, built.edit_grounded) == (True, "concat", ["cool"], False)
     t.spec.slider.kind = ""
     assert t._data_spec(DatasetSpec(folder="d")).edit is False
+
+
+def test_a_loras_metadata_has_how_it_was_trained_not_where():
+    # the share export's scrub: a shared LoRA doesn't carry the dataset folder (often a person's
+    # name), the folders LoRAs go in, a LoRA it continued from, or an edit sample's picture
+    import json
+
+    from zentrainer.harness.callbacks import write_metadata
+
+    spec = {"name": "mylora", "network": {"rank": 16, "init_from": "/home/someone/old.safetensors"},
+            "dataset": {"folder": "Jane Doe photos", "trigger": "janedoe", "resolution": 1024},
+            "validation": {"dataset": "Jane Doe held out"}, "output": {"lora_dir": "/home/someone/loras"},
+            "samples": {"prompts": [{"prompt": "janedoe in a cafe", "control": "input/Jane Doe photos/a.png"}, "janedoe"]}}
+    meta = json.loads(write_metadata(spec, 100)["zentrainer.spec"])
+    assert "folder" not in meta["dataset"] and "dataset" not in meta["validation"]
+    assert "lora_dir" not in meta["output"] and "init_from" not in meta["network"]
+    assert meta["samples"]["prompts"] == [{"prompt": "janedoe in a cafe"}, "janedoe"]  # the picture gone
+    assert meta["dataset"]["trigger"] == "janedoe" and meta["network"]["rank"] == 16  # how it was trained stays
+    assert spec["dataset"]["folder"] == "Jane Doe photos"  # the run's own spec untouched

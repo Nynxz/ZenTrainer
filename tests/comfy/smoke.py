@@ -95,9 +95,23 @@ def anima():
             1024, (16, 8))
 
 
+def flux2():
+    from comfy.ldm.flux.model import Flux
+
+    # FLUX.2 (Klein, Dev): ComfyUI's FLUX code with FLUX.2's settings, which detection fixes from
+    # the double-stream modulation (128-dim heads, 128 latent channels at patch 1); the hidden size
+    # and text width from the in-projections. Two of each block: the in-place adds compat/flux.py
+    # copies around run between them
+    return (lambda ops: Flux(image_model="flux2", in_channels=128, out_channels=128, vec_in_dim=None, context_in_dim=64,
+                             hidden_size=256, mlp_ratio=3.0, num_heads=2, depth=2, depth_single_blocks=2,
+                             axes_dim=[32, 32, 32, 32], theta=2000, patch_size=1, qkv_bias=False, guidance_embed=False,
+                             txt_ids_dims=[3], global_modulation=True, mlp_silu_act=True, ops_bias=False,
+                             default_ref_method="index", ref_index_scale=10.0, operations=ops), 64, (128, 16))
+
+
 # each: (the model at a tiny size, from ComfyUI's operations), its text width, its VAE's (latent
 # channels, downscale)
-FAMILIES = {"moss": moss, "krea2": krea2, "fibo2": fibo2, "flux3": flux3, "h3": h3, "anima": anima}
+FAMILIES = {"moss": moss, "krea2": krea2, "fibo2": fibo2, "flux3": flux3, "h3": h3, "anima": anima, "flux2": flux2}
 
 
 class Clip:
