@@ -135,7 +135,7 @@ export interface TrainSpec {
     /** int8 ConvRot bases' backward: "w8a8" on int8 tensor cores (engine default), "fused" Triton at
      *  full precision, "bf16" the weight rebuilt (slowest) */
     int8_backward?: 'w8a8' | 'fused' | 'bf16'
-    /** torch.compile the main blocks; 'auto' (the default) = long runs, with Triton */
+    /** torch.compile the main blocks; off unless turned on ('auto', an older spec's, is off too) */
     compile_blocks?: boolean | 'auto'
     /** the fused q/k norm + rope op; 'auto' (the default) = on while the blocks run uncompiled */
     fused_qk_rope?: boolean | 'auto'
