@@ -828,6 +828,7 @@ class Trainer:
         while self.step < total:
             self._handle_commands()
             t0 = time.perf_counter()
+            res = getattr(self, "_res_seen", 0)  # a profiled step: counted as the resolution it's at
             if getattr(self, "_profile_next", False):
                 self._profile_next = False
                 self._profiled_step()
@@ -861,9 +862,7 @@ class Trainer:
                 if self._warm in TIGHTEN_AT:
                     self._tighten()
                 if getattr(self, "_keep_auto", False):
-                    self._keep_warm = getattr(self, "_keep_warm", 0) + 1
-                    if self._keep_warm in KEEP_AT:
-                        self._fit_kept()
+                    self._keep_step(res)
             self.last_step_seconds = time.perf_counter() - t0
             self.train_seconds += self.last_step_seconds
             self.step += 1
@@ -911,6 +910,11 @@ class Trainer:
             self._kept(0)  # more tokens a block: measured again
             self._keep_warm, self._keep_cost = 0, {}
             self.__dict__.pop("_keep_ceiling", None)
+            # and from a new peak: the lower stage's (its kept blocks with it) left the higher one
+            # no room at all (Krea 2: 24.8 GB of 25.8 at 1024, none kept)
+            self._peak = 0
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
         if not self._auto_vram() or not getattr(self, "_first_resident", None):
             return
         self._trial = None
@@ -1028,6 +1032,17 @@ class Trainer:
         logging.info("[ZenTrainer] more of the model on the card was slower (%s): back to %.1f GB from %.1f, and no higher",
                      why, trial["prev"] / gb, have / gb)
 
+    def _keep_step(self, res: int) -> None:
+        """A step done, for the kept blocks' fit (memory.grad_checkpoint_skip "auto"): only steps at
+        the highest resolution so far count. While a stage change blends, the lower one's steps peak
+        lower, and fitting on them kept more blocks than the higher one holds (Krea 2, 768 -> 1024:
+        out of VRAM at 10 kept, 1.6 GB each)."""
+        if res < getattr(self, "_res_seen", 0):
+            return
+        self._keep_warm = getattr(self, "_keep_warm", 0) + 1
+        if self._keep_warm in KEEP_AT:
+            self._fit_kept()
+
     def _kept(self, n: int) -> int:
         """The last n blocks un-checkpointed (memory.grad_checkpoint_skip "auto"), each measured
         while it runs that way: what it still holds after its forward is what it keeps for backward."""
@@ -1087,6 +1102,8 @@ class Trainer:
         cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
+        if getattr(self, "_backoffs", 0):  # the margin's worth wasn't enough: half of them, not one more
+            drop = max(drop, (was + 1) // 2)
         self._keep_ceiling = self._kept(max(0, was - drop))
         logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
         return True
