@@ -51,3 +51,21 @@ def test_a_recipes_settings_make_a_spec(path):
     spec.setdefault("optim", {})["steps"] = r["steps"]
     spec.setdefault("samples", {})["prompts"] = r["samples"]
     TrainSpec.from_dict({"name": r["id"], **spec}, strict=True)  # SpecError on a field or value it doesn't take
+
+
+def test_a_bad_recipe_is_left_out_not_the_rest(tmp_path, monkeypatch):
+    # what the API serves: only this folder's files, each loaded on its own; one that doesn't load
+    # (bad JSON, an id that isn't its name, an unknown shared name, a card picture from another site)
+    # is left out with a warning, the good one still served
+    common = recipes.shared()
+    (tmp_path / "_shared.json").write_text(json.dumps({**common, "order": ["good"]}))
+    good = json.loads(FILES[0].read_text("utf-8"))
+    (tmp_path / "good.json").write_text(json.dumps({**good, "id": "good", "thumb": {"src": "recipes/good.webp"}}))
+    (tmp_path / "broken.json").write_text("{not json")
+    (tmp_path / "misnamed.json").write_text(json.dumps({**good, "id": "something-else"}))
+    (tmp_path / "unknown.json").write_text(json.dumps({**good, "id": "unknown", "photos": "nope"}))
+    for name, src in (("offsite", "//example.com/x.png"), ("scheme", "https://example.com/x.png"),
+                      ("upward", "../../secret.png"), ("rooted", "/etc/x.png")):
+        (tmp_path / f"{name}.json").write_text(json.dumps({**good, "id": name, "thumb": {"src": src}}))
+    monkeypatch.setattr(recipes, "DIR", tmp_path)
+    assert [r["id"] for r in recipes.load()] == ["good"]

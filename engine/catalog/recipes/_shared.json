@@ -1,5 +1,5 @@
 {
-  "_about": "What the recipes in this folder share: the order Simple mode lists them in (ones not named here come after, by id), the caption prompts a recipe's caption.prompt names, and the photo guidance its photos names. Read by the engine (zentrainer/models/recipes.py, GET /zentrainer/api/recipes) and built into the web app (web/src/lib/recipes.ts). A recipe's caption.prompt or photos can also be written out in full instead of named.",
+  "_about": "What the recipes in this folder share: the order Simple mode lists them in (ones not named here come after, by id), the caption prompts a recipe's caption.prompt names, and the photo guidance its photos names. Read by the engine (zentrainer/models/recipes.py), which serves them at GET /zentrainer/api/recipes for the web app to fetch as it starts: a change shows on a reload. A recipe's caption.prompt or photos can also be written out in full instead of named.",
   "order": [
     "krea2-character",
     "krea2-style",

@@ -134,9 +134,11 @@ and calls ComfyUI **as a library** for everything else.
   Simple mode's recipes, applied from its "Apply a recipe" dialog.
 - **Recipes** (`engine/catalog/recipes/`): one JSON file each, a run's settings for a model
   (its files, length, captions, sample prompts) with `notes` on the runs behind them; what they
-  share (order, caption prompts, photo guidance) is `_shared.json`. Built into the web app
-  (`web/src/lib/recipes.ts`), served at `GET /zentrainer/api/recipes` (`models/recipes.py`), and
-  every one checked against the spec by `tests/engine/test_recipes.py`.
+  share (order, caption prompts, photo guidance) is `_shared.json`. The engine reads them
+  (`models/recipes.py`) and serves them resolved at `GET /zentrainer/api/recipes`, which the web app
+  fetches as it starts (`web/src/lib/recipes.ts`): a changed recipe shows on a reload, no build. A
+  file that doesn't load is left out with a warning, and a card picture must be a path in the web
+  app. `tests/engine/test_recipes.py` checks every one against the spec.
 - **Timing**: `train_time` counts optimizer steps only; `it_s` is per step, so sampling
   and validation don't read as slowdowns.
 

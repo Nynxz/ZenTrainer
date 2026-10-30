@@ -18,7 +18,9 @@ const props = defineProps<{ id?: string }>()
 const router = useRouter()
 const r = computed<Recipe | null>(() => (props.id ? findRecipe(props.id) : null))
 // "/templates/..." is ComfyUI's own (template thumbnails, maker logos); else our web/public
-const asset = (p: string) => (p.startsWith('/') ? p : `${import.meta.env.BASE_URL}${p}`)
+// a card picture: a path in the app, never another site's ("//host/x.png") or a URL with a scheme
+const asset = (p: string) =>
+  p.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(p) ? '' : p.startsWith('/') ? p : `${import.meta.env.BASE_URL}${p}`
 
 // ---- the gallery ---------------------------------------------------------------------------
 const kinds = [

@@ -2,11 +2,12 @@
 // run setup with nothing left to choose but the photos and a name. Settings come from runs we
 // trained and checked (see docs/ARCHITECTURE.md, "Recipes"); the model files are the ones those
 // runs used, with the family's recommended file as the fallback when a file isn't installed.
-// The recipes themselves are data, one JSON file each in engine/catalog/recipes/ (what they share
-// in its _shared.json), built in here and read by the engine too (zentrainer/recipes.py).
+// The recipes themselves are data, one JSON file each in engine/catalog/recipes/: the engine reads
+// them (models/recipes.py) and this fetches them as the app starts, so a changed recipe shows on a
+// reload, with no build.
 
 import type { TrainSpec } from '@/api/engine'
-import shared from '../../../engine/catalog/recipes/_shared.json'
+import { call } from '@/api/engine/client'
 
 type DeepPartial<T> = { [K in keyof T]?: NonNullable<T[K]> extends unknown[] ? T[K] : NonNullable<T[K]> extends object ? DeepPartial<NonNullable<T[K]>> : T[K] }
 type Folder = 'diffusion_models' | 'text_encoders' | 'vae'
@@ -46,22 +47,18 @@ export interface Recipe {
   notes?: string[]
 }
 
-type Photos = Recipe['photos']
-/** a recipe as its file has it: its photo guidance and caption prompt may be named (_shared.json) */
-type RecipeFile = Omit<Recipe, 'photos' | 'caption'> & { photos: string | Photos; caption: Recipe['caption'] }
+/** the recipes, filled by loadRecipes() before the app mounts (empty if the engine can't be reached) */
+export const RECIPES: Recipe[] = []
 
-const captions: Record<string, string> = shared.captions
-const photoSets: Record<string, Photos> = shared.photos
-const files = import.meta.glob<RecipeFile>(['../../../engine/catalog/recipes/*.json', '!**/_shared.json'], { eager: true, import: 'default' })
-const rank = (id: string) => (shared.order.includes(id) ? shared.order.indexOf(id) : shared.order.length)
-
-export const RECIPES: Recipe[] = Object.values(files)
-  .map((f) => ({
-    ...f,
-    photos: typeof f.photos === 'string' ? photoSets[f.photos]! : f.photos,
-    caption: { ...f.caption, prompt: captions[f.caption.prompt] ?? f.caption.prompt },
-  }))
-  .sort((x, y) => rank(x.id) - rank(y.id) || x.id.localeCompare(y.id))
+/** the engine's recipes (GET /recipes, resolved and in order), once, as the app starts */
+export async function loadRecipes(): Promise<void> {
+  try {
+    const { recipes } = await call<{ recipes: Recipe[] }>('/recipes')
+    RECIPES.splice(0, RECIPES.length, ...recipes)
+  } catch {
+    // the engine unreachable: no recipes, the rest of the app still works
+  }
+}
 
 export const recipe = (id: string) => RECIPES.find((r) => r.id === id) ?? null
 
