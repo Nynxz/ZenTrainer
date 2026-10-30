@@ -144,15 +144,28 @@ def _patch() -> None:
         return
     original = func.backward
 
+    class _Unpacked:
+        """ctx with its saved tensors already read: a checkpointed layer's can be unpacked only once
+        ("Unpack is being triggered for a tensor that was already unpacked once"), so ComfyUI's
+        backward gets the ones read here to check the layer (an fp8 or nvfp4 one, say, that isn't int8)."""
+
+        def __init__(self, ctx, saved):
+            self._ctx, self.saved_tensors = ctx, saved
+
+        def __getattr__(self, name):
+            return getattr(self._ctx, name)
+
     @torch.autograd.function.once_differentiable
     def backward(ctx, grad_output):
         global _warned
+        saved = None
         if not (_mode and mm.in_training and not ctx.fp8_bwd and not ctx.weight_requires_grad):
             stats["off: " + ("no mode" if not _mode else "not training" if not mm.in_training
                              else "fp8 backward" if ctx.fp8_bwd else "weight trains")] += 1
         if _mode and mm.in_training and not ctx.fp8_bwd and not ctx.weight_requires_grad:
             try:
-                _input, weight = ctx.saved_tensors
+                saved = ctx.saved_tensors
+                _input, weight = saved
                 params = getattr(weight, "_params", None)
                 why = ("not quantized" if params is None else "not convrot" if not getattr(params, "convrot", False)
                        else "no int8 data" if getattr(weight, "_qdata", None) is None or weight._qdata.dtype != torch.int8
@@ -174,7 +187,7 @@ def _patch() -> None:
                 if not _warned:
                     _warned = True
                     logging.warning("[ZenTrainer] %s int8 backward failed; using ComfyUI's", _mode, exc_info=True)
-        return original(ctx, grad_output)
+        return original(ctx if saved is None else _Unpacked(ctx, saved), grad_output)
 
     func.backward = staticmethod(backward)
     _patched = True
