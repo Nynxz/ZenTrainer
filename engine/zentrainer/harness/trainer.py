@@ -9,6 +9,7 @@ the session, so a run holds ComfyUI's execution lane (and its GPU) while it trai
 from __future__ import annotations
 
 import pickle
+import re
 
 import contextlib
 import dataclasses
@@ -672,6 +673,19 @@ class Trainer:
         except pickle.UnpicklingError as e:
             raise RuntimeError(f"{state_path.name} holds more than a training state (tensors, numbers, lists): "
                                f"not loaded. Resume from another checkpoint, or Duplicate to start over ({e})") from None
+        except (RuntimeError, EOFError, OSError) as e:
+            # a truncated file (power cut while it was written): the LoRA file beside it is whole, so
+            # go on from its weights and step with a fresh optimizer, scheduler, EMA and RNG
+            m = re.search(r"step(\d+)", Path(self.resume_from).name)
+            if not m:
+                raise
+            logging.warning("[ZenTrainer] %s is unreadable (%s): resuming from the LoRA's weights with a fresh "
+                            "optimizer state", state_path.name, str(e).splitlines()[0])
+            self.step = int(m.group(1))
+            self._reseed_batches()
+            self.progress.update_absolute(self.step)
+            self._status("loading", message=f"resumed from step {self.step} (weights only: its training state was damaged)")
+            return
         self.optimizer.load_state_dict(self._saved_optimizer_state(state["optimizer"]))
         self.scheduler.load_state_dict(state["scheduler"])
         self.step = int(state["step"])
