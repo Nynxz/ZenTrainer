@@ -75,11 +75,25 @@ async function loadOnDisk() {
 /** a file of yours: installed here, not in the family's catalog */
 function yours(folder: ModelFolder, name?: string | null): ModelFile | undefined {
   if (!name) return undefined
-  const hit = (onDisk.value[folder] ?? []).find((n) => n === name || base(n) === base(name))
-  return hit ? { name: base(name), folder, url: '', size: null, distilled: false, from_template: false, installed: hit } : undefined
+  const disk = onDisk.value[folder] ?? []
+  // its exact path first: two of yours can share a name in different folders (Pony/x, SDXL/x)
+  const hit = disk.find((n) => n === name) ?? disk.find((n) => base(n) === base(name))
+  return hit ? { name: base(hit), folder, url: '', size: null, distilled: false, from_template: false, installed: hit } : undefined
 }
-const fileOf = (folder: ModelFolder, name?: string | null) =>
-  fam.value?.files[folder]?.find((f) => f.name === base(name)) ?? yours(folder, name)
+/** the file a part's value names: a catalog file by its name or installed path, then one of yours by
+ *  its exact path, then either by its bare name (a spec from another machine) */
+function fileOf(folder: ModelFolder, name?: string | null): ModelFile | undefined {
+  const files = fam.value?.files[folder] ?? []
+  const exact = files.find((f) => f.name === name || (!!f.installed && f.installed === name))
+  if (exact) return exact
+  if (name && (onDisk.value[folder] ?? []).includes(name)) return yours(folder, name)
+  return files.find((f) => f.name === base(name)) ?? yours(folder, name)
+}
+/** what a part's list shows as picked: a catalog file by its name, one of yours by its path */
+const pickedValue = (folder: ModelFolder, value?: string | null) => {
+  const f = fileOf(folder, value)
+  return f && (fam.value?.files[folder] ?? []).includes(f) ? f.name : (f?.installed ?? base(value))
+}
 
 // which family the current spec already uses (a duplicated run, a preset)
 function detect(list: ModelFamily[]): string {
@@ -271,12 +285,25 @@ const familyItems = computed(() => [
     : []),
   { value: CUSTOM, label: 'Custom: pick the files yourself', keywords: 'custom manual files', f: null },
 ])
-// the catalog's files, and the one picked when it's one of yours (listed so it shows, tagged)
+// the catalog's files, then every other file of yours in that folder, tagged: a finetune the catalog
+// doesn't know (Pony or Illustrious for SDXL, say) is picked here, with the family's settings
 const fileItems = (folder: ModelFolder, current?: string | null) => {
-  const items = (fam.value?.files[folder] ?? []).map((f) => ({ value: f.name, label: f.name, keywords: f.name, file: f, mine: false }))
-  const own = yours(folder, current)
-  if (own && !items.some((i) => i.value === own.name)) items.push({ value: own.name, label: own.name, keywords: own.name, file: own, mine: true })
-  return items
+  const items = (fam.value?.files[folder] ?? [])
+    .map((f) => ({ value: f.name, label: f.name, keywords: f.name, file: f, mine: false }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  // yours by their path (the picker's value too), so two that share a name both show; the catalog's
+  // own installed copies aren't listed again
+  const listed = new Set((fam.value?.files[folder] ?? []).map((f) => f.installed).filter(Boolean) as string[])
+  const own: ModelFile[] = []
+  for (const n of [...(onDisk.value[folder] ?? []), ...(current ? [current] : [])]) {
+    const f = yours(folder, n)
+    if (f?.installed && !listed.has(f.installed)) {
+      listed.add(f.installed)
+      own.push(f)
+    }
+  }
+  own.sort((a, b) => a.installed!.localeCompare(b.installed!))
+  return [...items, ...own.map((f) => ({ value: f.installed!, label: f.installed!, keywords: f.installed!, file: f, mine: true }))]
 }
 // installed: the tick alone; else what's left to fetch, by size (the count on hover)
 const statusOf = (f: ModelFamily) => {
@@ -379,8 +406,9 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
       <div v-for="p in parts" :key="p.folder" class="part">
         <span class="p-label">{{ p.label }}</span>
         <ZenCombo
-          :model-value="base(model[p.key] as string)"
+          :model-value="pickedValue(p.folder, model[p.key] as string)"
           :items="fileItems(p.folder, model[p.key] as string)"
+          :sorted="false"
           :item-height="34"
           :menu-width="440"
           @update:model-value="setFile(p.folder, p.key, $event)"

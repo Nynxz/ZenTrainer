@@ -5,7 +5,7 @@
     "text_encoder_skip: text encoder files (regexes) that load through CLIPLoader but aren't the model's text encoder (prompt upsamplers, enhancers, rewriters).",
     "tested: the family ids that have trained end to end here (a recipe, a real-ComfyUI smoke test in tests/comfy, or a run checked by hand). The pickers list these as models; every other family, a new one the catalog finds included, is under \"Other models\", marked untested, until someone trains it and adds its id."
   ],
-  "tested": ["moss-image", "krea-2", "fibo-2-0", "flux-3-image", "minimax-h3", "qwen-image-2-1", "z-image", "anima", "flux-2-klein-9b"],
+  "tested": ["moss-image", "krea-2", "fibo-2-0", "flux-3-image", "minimax-h3", "qwen-image-2-1", "z-image", "anima", "flux-2-klein-9b", "sdxl"],
   "text_encoder_skip": [
     "upsampl",
     "prompt_?enhanc",
