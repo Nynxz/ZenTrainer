@@ -13,6 +13,10 @@ const saveOpen = ref(false) // where you'd think of it: as you start a run
 const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
 const submitting = ref(false)
 
+/** a run with no sample prompts gets plain ones as it starts, when they'd show anything: not a
+ *  slider's or an edit run's (their previews take their own inputs), and only with samples on */
+const getsDefaults = () => !spec.slider?.kind && !spec.dataset.edit && !!spec.samples.every
+
 const warnings = computed(() => {
   const w: string[] = []
   const slider = !!spec.slider?.kind
@@ -23,8 +27,8 @@ const warnings = computed(() => {
   const masked = dataset.value?.masked ?? 0
   if (masked && !spec.dataset.masked_loss)
     w.push(`${masked} picture${masked === 1 ? ' has a mask' : 's have masks'}, but Masked training is off: the parts the masks leave out train too.`)
-  if (!slider && !spec.samples.prompts.length) w.push('No sample prompts: two plain ones with the trigger will be used, so the run has previews.')
-  else if (slider && !spec.samples.prompts.length) w.push('No sample prompts: you will only see the loss curves.')
+  if (!spec.samples.prompts.length && getsDefaults()) w.push('No sample prompts: two plain ones with the trigger will be used, so the run has previews.')
+  else if (!spec.samples.prompts.length) w.push('No sample prompts: you will only see the loss curves.')
   else if (!spec.samples.every) w.push('Samples are off (Every 0): only Sample now renders them, so checkpoints get no samples or likeness. Set Every to the save interval.')
   else if (spec.output.save_every && spec.output.save_every % spec.samples.every && !spec.output.keep.startsWith('likeness')) w.push(`Samples every ${spec.samples.every} don't land on the saves every ${spec.output.save_every}: checkpoints get no samples or likeness to compare.`)
   else if (!slider && spec.dataset.trigger && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
@@ -33,7 +37,7 @@ const warnings = computed(() => {
   const keep = spec.output.save_every ? spec.output.keep.replace('_new_best', '') : 'all'
   if (keep === 'likeness' && dataset.value && !dataset.value.faces)
     w.push(`Keeping by likeness needs Check faces on for ${dataset.value.folder} (its page: Settings): without it, nothing is scored.`)
-  if (keep === 'likeness' && !spec.samples.prompts.length)
+  if (keep === 'likeness' && !spec.samples.prompts.length && !getsDefaults())
     w.push('Keeping the best likeness needs sample prompts to score (Samples).')
   if (keep === 'val_loss' && !spec.validation.every) w.push('Keeping the lowest validation loss needs validation on (Advanced training → Validation every).')
   if (opt.value?.id === 'Prodigy' && spec.optim.learning_rate < 0.5) w.push('Prodigy sets its own step size: use LR 1.0.')
@@ -71,12 +75,11 @@ async function saveEdit() {
   }
 }
 
-/** a run started with no sample prompts still gets previews: two plain ones with the trigger. Nothing
- *  from the dataset (its captions would go into every LoRA's metadata with the spec). A slider's
- *  previews are its own, so it's left as it is */
+/** a run started with no sample prompts still gets previews (see getsDefaults): two plain ones with
+ *  the trigger. Nothing from the dataset: its captions would go into every LoRA's metadata with the spec */
 const DEFAULT_PROMPTS = ['[trigger], a close up portrait photo, soft window light', '[trigger] outdoors on a sunny day, candid photo']
 function defaultPrompts() {
-  if (!spec.samples.prompts.length && !spec.slider?.kind) spec.samples.prompts = [...DEFAULT_PROMPTS]
+  if (!spec.samples.prompts.length && getsDefaults()) spec.samples.prompts = [...DEFAULT_PROMPTS]
 }
 
 async function start(position: 'next' | 'end' = 'next') {
