@@ -16,6 +16,7 @@ FILES = recipes.files()
 
 
 def test_there_are_recipes_and_the_shared_file_names_only_them():
+    assert len(recipes.load()) == len(FILES)  # every shipped recipe passes the loader's checks
     common = recipes.shared()
     ids = [p.stem for p in FILES]
     assert ids and len(set(common["order"])) == len(common["order"])
@@ -67,5 +68,10 @@ def test_a_bad_recipe_is_left_out_not_the_rest(tmp_path, monkeypatch):
     for name, src in (("offsite", "//example.com/x.png"), ("scheme", "https://example.com/x.png"),
                       ("upward", "../../secret.png"), ("rooted", "/etc/x.png")):
         (tmp_path / f"{name}.json").write_text(json.dumps({**good, "id": name, "thumb": {"src": src}}))
+    # valid JSON, a field of the wrong type: left out too, never served or raised past load()
+    for name, change in (("captionobj", {"caption": {"prompt": {"x": 1}, "subject": True}}), ("photosnum", {"photos": 3}),
+                         ("stepstext", {"steps": "2000"}), ("nosamples", {"samples": []}), ("kindodd", {"kind": "poster"}),
+                         ("filesbad", {"files": {"loras": ["x.safetensors"]}}), ("notitle", {"title": None})):
+        (tmp_path / f"{name}.json").write_text(json.dumps({**good, "id": name, **change}))
     monkeypatch.setattr(recipes, "DIR", tmp_path)
     assert [r["id"] for r in recipes.load()] == ["good"]
