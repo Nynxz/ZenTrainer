@@ -6,7 +6,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { fileInfo, pct, secs, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
 
-const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, thumbSize, boxing } = useDatasetContext()
+const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, thumbSize, boxing, maskHighVis } = useDatasetContext()
 
 // drag to select a box of cards (mouse and pen; touch scrolls), starting on a card or in the empty
 // space around them: the page's margins, gaps and below the last row. A plain drag starts a new
@@ -143,10 +143,10 @@ onUnmounted(() => {
       @contextmenu="onItemMenu(it, i, $event)"
     >
       <button class="thumb" :title="it.path" :data-peek="full(it)" @click="onItemClick(it, i, $event)">
-        <img :src="thumb(it, thumbSize)" loading="lazy" :alt="cap(it)" :class="{ 'mask-dim': showMasks && it.mask }" :style="{ objectFit: fit }" />
+        <img :src="thumb(it, thumbSize)" loading="lazy" :alt="cap(it)" :class="{ 'mask-dim': showMasks && it.mask && maskHighVis }" :style="{ objectFit: fit }" />
         <!-- the mask view: what the mask leaves out is a purple/black checker (Source's missing
              texture: unmistakable on any picture), and only what it trains shows -->
-        <span v-if="showMasks && it.mask" class="mask-checker" />
+        <span v-if="showMasks && it.mask" class="mask-out" :class="{ hi: maskHighVis }" />
         <img
           v-if="showMasks && it.mask"
           :src="thumb(it, thumbSize)"
@@ -383,15 +383,21 @@ onUnmounted(() => {
 .cap-text.empty {
   color: var(--zen-warn);
 }
-/* the mask view */
+/* the mask view: what the mask leaves out faded into the theme's background (as the mask
+   editor does it), or with High-vis Source's purple/black checker over a hidden picture */
 .thumb img.mask-dim {
   opacity: 0;
 }
-.thumb .mask-checker {
+.thumb .mask-out {
   position: absolute;
   inset: 0;
-  background: repeating-conic-gradient(#f0f 0 25%, #000 0 50%) 0 0 / 16px 16px;
+  background: var(--zen-bg);
+  opacity: 0.84; /* the editor's 215/255 */
   pointer-events: none;
+}
+.thumb .mask-out.hi {
+  background: repeating-conic-gradient(#f0f 0 25%, #000 0 50%) 0 0 / 16px 16px;
+  opacity: 1;
 }
 .thumb img.mask-lit {
   mask-mode: luminance;

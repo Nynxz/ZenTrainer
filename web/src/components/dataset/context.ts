@@ -8,6 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { onComfyMessage } from '@/api/comfy'
 import { EVENTS, engine, thumbUrl, viewUrl, type CaptionJob, type DatasetFaces, type DatasetItem } from '@/api/engine'
 import type DatasetStats from '@/components/DatasetStats.vue'
+import { remembered } from '@/lib/remembered'
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
 
 export const isVideoPath = (p: string) => /\.(mp4|webm|mov|mkv)$/i.test(p)
@@ -50,6 +51,12 @@ export function useDataset(name: () => string) {
   const zoom = ref<number>(saved.zoom ?? 200)
   const fit = ref<'cover' | 'contain'>(saved.fit ?? 'cover')
   const showMasks = ref<boolean>(saved.masks ?? false) // dim what each mask leaves out, on the grid
+  // what a mask leaves out: faded into the theme's background, or (High-vis) the purple/black
+  // checker. One setting with the mask editor's switch
+  const maskHighVis = remembered('zentrainer.maskHighVis', false)
+  // the lightbox's mask overlay reads it from the page root (app.css), while this page is open
+  watch(maskHighVis, (on) => document.documentElement.toggleAttribute('data-mask-high-vis', on), { immediate: true })
+  onUnmounted(() => document.documentElement.removeAttribute('data-mask-high-vis'))
   const sideOpen = ref<boolean>(saved.side ?? true) // the side panel: health, faces, auto-caption, bulk edit, display
   watch([view, zoom, fit, showMasks, sideOpen], () => {
     try {
@@ -388,7 +395,7 @@ export function useDataset(name: () => string) {
   )
 
   return {
-    view, zoom, fit, showMasks, sideOpen,
+    view, zoom, fit, showMasks, maskHighVis, sideOpen,
     items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load,
     filter, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
     isMuted, setMuted, imageFlags, statsPanel,
