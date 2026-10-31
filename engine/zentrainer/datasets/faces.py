@@ -155,20 +155,24 @@ def _report(name: str, progress=None, face_model: str | None = None) -> tuple[di
     except (OSError, ValueError):
         cache = {}
     items = scan(root, warn=False)
-    rows: dict[str, dict] = {}
-    for k, it in enumerate(items):
-        rel = str(it.path.relative_to(root))
+    rels = [str(it.path.relative_to(root)) for it in items]
+    stamps = {}
+    for rel, it in zip(rels, items):
         st = it.path.stat()
-        stamp = f"{fm}|2|{st.st_mtime_ns}|{st.st_size}"  # 2: every face per frame, boxes as fractions
-        hit = cache.get(rel)
-        if not hit or hit.get("stamp") != stamp:
-            hit = {"stamp": stamp, "frames": frame_faces(it.path, name=fm)}
-            cache[rel] = hit
-        rows[rel] = _summarize(hit["frames"], _mask_array(it.mask))
+        stamps[rel] = f"{fm}|2|{st.st_mtime_ns}|{st.st_size}"  # 2: every face per frame, boxes as fractions
+    # only what's new or changed is looked at, and only that counts as progress: re-checking an
+    # unchanged dataset reports none, so the page doesn't show a scan that isn't happening
+    todo = [(rel, it) for rel, it in zip(rels, items) if (cache.get(rel) or {}).get("stamp") != stamps[rel]]
+    for k, (rel, it) in enumerate(todo):
+        cache[rel] = {"stamp": stamps[rel], "frames": frame_faces(it.path, name=fm)}
         if progress:
-            progress(k + 1, len(items))
-    cache = {k: v for k, v in cache.items() if k in rows}
-    cache_file.write_text(json.dumps(cache))
+            progress(k + 1, len(todo))
+    rows = {rel: _summarize(cache[rel]["frames"], _mask_array(it.mask)) for rel, it in zip(rels, items)}
+    gone = [k for k in cache if k not in rows]
+    if todo or gone:  # unchanged: the file stays as it is
+        for k in gone:
+            del cache[k]
+        cache_file.write_text(json.dumps(cache))
     embs = {rel: np.asarray(r["emb"], np.float32) for rel, r in rows.items() if r["emb"]}
     likes = _leave_one_out(embs)
     out = {}

@@ -244,11 +244,11 @@ button {
 }
 
 
-/* Masks in ZenKit's lightbox: what the mask leaves out as Source's purple/black missing-texture
-   checker (as on the dataset grid), not a dimmed copy of the picture. The dimmed picture keeps its
-   box; its pixels are pushed out of it so the checker painted behind them shows instead.
-   UPSTREAM: ZenLightbox's mask overlay mode */
-.zlb-masked-out {
+/* Masks in ZenKit's lightbox, with High-vis on (the dataset page and mask editor's switch): what
+   the mask leaves out as Source's purple/black missing-texture checker, not a dimmed copy of the
+   picture. The dimmed picture keeps its box; its pixels are pushed out of it so the checker painted
+   behind them shows instead. UPSTREAM: ZenLightbox's mask overlay mode */
+:root[data-mask-high-vis] .zlb-masked-out {
   filter: none !important;
   object-position: -100000px -100000px;
   background: repeating-conic-gradient(#f0f 0 25%, #000 0 50%) 0 0 / 18px 18px;

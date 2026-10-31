@@ -11,7 +11,7 @@ import DatasetStats from '@/components/DatasetStats.vue'
 import { useDatasetContext } from './context'
 
 const props = defineProps<{ name: string; drawer: boolean }>()
-const { fit, showMasks, view, items, sets, activeSet, controlSets, activeControl, selected, load, review, counts, imageFlags, statsPanel, faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, flash } =
+const { fit, showMasks, maskHighVis, view, items, sets, activeSet, controlSets, activeControl, selected, load, review, counts, imageFlags, statsPanel, faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, flash } =
   useDatasetContext()
 
 // The side panel stays pinned without a scrollbar of its own: under the sticky toolbar when it fits
@@ -289,6 +289,10 @@ function onCaptioned(set: string) {
       <div class="side-row" :title="counts.masked ? 'Shows what each mask trains: the rest dims' : 'No masks in this dataset'">
         <span class="small">Show masks</span><span class="spacer" />
         <ZenSwitch :model-value="showMasks" :disabled="!counts.masked" @update:model-value="showMasks = $event" />
+      </div>
+      <div class="side-row" title="What a mask leaves out as a purple/black checker instead of faded into the background: unmistakable on dark or busy pictures. The mask editor's High-vis switch is the same setting">
+        <span class="small">High-vis</span><span class="spacer" />
+        <ZenSwitch v-model="maskHighVis" :disabled="!counts.masked || !showMasks" />
       </div>
       </template>
     </section>
