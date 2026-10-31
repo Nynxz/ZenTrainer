@@ -23,7 +23,7 @@ from typing import Any
 
 import torch
 
-from .. import events, paths, vram
+from .. import events, paths, safeio, vram
 from ..spec import TrainSpec, slugify
 from . import control as control_mod
 from . import data, models, optim
@@ -1663,31 +1663,25 @@ class Trainer:
         keep = self.spec.output.keep_states
         state = state_dir(self.run_id) / f"{name}.pt"
         _room_for(folder, sum(t.numel() * t.element_size() for t in weights.values()))
-        # written beside it under a name ComfyUI doesn't list, then swapped in: a full disk or a
-        # kill mid-save leaves no half-written LoRA in the loras folder
-        part = folder / f".{name}.part"
-        try:
-            sft.save_file(weights, str(part), metadata=write_metadata(self.spec.to_dict(), self.step))
-            # safetensors writes owner-only (0600); a LoRA is an output like ComfyUI's images, readable
-            # by whatever else serves or syncs the folder (Docker, a share, another user's ComfyUI)
-            os.chmod(part, 0o644)
-            os.replace(part, path)
-        finally:
-            part.unlink(missing_ok=True)
+        # written beside it under a name ComfyUI doesn't list, flushed, then swapped in: a full disk,
+        # a kill or a power cut mid-save leaves no half-written LoRA in the loras folder
+        safeio.write_bytes(path, sft.save(weights, metadata=write_metadata(self.spec.to_dict(), self.step)))
+        # a LoRA is an output like ComfyUI's images, readable by whatever else serves or syncs the
+        # folder (Docker, a share, another user's ComfyUI)
+        os.chmod(path, 0o644)
         # resumable state (optimizer, schedule, step, RNG) goes outside the LoRA folders:
         # those are registered with ComfyUI, which would list a .pt there as a "LoRA"
         if keep != "none":
             state.parent.mkdir(parents=True, exist_ok=True)
-            tmp_state = state.with_name(f".{state.name}.part")
-            torch.save({
+            # on disk before the older states are deleted below
+            safeio.write_with(state, lambda f: torch.save({
                 "step": self.step, "optimizer": self.optimizer.state_dict(), "scheduler": self.scheduler.state_dict(),
                 "rng": self.generator.get_state(),
                 "train_seconds": self.train_seconds,
                 **({"balance": self.objective.balance.state_dict()} if self.objective.balance is not None else {}),
                 **({"live": {k: v.cpu() for k, v in live.items()}} if live is not None else {}),
                 **({"ema": self.ema.state_dict()} if self.ema is not None else {}),
-            }, str(tmp_state))
-            os.replace(tmp_state, state)
+            }, f))
             if keep == "latest":  # resume only ever needs the newest
                 for old in state.parent.glob("*.pt"):
                     if old != state:

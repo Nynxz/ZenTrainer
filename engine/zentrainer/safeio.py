@@ -12,8 +12,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 
 def _tmp(path: Path) -> Path:
@@ -22,11 +23,16 @@ def _tmp(path: Path) -> Path:
 
 
 def write_bytes(path: str | os.PathLike, data: bytes) -> None:
+    write_with(path, lambda f: f.write(data))
+
+
+def write_with(path: str | os.PathLike, write: Callable[[BinaryIO], Any]) -> None:
+    """write_bytes for a writer that streams into an open file (torch.save)."""
     path = Path(path)
     tmp = _tmp(path)
     try:
         with open(tmp, "wb") as f:
-            f.write(data)
+            write(f)
             f.flush()
             os.fsync(f.fileno())
         _replace(tmp, path)

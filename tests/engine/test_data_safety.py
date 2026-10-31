@@ -67,6 +67,22 @@ def test_atomic_write_keeps_the_old_file_when_writing_fails(tmp_path, monkeypatc
     assert [p.name for p in tmp_path.iterdir()] == ["caption.txt"]  # no temp left behind
 
 
+def test_a_streamed_save_cut_short_keeps_the_old_file(tmp_path):
+    f = tmp_path / "run.pt"
+    f.write_bytes(b"the last good state")
+
+    def half(out):  # torch.save killed halfway through
+        out.write(b"half a ")
+        raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        safeio.write_with(f, half)
+    assert f.read_bytes() == b"the last good state"
+    assert [p.name for p in tmp_path.iterdir()] == ["run.pt"]
+    safeio.write_with(f, lambda out: out.write(b"a new state"))
+    assert f.read_bytes() == b"a new state"
+
+
 def test_a_corrupt_settings_file_is_kept_not_overwritten(tmp_path):
     f = tmp_path / "settings.json"
     f.write_text('{"cats": {"caption_subject": "Tom"')  # cut short
