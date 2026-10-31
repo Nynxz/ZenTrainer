@@ -2,17 +2,142 @@
 // The dataset as a grid of uniform cards (zoomable): the picture with its badges (mask, video,
 // repeats, image and face issues, no caption), mute and select on hover, the caption below.
 import { ZenTip } from '@nynxz/zenkit-ui'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { fileInfo, pct, secs, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
 
-const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, thumbSize } = useDatasetContext()
+const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, thumbSize, boxing } = useDatasetContext()
+
+// drag to select a box of cards (mouse and pen; touch scrolls), starting on a card or in the empty
+// space around them: the page's margins, gaps and below the last row. A plain drag starts a new
+// selection, Ctrl/Cmd/Shift adds to it; a press that barely moves stays a click. Near the top or
+// bottom of the page it scrolls, and the box follows.
+const grid = ref<HTMLElement | null>(null)
+const box = ref<{ x: number; y: number; w: number; h: number } | null>(null)
+let press: { x: number; y: number; cx: number; cy: number; add: boolean; base: Set<string> } | null = null
+let pointer = { x: 0, y: 0 }
+let scroller: HTMLElement | null = null
+let raf = 0
+let swallowClick = false
+
+// anywhere on the page below the toolbar: a card's picture or caption, the gaps, the margins, the
+// strip between the toolbar and the first row. Not a control (a card's own buttons, links, fields),
+// the side panel or a banner, nor the toolbar or anything above it.
+function startsBox(e: MouseEvent) {
+  const t = e.target as HTMLElement
+  if (e.button !== 0 || !grid.value) return false
+  if (grid.value.contains(t)) return !t.closest('.check, .mute-btn, .info-btn')
+  const bar = grid.value.closest('.page')?.querySelector('.sticky-bar')
+  if (!bar || e.clientY < bar.getBoundingClientRect().bottom) return false
+  return !t.closest('button, a, input, textarea, select, label, [contenteditable], [role], .ds-side, .drawer-scrim, .reviewing, .notice, .sel-bar')
+}
+// in the grid's own coordinates, which scrolling doesn't change
+function local(cx: number, cy: number) {
+  const g = grid.value!.getBoundingClientRect()
+  return { x: cx - g.left, y: cy - g.top, g }
+}
+function onDown(e: PointerEvent) {
+  if (e.pointerType === 'touch' || !startsBox(e)) return
+  const p = local(e.clientX, e.clientY)
+  press = { x: p.x, y: p.y, cx: e.clientX, cy: e.clientY, add: e.ctrlKey || e.metaKey || e.shiftKey, base: new Set(selected) }
+  pointer = { x: e.clientX, y: e.clientY }
+  addEventListener('pointermove', onMove)
+  addEventListener('pointerup', onUp)
+  addEventListener('pointercancel', onUp)
+}
+// the browser's own drag of a picture, or of selected text, would cancel ours
+function onMouseDown(e: MouseEvent) {
+  if (startsBox(e)) e.preventDefault()
+}
+function onMove(e: PointerEvent) {
+  pointer = { x: e.clientX, y: e.clientY }
+  if (!press) return
+  if (!box.value) {
+    if (Math.hypot(e.clientX - press.cx, e.clientY - press.cy) < 6) return
+    getSelection()?.removeAllRanges()
+    boxing.value = true
+    raf = requestAnimationFrame(edgeScroll)
+  }
+  update()
+}
+// the part of the page that shows: below the sticky toolbar, which the box mustn't run under
+function view() {
+  const v = scroller!.getBoundingClientRect()
+  const bar = grid.value!.closest('.page')?.querySelector('.sticky-bar')
+  return { left: v.left, right: v.right, top: Math.max(v.top, bar?.getBoundingClientRect().bottom ?? v.top), bottom: v.bottom }
+}
+function update() {
+  if (!press || !grid.value || !scroller) return
+  const v = view()
+  const p = local(Math.min(Math.max(pointer.x, v.left), v.right), Math.min(Math.max(pointer.y, v.top), v.bottom))
+  const b = { x: Math.min(p.x, press.x), y: Math.min(p.y, press.y), w: Math.abs(p.x - press.x), h: Math.abs(p.y - press.y) }
+  box.value = b
+  const next = press.add ? new Set(press.base) : new Set<string>()
+  for (const el of grid.value.querySelectorAll<HTMLElement>('.card-item')) {
+    const r = el.getBoundingClientRect()
+    const [l, t] = [r.left - p.g.left, r.top - p.g.top]
+    if (l < b.x + b.w && l + r.width > b.x && t < b.y + b.h && t + r.height > b.y) next.add(el.dataset.path!)
+  }
+  for (const k of [...selected]) if (!next.has(k)) selected.delete(k)
+  for (const k of next) selected.add(k)
+}
+function edgeScroll() {
+  if (!press || !scroller) return
+  const v = view()
+  const edge = 48
+  const dy = pointer.y < v.top + edge ? pointer.y - (v.top + edge) : pointer.y > v.bottom - edge ? pointer.y - (v.bottom - edge) : 0
+  if (dy) {
+    scroller.scrollTop += dy * 0.4
+    update()
+  }
+  raf = requestAnimationFrame(edgeScroll)
+}
+function onUp() {
+  removeEventListener('pointermove', onMove)
+  removeEventListener('pointerup', onUp)
+  removeEventListener('pointercancel', onUp)
+  cancelAnimationFrame(raf)
+  if (box.value) {
+    // the release would otherwise click the card under it open; no click comes when it ends elsewhere
+    swallowClick = true
+    setTimeout(() => (swallowClick = false))
+  }
+  press = null
+  box.value = null
+  boxing.value = false
+}
+function onClickCapture(e: MouseEvent) {
+  if (!swallowClick) return
+  swallowClick = false
+  e.stopPropagation()
+  e.preventDefault()
+}
+// listened for on the whole scrolling page, so a box can start beside the grid too
+onMounted(() => {
+  scroller = grid.value?.closest('.viewport') ?? null
+  scroller?.addEventListener('pointerdown', onDown)
+  scroller?.addEventListener('mousedown', onMouseDown)
+})
+onUnmounted(() => {
+  onUp()
+  scroller?.removeEventListener('pointerdown', onDown)
+  scroller?.removeEventListener('mousedown', onMouseDown)
+})
 </script>
 
 <template>
-  <div class="grid" :style="{ '--card': `${zoom}px` }">
+  <div
+    ref="grid"
+    class="grid"
+    :class="{ boxing: box }"
+    :style="{ '--card': `${zoom}px` }"
+    @click.capture="onClickCapture"
+  >
+    <div v-if="box" class="marquee" :style="{ left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` }" />
     <article
       v-for="(it, i) in visible"
       :key="it.path"
+      :data-path="it.path"
       class="card-item"
       :class="{ sel: selected.has(it.path), muted: isMuted(it) }"
       @contextmenu="onItemMenu(it, i, $event)"
@@ -70,10 +195,23 @@ const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMute
 <style scoped>
 /* grid: the slider sets the smallest card; columns stretch to fill the row evenly */
 .grid {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--card), 1fr));
   gap: 12px;
   align-items: start;
+}
+.grid.boxing {
+  user-select: none;
+}
+/* the drag-select box: the primary colour, rounded like the cards' inner controls */
+.marquee {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid var(--zen-accent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--zen-accent) 16%, transparent);
 }
 .card-item {
   transform-origin: top left;
@@ -83,7 +221,6 @@ const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMute
   border-radius: var(--r-xl);
   border: 1px solid color-mix(in srgb, var(--zen-border) 70%, transparent);
   background: color-mix(in srgb, var(--zen-surface) 60%, transparent);
-  overflow: hidden;
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease;
@@ -92,9 +229,20 @@ const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMute
 .card-item:hover {
   border-color: color-mix(in srgb, var(--zen-accent) 60%, transparent);
 }
+/* selected: a 2px border laid exactly over the card's outline (its own border and a pixel in), over
+   the picture. Nothing reaches past the card, which scrolled under the sticky toolbar (lined up with
+   the outer columns) would show beside it */
 .card-item.sel {
   border-color: var(--zen-selected, var(--zen-accent));
-  box-shadow: 0 0 0 1px var(--zen-selected, var(--zen-accent));
+}
+.card-item.sel::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: 3;
+  border: 2px solid var(--zen-selected, var(--zen-accent));
+  border-radius: var(--r-xl);
+  pointer-events: none;
 }
 /* every card the same size: a square thumbnail (image positioned inside, so its own
    aspect can't stretch the card) over a fixed-height caption block */
@@ -108,6 +256,8 @@ const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMute
   background: var(--zen-surface-2);
   cursor: zoom-in;
   overflow: hidden;
+  /* the card's top corners: the card itself doesn't clip, so a selected card's border isn't cut */
+  border-radius: calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px) 0 0;
 }
 .thumb img {
   position: absolute;
@@ -203,7 +353,8 @@ const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMute
   color: #fbbf24;
 }
 .card-item:hover .check,
-.grid:has(.check.on) .check {
+.grid:has(.check.on) .check,
+.grid.boxing .check {
   opacity: 1;
 }
 .card-body {
