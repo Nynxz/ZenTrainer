@@ -165,11 +165,21 @@ uv run --with playwright --with pillow --no-project python docs/banner/render.py
 
 ## Credits
 
-- **Faces:** likeness scoring and the dataset face report run on [InsightFace](https://github.com/deepinsight/insightface)'s
-  ArcFace models, or for commercial use on fal's [AuraFace](https://huggingface.co/fal/AuraFace-v1)
-  with OpenCV's YuNet detector.
-- **[Fizgig](https://github.com/shootthesound/Fizgig)** by Peter Neill: the W8A16 int8 backward
-  kernel (by mabseyuk; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), and the measurements
-  behind a few defaults: EMA 0.98, MiniMax H3's adapter blocks 20-49 and the sharpest-frame clip stills.
+Code ZenTrainer carries from other projects, and its licences, is listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+- **Faces:** [InsightFace](https://github.com/deepinsight/insightface)'s models (non-commercial
+  use only), or for commercial use fal's [AuraFace](https://huggingface.co/fal/AuraFace-v1) with
+  OpenCV's YuNet. The face pipeline follows InsightFace's and OpenCV's.
+- **[ai-toolkit](https://github.com/ostris/ai-toolkit) by Ostris:** the Automagic v3 and v4
+  optimizers, the weighted timestep table and the training adapters. Also ideas: sigmoid
+  timesteps, the content/style bias, `[trigger]` in captions and MOSS Image Edit's picture layout.
+- **[Fizgig](https://github.com/shootthesound/Fizgig) by Peter Neill:** ideas, likeness scoring of
+  samples among them; the measurements behind EMA 0.98, MiniMax H3's adapter blocks 20-49 and the
+  sharpest-frame clip stills; and the W8A16 int8 backward kernel by mabseyuk.
+- **[VGL](https://github.com/Bria-AI/vgl) by Bria:** Fibo 2.0's caption schema and prompts.
+- **[OneTrainer](https://github.com/Nerogar/OneTrainer) by Nerogar:** ideas ZenTrainer follows:
+  compiling the repeated transformer block, the int8 backward on int8 tensor cores, and reading
+  its `-masklabel` mask files.
 - **@0xDELUXA:** AMD support's start: the ROCm PyTorch setup and whole-card VRAM on Windows (#1).
 - **@aksugat:** the RDNA3 int8 tile set, swept on an RX 7800 XT.

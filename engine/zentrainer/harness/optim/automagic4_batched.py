@@ -2,6 +2,9 @@
 automagic3_batched.py does for v3 (a LoRA's ~800 tensors one at a time cost ~146 ms a step on
 Krea 2). The math is the vendored Automagic4._update_param's, run once per stack; the state is
 the vendored one, so states save and resume either way, and tests check the two steps agree.
+
+Derived from Ostris's Automagic v4 (ai-toolkit, MIT, Copyright (c) 2024 Ostris, LLC):
+see THIRD_PARTY_NOTICES.md.
 """
 
 from __future__ import annotations

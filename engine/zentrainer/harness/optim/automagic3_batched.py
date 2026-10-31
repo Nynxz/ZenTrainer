@@ -6,6 +6,9 @@ loaded or offloaded). A LoRA has only a handful of shapes, so tensors are stacke
 the same math runs once per stack: a few hundred launches. The state (per tensor, same keys and
 layout) is the vendored one, so states save and resume either way; tests check the two steps
 agree.
+
+Derived from Ostris's Automagic v3 (ai-toolkit, MIT, Copyright (c) 2024 Ostris, LLC):
+see THIRD_PARTY_NOTICES.md.
 """
 
 from __future__ import annotations
