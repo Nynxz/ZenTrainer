@@ -142,7 +142,7 @@ watch(
         <button class="menu" aria-label="Open menu" @click="mobileOpen = true"><i class="mdi mdi-menu" /></button>
         <ZenLotus class="lotus" /> <b class="zt-title">ZenTrainer</b>
       </header>
-      <ScrollArea ref="scroller" class="content">
+      <ScrollArea ref="scroller" class="content" :end-inset="roomPx">
         <!-- a page marked remount (an app) starts fresh when its address changes, not reused -->
         <main><RouterView v-slot="{ Component, route: r }"><component :is="Component" :key="r.meta.remount ? r.path : undefined" /></RouterView></main>
         <!-- room to scroll the page's end up above the open log; below the content, so nothing visible moves -->
