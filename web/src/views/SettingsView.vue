@@ -314,10 +314,12 @@ async function pickFace(id: string) {
             {{ m === 'light' ? 'Light' : 'Dark' }}
           </button>
         </div>
+        <!-- always there, so picking a one-mode pack doesn't push the page down -->
         <p v-if="currentModes.length < 2" class="muted hint">
           {{ currentName }} is {{ mode }}-only. Packs with both modes follow your
           {{ currentTheme.preferred }} preference.
         </p>
+        <p v-else class="muted hint">{{ currentName }} has light and dark; your pick carries over to other packs with both.</p>
       </div>
 
 
