@@ -143,7 +143,7 @@
           "items": {
             "type": "object"
           },
-          "description": "Lower resolutions first: [{\"resolution\": 768, \"until\": 0.6}] trains at 768 for the first 60% of the run, then at `resolution`. Every resolution is cached before training. [] = one resolution throughout.",
+          "description": "Lower resolutions first: [{\"resolution\": 768, \"until\": 0.6}] trains at 768 for the first 60% of the run, then at `resolution`. Every resolution is cached before training. A stage may add its own \"batch_size\" (pictures per step at that resolution; `optim.batch_size` is the final resolution's). [] = one resolution throughout.",
           "default": []
         },
         "stage_blend": {

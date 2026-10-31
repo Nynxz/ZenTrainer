@@ -21,7 +21,7 @@ export interface TrainSpec {
     folder: string
     resolution: number
     /** lower resolutions first: [{resolution: 768, until: 0.6}] trains at 768 for 60% of the run */
-    stages?: { resolution: number; until: number }[]
+    stages?: { resolution: number; until: number; batch_size?: number }[]
     /** share of the run each resolution change blends over */
     stage_blend?: number
     caption_ext: string

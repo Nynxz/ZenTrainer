@@ -61,7 +61,7 @@ The pictures and videos, their captions, and how they're prepared.
 |---|---|---|---|
 | `dataset.folder` | `""` | text | The dataset folder: pictures and videos with same-name caption files. A kohya-style "N_name" subfolder repeats its pictures N times. |
 | `dataset.resolution` | `1024` | whole number, >= 64 | Training resolution: pictures are resized to about this many pixels squared. |
-| `dataset.stages` | `[]` | list of object | Lower resolutions first: [{"resolution": 768, "until": 0.6}] trains at 768 for the first 60% of the run, then at `resolution`. Every resolution is cached before training. [] = one resolution throughout. |
+| `dataset.stages` | `[]` | list of object | Lower resolutions first: [{"resolution": 768, "until": 0.6}] trains at 768 for the first 60% of the run, then at `resolution`. Every resolution is cached before training. A stage may add its own "batch_size" (pictures per step at that resolution; `optim.batch_size` is the final resolution's). [] = one resolution throughout. |
 | `dataset.stage_blend` | `0.2` | number, >= 0, < 1 | How much of the run each resolution change blends over, so nothing switches at once (0.6 to 0.8: the next resolution goes from no steps to every step). |
 | `dataset.caption_ext` | `".txt"` | text | The caption files' extension. |
 | `dataset.buckets` | `true` | true/false | Aspect-ratio buckets: each picture is resized to the closest shape of about resolution² pixels. Off = centre-cropped squares. |

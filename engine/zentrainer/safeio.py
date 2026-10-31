@@ -12,8 +12,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 
 def _tmp(path: Path) -> Path:
@@ -22,17 +23,73 @@ def _tmp(path: Path) -> Path:
 
 
 def write_bytes(path: str | os.PathLike, data: bytes) -> None:
-    path = Path(path)
-    tmp = _tmp(path)
-    try:
+    write_with(path, lambda f: f.write(data))
+
+
+def write_with(path: str | os.PathLike, write: Callable[[BinaryIO], Any], sync_dir: bool = False) -> None:
+    """write_bytes for a writer that streams into an open file (torch.save). `sync_dir` also puts
+    the rename itself on disk, for a file whose older copies are deleted once it's written."""
+    def fill(tmp: Path) -> None:
         with open(tmp, "wb") as f:
-            f.write(data)
+            write(f)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+
+    _swap_in(Path(path), fill, sync_dir)
+
+
+def write_to_path(path: str | os.PathLike, write: Callable[[str], Any], sync_dir: bool = False) -> None:
+    """write_with for a writer that only takes a file name (safetensors' save_file, which writes
+    straight from the tensors rather than building the file in memory first)."""
+    def fill(tmp: Path) -> None:
+        write(str(tmp))
+        with _open_held(tmp, "rb+") as f:
+            os.fsync(f.fileno())
+
+    _swap_in(Path(path), fill, sync_dir)
+
+
+def _swap_in(path: Path, fill: Callable[[Path], None], sync_dir: bool) -> None:
+    tmp = _tmp(path)
+    try:
+        fill(tmp)
+        _replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    if sync_dir and os.name != "nt":  # Windows can't open a folder to flush it
+        try:
+            fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:  # some shares and mounts can't flush a folder; the file itself is on disk
+            pass
+
+
+def _replace(tmp: Path, path: Path) -> None:
+    # Windows: os.replace fails with WinError 5 while another process (the web app polling run.json,
+    # an antivirus scan) has the target open; the lock is brief, so retry for a few seconds
+    for attempt in range(100):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 99:
+                raise
+            time.sleep(0.05)
+
+
+def _open_held(path: Path, mode: str):
+    # the same brief Windows lock as _replace, on opening a file another writer just closed
+    for attempt in range(100):
+        try:
+            return open(path, mode)
+        except PermissionError:
+            if os.name != "nt" or attempt == 99:
+                raise
+            time.sleep(0.05)
 
 
 def write_text(path: str | os.PathLike, text: str, encoding: str = "utf-8") -> None:

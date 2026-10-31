@@ -9,6 +9,7 @@ the session, so a run holds ComfyUI's execution lane (and its GPU) while it trai
 from __future__ import annotations
 
 import pickle
+import re
 
 import contextlib
 import dataclasses
@@ -22,7 +23,7 @@ from typing import Any
 
 import torch
 
-from .. import events, paths, vram
+from .. import events, paths, safeio, vram
 from ..spec import TrainSpec, slugify
 from . import control as control_mod
 from . import data, models, optim
@@ -223,6 +224,8 @@ class _Lazy:
 
 
 class Trainer:
+    _rewarm_from: int | None = None  # the step a weights-only resume's LR ramp started at
+
     def __init__(self, spec: TrainSpec, run_id: str, *, store=None, emit: Callable = events.emit,
                  control: control_mod.Control | None = None, callbacks: list[Callback] | None = None,
                  resume_from: str | None = None, resume_state: str | None = None, sample_job: dict | None = None):
@@ -550,7 +553,7 @@ class Trainer:
                             progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
             if s.slider.kind == "pairs":
                 self._keep_pairs(ds)
-            self._stages.append((float(st["until"]), res, ds, data.Batches(ds, s.optim.batch_size, s.seed + res)))
+            self._stages.append((float(st["until"]), res, ds, data.Batches(ds, st.get("batch_size") or s.optim.batch_size, s.seed + res)))
         self._final_stage = (s.dataset.resolution, self.dataset, self.batches)
         self._res_seen = 0
         if self._stages:
@@ -625,9 +628,11 @@ class Trainer:
         self.objective = Objective(s.objective)
         self.denoiser = Denoiser(patcher, attention_override(s.memory.attention))
         self.streams = Streams(patcher.model)
-        if self.streams.multi and s.optim.batch_size > 1:
+        biggest = max([s.optim.batch_size] + [int(st.get("batch_size") or 1) for st in s.dataset.stages])
+        self._spread_stride = biggest  # noise levels a step may draw, at most: spread positions never overlap
+        if self.streams.multi and biggest > 1:
             raise ValueError(f"{type(patcher.model).__name__} trains one image per step: set batch size 1 "
-                             f"and use gradient accumulation {s.optim.batch_size} instead")
+                             f"and use gradient accumulation {biggest} instead")
         self._shift = s.objective.shift
         if self._shift and not is_flow(self.denoiser.model_sampling):
             raise ValueError(f"objective.shift is for flow-matching models; {type(self.denoiser.model_sampling).__name__} isn't one. Set it to 0.")
@@ -672,8 +677,30 @@ class Trainer:
         except pickle.UnpicklingError as e:
             raise RuntimeError(f"{state_path.name} holds more than a training state (tensors, numbers, lists): "
                                f"not loaded. Resume from another checkpoint, or Duplicate to start over ({e})") from None
+        except PermissionError:  # held open for a moment (Windows): not damaged, so not a reason to drop it
+            raise
+        except (RuntimeError, EOFError, OSError) as e:
+            # a truncated file (power cut while it was written): the LoRA file beside it is whole, so
+            # go on from its weights and step with a fresh optimizer, scheduler, EMA and RNG
+            # (a missing file isn't damaged: that still fails)
+            tags = re.findall(r"step(\d+)", Path(self.resume_from).name)  # our own _stepNNNNNN tag is the last
+            if not tags or not state_path.is_file():
+                raise
+            logging.warning("[ZenTrainer] %s is unreadable (%s): resuming from the LoRA's weights with a fresh "
+                            "optimizer state%s", state_path.name, str(e).splitlines()[0],
+                            " (with EMA on, the file holds the average: training goes on from that)" if self.ema is not None else "")
+            self.step = int(tags[-1])
+            # the LR schedule carries on from there (not from the top), after a short warmup for the cold optimizer
+            self._rewarm_from = self.step if optim.resume_cold(self.optimizer, self.scheduler, self.spec.optim, self.step) else None
+            self._reseed_batches()
+            self.progress.update_absolute(self.step)
+            self._status("loading", message=f"resumed from step {self.step} (weights only: its training state was damaged)")
+            return
         self.optimizer.load_state_dict(self._saved_optimizer_state(state["optimizer"]))
         self.scheduler.load_state_dict(state["scheduler"])
+        if state.get("rewarm_from") is not None:  # saved during that ramp: it goes on (lambdas aren't saved)
+            self._rewarm_from = int(state["rewarm_from"])
+            optim.rewarm(self.scheduler, self._rewarm_from)
         self.step = int(state["step"])
         if self.objective.balance is not None and state.get("balance"):  # its loss averages carry on
             self.objective.balance.load_state_dict(state["balance"])
@@ -1202,7 +1229,7 @@ class Trainer:
             conds = [self._cond(i, x0, shapes) for i in idx]
 
             noise = torch.randn(x0.shape, generator=self.generator).to(self.device)
-            drawn = (self.step * acc + a) * s.optim.batch_size  # noise levels before these (spread)
+            drawn = (self.step * acc + a) * self._spread_stride  # noise levels before these (spread)
             percents = sample_percents(s.objective, len(idx), self.generator, drawn, s.seed)
             sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
             x_t = self.objective.noisy(ms, sigma, noise, x0)
@@ -1643,31 +1670,28 @@ class Trainer:
         keep = self.spec.output.keep_states
         state = state_dir(self.run_id) / f"{name}.pt"
         _room_for(folder, sum(t.numel() * t.element_size() for t in weights.values()))
-        # written beside it under a name ComfyUI doesn't list, then swapped in: a full disk or a
-        # kill mid-save leaves no half-written LoRA in the loras folder
-        part = folder / f".{name}.part"
-        try:
-            sft.save_file(weights, str(part), metadata=write_metadata(self.spec.to_dict(), self.step))
-            # safetensors writes owner-only (0600); a LoRA is an output like ComfyUI's images, readable
-            # by whatever else serves or syncs the folder (Docker, a share, another user's ComfyUI)
-            os.chmod(part, 0o644)
-            os.replace(part, path)
-        finally:
-            part.unlink(missing_ok=True)
+        # written beside it under a name ComfyUI doesn't list, flushed, then swapped in: a full disk,
+        # a kill or a power cut mid-save leaves no half-written LoRA in the loras folder
+        meta = write_metadata(self.spec.to_dict(), self.step)
+        safeio.write_to_path(path, lambda tmp: sft.save_file(weights, tmp, metadata=meta))
+        # safetensors writes owner-only (0600); a LoRA is an output like ComfyUI's images, readable
+        # by whatever else serves or syncs the folder (Docker, a share, another user's ComfyUI)
+        os.chmod(path, 0o644)
         # resumable state (optimizer, schedule, step, RNG) goes outside the LoRA folders:
         # those are registered with ComfyUI, which would list a .pt there as a "LoRA"
         if keep != "none":
             state.parent.mkdir(parents=True, exist_ok=True)
-            tmp_state = state.with_name(f".{state.name}.part")
-            torch.save({
+            ramping = self._rewarm_from is not None and self.step < self._rewarm_from + optim.REWARM_STEPS
+            # on disk, its name included, before the older states are deleted below
+            safeio.write_with(state, lambda f: torch.save({
                 "step": self.step, "optimizer": self.optimizer.state_dict(), "scheduler": self.scheduler.state_dict(),
                 "rng": self.generator.get_state(),
                 "train_seconds": self.train_seconds,
                 **({"balance": self.objective.balance.state_dict()} if self.objective.balance is not None else {}),
                 **({"live": {k: v.cpu() for k, v in live.items()}} if live is not None else {}),
                 **({"ema": self.ema.state_dict()} if self.ema is not None else {}),
-            }, str(tmp_state))
-            os.replace(tmp_state, state)
+                **({"rewarm_from": self._rewarm_from} if ramping else {}),
+            }, f), sync_dir=True)
             if keep == "latest":  # resume only ever needs the newest
                 for old in state.parent.glob("*.pt"):
                     if old != state:

@@ -305,7 +305,16 @@ export function useRunForm() {
   const opt = computed(() => optimizers.value.find((o) => o.id === spec.optim.optimizer))
   const epochs = computed(() => {
     const per = dataset.value?.steps_per_epoch
-    return per ? (spec.optim.steps * spec.optim.batch_size * spec.optim.grad_accumulation_steps) / per : null
+    if (!per) return null
+    // pictures per step over the run: each stage's batch for its share (the blends roughly even out)
+    let from = 0
+    let batch = 0
+    for (const st of spec.dataset.stages ?? []) {
+      batch += (st.until - from) * (st.batch_size ?? spec.optim.batch_size)
+      from = st.until
+    }
+    batch += (1 - from) * spec.optim.batch_size
+    return (spec.optim.steps * batch * spec.optim.grad_accumulation_steps) / per
   })
   const modelLabel = computed(() => (spec.model.kind === 'checkpoint' ? spec.model.ckpt_name : spec.model.unet_name))
   // Preserve classes' switch (TrainingSection), here so the summary can refuse it on with no words:
