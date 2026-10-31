@@ -30,9 +30,10 @@ function measure() {
   const el = viewport.value
   if (!el) return
   const [scrollTop, scrollHeight, clientHeight] = [pos(el), full(el), span(el)]
-  scrollable.value = scrollHeight > clientHeight + 1
+  // a tall log can leave only a sliver of track: no bar then, and a thumb never over half of it
   const track = clientHeight - 8
-  const size = Math.max(MIN_THUMB, (clientHeight / scrollHeight) * track)
+  scrollable.value = scrollHeight > clientHeight + 1 && track >= 16
+  const size = Math.max(Math.min(MIN_THUMB, track / 2), (clientHeight / scrollHeight) * track)
   thumbSize.value = size
   const max = scrollHeight - clientHeight
   thumbTop.value = 4 + (max > 0 ? (scrollTop / max) * (track - size) : 0)
