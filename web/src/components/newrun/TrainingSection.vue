@@ -10,7 +10,7 @@ import { setSetting } from '@/stores/settings'
 import LoraUses from './LoraUses.vue'
 import { items, useRunFormContext } from './form'
 
-const { spec, loraPlaces, choices, familyId, optimizers, dataset, datasets, opt, epochs, noise, resuming, preserveOn } = useRunFormContext()
+const { spec, loraPlaces, choices, familyId, optimizers, dataset, datasets, opt, epochs, noise, resuming, preserveOn, stage0 } = useRunFormContext()
 // validation on a held-out dataset: any but the one training
 const heldOutItems = computed(() => [
   { value: '', label: 'From the training set' },
@@ -265,7 +265,10 @@ const patterns = computed({
       <div class="sub-title">Optimizer</div>
       <div class="grid-2">
         <ZenField label="Warmup steps" stack><ZenNumber v-model="spec.optim.warmup_steps" :min="0" :step="10" :precision="0" /></ZenField>
-        <ZenField label="Batch size" stack><ZenNumber v-model="spec.optim.batch_size" :min="1" :step="1" :precision="0" /></ZenField>
+        <ZenField label="Batch size" stack :tip="stage0 ? `Pictures per step at ${spec.dataset.resolution} px` : ''"><ZenNumber v-model="spec.optim.batch_size" :min="1" :step="1" :precision="0" /></ZenField>
+        <ZenField v-if="stage0" :label="`Batch size at ${stage0.resolution}`" stack tip="Pictures per step during the lower-resolution stage; lower-resolution steps use less memory, so a bigger batch fits there">
+          <ZenNumber :model-value="stage0.batch_size ?? spec.optim.batch_size" :min="1" :step="1" :precision="0" @update:model-value="stage0.batch_size = $event" />
+        </ZenField>
         <ZenField label="Grad accumulation" stack><ZenNumber v-model="spec.optim.grad_accumulation_steps" :min="1" :step="1" :precision="0" /></ZenField>
         <ZenField label="LoRA+" stack tip="The LoRA's up matrices learn this many times faster than the down ones: trains faster at the same stability. 4 is a safe start, the paper uses 16. Off for LoKr">
           <div class="sw-row">

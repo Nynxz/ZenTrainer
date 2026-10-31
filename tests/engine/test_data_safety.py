@@ -67,6 +67,38 @@ def test_atomic_write_keeps_the_old_file_when_writing_fails(tmp_path, monkeypatc
     assert [p.name for p in tmp_path.iterdir()] == ["caption.txt"]  # no temp left behind
 
 
+def test_a_streamed_save_cut_short_keeps_the_old_file(tmp_path):
+    f = tmp_path / "run.pt"
+    f.write_bytes(b"the last good state")
+
+    def half(out):  # torch.save killed halfway through
+        out.write(b"half a ")
+        raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        safeio.write_with(f, half)
+    assert f.read_bytes() == b"the last good state"
+    assert [p.name for p in tmp_path.iterdir()] == ["run.pt"]
+    safeio.write_with(f, lambda out: out.write(b"a new state"))
+    assert f.read_bytes() == b"a new state"
+
+
+def test_a_save_by_file_name_cut_short_keeps_the_old_file(tmp_path):
+    f = tmp_path / "lora.safetensors"
+    f.write_bytes(b"the last good LoRA")
+
+    def half(name):  # save_file killed halfway through
+        open(name, "wb").write(b"half a ")
+        raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        safeio.write_to_path(f, half, sync_dir=True)
+    assert f.read_bytes() == b"the last good LoRA"
+    assert [p.name for p in tmp_path.iterdir()] == ["lora.safetensors"]
+    safeio.write_to_path(f, lambda name: open(name, "wb").write(b"a new LoRA"), sync_dir=True)
+    assert f.read_bytes() == b"a new LoRA"
+
+
 def test_a_corrupt_settings_file_is_kept_not_overwritten(tmp_path):
     f = tmp_path / "settings.json"
     f.write_text('{"cats": {"caption_subject": "Tom"')  # cut short
@@ -158,3 +190,19 @@ def test_a_watermark_mask_applies_to_same_size_images_and_undoes(ds, tmp_path, m
         datasets.undo_masks("cats", out["batch"])  # once
     with pytest.raises(datasets.DatasetError):
         datasets.undo_masks("cats", "../../etc")
+
+
+def test_a_folder_that_cant_be_flushed_doesnt_fail_a_save(tmp_path, monkeypatch):
+    f = tmp_path / "run.pt"
+    real = safeio.os.fsync
+
+    def picky(fd):  # a share that flushes files but not folders
+        if safeio.os.path.isdir(f"/proc/self/fd/{fd}") or not safeio.os.path.exists(f"/proc/self/fd/{fd}"):
+            raise OSError(22, "Invalid argument")
+        return real(fd)
+
+    if safeio.os.name == "nt" or not safeio.os.path.isdir("/proc/self/fd"):
+        pytest.skip("needs /proc to tell a folder from a file")
+    monkeypatch.setattr(safeio.os, "fsync", picky)
+    safeio.write_with(f, lambda out: out.write(b"saved"), sync_dir=True)
+    assert f.read_bytes() == b"saved"

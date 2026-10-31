@@ -94,6 +94,113 @@ def test_schedules_warmup_then_decay():
     assert opt.param_groups[0]["lr"] == pytest.approx(0.5 * sched.lr_lambdas[0](sched.last_epoch))
 
 
+def test_seek_puts_a_fresh_schedule_where_a_stepped_one_is():
+    p = [torch.nn.Parameter(torch.zeros(1))]
+    spec = OptimSpec(lr_scheduler="cosine", warmup_steps=10, steps=110, learning_rate=1.0)
+    opt, sched = optim.build(p, spec)
+    for _ in range(75):
+        opt.step()
+        sched.step()
+    fresh_opt, fresh = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    optim.seek(fresh_opt, fresh, 75)
+    assert fresh_opt.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"])
+    fresh_opt.step()
+    fresh.step()
+    opt.step()
+    sched.step()
+    assert fresh_opt.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"])
+
+
+def _resumer(tmp_path, lora_name, state_bytes):
+    from zentrainer.harness.trainer import Trainer
+
+    p = [torch.nn.Parameter(torch.zeros(1))]
+    spec = OptimSpec(lr_scheduler="linear", warmup_steps=0, steps=1000, learning_rate=1.0)
+    opt, sched = optim.build(p, spec)
+    state = tmp_path / "run.pt"
+    if state_bytes is not None:
+        state.write_bytes(state_bytes)
+    t = types.SimpleNamespace(resume_from=str(tmp_path / lora_name), optimizer=opt, scheduler=sched, ema=None, step=0,
+                              spec=types.SimpleNamespace(optim=spec),
+                              _reseed_batches=lambda: None, progress=types.SimpleNamespace(update_absolute=lambda n: None),
+                              _status=lambda *a, **k: None)
+    return t, state, (lambda: Trainer._restore(t, state))
+
+
+def test_a_damaged_state_resumes_from_the_loras_step_and_schedule(tmp_path):
+    t, _, restore = _resumer(tmp_path, "my_2step3_style_20261031-000000-abcdef_step000600.safetensors", b"PK\x03\x04 cut short")
+    restore()
+    assert t.step == 600  # the last stepNNN, not the 3 in the name
+    lrs = []
+    for _ in range(optim.REWARM_STEPS + 1):
+        lrs.append(t.optimizer.param_groups[0]["lr"])
+        t.optimizer.step()
+        t.scheduler.step()
+    # the fresh optimizer ramps up to where a linear decay is at 600 of 1000, then follows it down
+    assert lrs[0] == pytest.approx(0.4 / optim.REWARM_STEPS)
+    assert lrs[-1] == pytest.approx(1 - (600 + optim.REWARM_STEPS) / 1000)
+
+
+def test_a_final_lora_resumes_from_its_saved_step_not_its_name(tmp_path):
+    from safetensors.torch import save_file
+
+    name = "portrait-step100_20261031-000000-abcdef.safetensors"  # a final save: no tag of ours
+    save_file({"w": torch.zeros(1)}, str(tmp_path / name), metadata={"zentrainer.step": "1000"})
+    t, _, restore = _resumer(tmp_path, name, b"PK\x03\x04 cut short")
+    restore()
+    assert t.step == 1000
+
+
+def test_no_saved_step_fails_rather_than_guess_one_from_the_name(tmp_path):
+    _, _, restore = _resumer(tmp_path, "portrait-step100_20261031-000000-abcdef.safetensors", b"PK\x03\x04 cut short")
+    with pytest.raises(RuntimeError):
+        restore()
+
+
+def test_a_missing_state_still_fails(tmp_path):
+    _, _, restore = _resumer(tmp_path, "my_style_step000060.safetensors", None)
+    with pytest.raises(OSError):
+        restore()
+
+
+def test_a_held_state_file_is_not_treated_as_damaged(tmp_path, monkeypatch):
+    def held(*a, **k):
+        raise PermissionError("in use by another process")
+
+    monkeypatch.setattr(torch, "load", held)
+    _, _, restore = _resumer(tmp_path, "my_style_step000060.safetensors", b"whole")
+    with pytest.raises(PermissionError):
+        restore()
+
+
+def test_automagic_resumes_cold_without_the_ramp():
+    spec = OptimSpec(optimizer="Automagic", lr_scheduler="constant", steps=1000, learning_rate=1e-6)
+    opt, sched = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    assert not optim.resume_cold(opt, sched, spec, 600)  # it seeds its LRs from the group's: a ramp would count twice
+    assert opt.param_groups[0]["lr"] == pytest.approx(1e-6)
+
+
+def test_a_ramp_saved_midway_goes_on_after_a_resume():
+    spec = OptimSpec(lr_scheduler="linear", warmup_steps=0, steps=1000, learning_rate=1.0)
+    opt, sched = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    assert optim.resume_cold(opt, sched, spec, 600)
+    for _ in range(20):
+        opt.step()
+        sched.step()
+    saved_opt, saved_sched = opt.state_dict(), sched.state_dict()
+    opt.step()
+    sched.step()
+    expected = opt.param_groups[0]["lr"]
+    # a fresh run restoring that save, as _restore does
+    opt2, sched2 = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    opt2.load_state_dict(saved_opt)
+    sched2.load_state_dict(saved_sched)
+    optim.rewarm(sched2, 600)
+    opt2.step()
+    sched2.step()
+    assert opt2.param_groups[0]["lr"] == pytest.approx(expected)  # still ramping, not jumped to the schedule
+
+
 def test_buckets_respect_area_step_and_pick_by_aspect():
     sizes = data.bucket_sizes(1024, 64)
     assert all(w % 64 == 0 and h % 64 == 0 and w * h <= 1024 * 1024 for w, h in sizes)

@@ -61,7 +61,9 @@ class DatasetSpec:
                               ge=64)
     stages: list[dict] = setting(doc='Lower resolutions first: [{"resolution": 768, "until": 0.6}] trains at 768 for '
                                      "the first 60% of the run, then at `resolution`. Every resolution is cached "
-                                     "before training. [] = one resolution throughout.", factory=list)
+                                     "before training. A stage may add its own \"batch_size\" (pictures per step at that "
+                                     "resolution; `optim.batch_size` is the final resolution's). "
+                                     "[] = one resolution throughout.", factory=list)
     stage_blend: float = setting(0.2, "How much of the run each resolution change blends over, so nothing switches "
                                       "at once (0.6 to 0.8: the next resolution goes from no steps to every step).",
                                  ge=0, lt=1)
@@ -448,8 +450,10 @@ class TrainSpec:
             raise SpecError("dataset.folder is required")
         last = 0.0
         for st in d.stages:
-            if not isinstance(st.get("resolution"), int) or not isinstance(st.get("until"), (int, float)) or set(st) - {"resolution", "until"}:
-                raise SpecError('dataset.stages are {"resolution": 768, "until": 0.6}')
+            if not isinstance(st.get("resolution"), int) or not isinstance(st.get("until"), (int, float)) or set(st) - {"resolution", "until", "batch_size"}:
+                raise SpecError('dataset.stages are {"resolution": 768, "until": 0.6, "batch_size": 4} (batch_size optional)')
+            if "batch_size" in st and (not isinstance(st["batch_size"], int) or isinstance(st["batch_size"], bool) or st["batch_size"] < 1):
+                raise SpecError("a stage's batch_size is a whole number, 1 or more")
             if not 256 <= st["resolution"] < d.resolution:
                 raise SpecError(f"a stage's resolution is below the run's ({d.resolution}) and at least 256")
             if not last < st["until"] < 1.0:
@@ -951,10 +955,21 @@ def sample_prompts(s: SampleSpec) -> list[SamplePrompt]:
 
 # what a trained run's saved LoRA, optimizer state and dataset cache depend on: everything else
 # (memory, samples, validation, LR and schedule, length, timesteps) may change at a resume
-LOCKED_AT_RESUME = ("model", "dataset", "network", "optim.optimizer", "optim.batch_size", "optim.lora_plus", "seed")
+LOCKED_AT_RESUME = ("model", "dataset", "network", "optim.optimizer", "optim.lora_plus", "seed")
+
+
+def _without_batch(d: dict) -> dict:
+    # batch sizes (a stage's and optim.batch_size) shape each step, not the saved LoRA, optimizer state
+    # or dataset cache, so a resume may change them
+    d = json.loads(json.dumps(d))
+    if isinstance(d.get("dataset"), dict):
+        d["dataset"]["stages"] = [{k: v for k, v in st.items() if k != "batch_size"} for st in d["dataset"].get("stages") or []]
+    return d
 
 
 def locked_changes(old: dict, new: dict) -> list[str]:
+    old, new = _without_batch(old), _without_batch(new)
+
     def at(d: dict, path: str):
         for k in path.split("."):
             d = d.get(k) if isinstance(d, dict) else None
