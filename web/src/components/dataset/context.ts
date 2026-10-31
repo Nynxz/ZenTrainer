@@ -111,6 +111,7 @@ export function useDataset(name: () => string) {
   const sortKey = ref<'name' | 'size' | 'res' | 'caption'>('name')
   const sortDir = ref<1 | -1>(1)
   const selected = reactive(new Set<string>())
+  const boxing = ref(false) // a drag-select is under way in the grid
   // Review on a caption job: only the images it wrote
   const reviewing = ref<{ job: CaptionJob; paths: Set<string> } | null>(null)
   function review(job: CaptionJob) {
@@ -389,7 +390,7 @@ export function useDataset(name: () => string) {
   return {
     view, zoom, fit, showMasks, sideOpen,
     items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load,
-    filter, query, sortKey, sortDir, selected, reviewing, review, counts,
+    filter, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
     isMuted, setMuted, imageFlags, statsPanel,
     faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, faceOf, faceIssue, faceNote,
     shown, visible, more, sortBy, toggleSelect, onItemClick, menu, menuItems, onItemMenu, allShownSelected, toggleAll,

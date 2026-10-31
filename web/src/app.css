@@ -211,6 +211,37 @@ html {
 textarea {
   scrollbar-color: color-mix(in srgb, var(--zen-text) 28%, transparent) transparent;
 }
+/* a drag that strays over pictures or controls doesn't paint them with the text highlight; text
+   (captions, logs, file details) and fields still select */
+img,
+video,
+button {
+  user-select: none;
+}
+/* the lightbox is pictures and controls: none of it highlights, but its side panel's text does.
+   UPSTREAM: ZenLightbox */
+.zlb {
+  user-select: none;
+}
+.zlb-panel {
+  user-select: text;
+}
+/* the lightbox's gallery: even room either side of the pictures, the right side holding a slimmer
+   scrollbar clear of them (it ran right alongside the right column). The room goes round the
+   scroller, not into its padding: the gallery sizes its rows from the scroller's width less its own
+   10px padding, and a wider padding left a gap under the last row. UPSTREAM: ZenLightbox */
+.zlb .zlb-tscroll {
+  padding: 0 4px;
+}
+.zlb .zlb-tscroll .zen-scroll-thumb {
+  width: 4px;
+  right: 4px;
+}
+.zlb .zlb-tscroll .zen-scroll-track:hover .zen-scroll-thumb,
+.zlb .zlb-tscroll .zen-scroll-thumb:active {
+  width: 6px;
+  right: 3px;
+}
 
 
 /* Masks in ZenKit's lightbox: what the mask leaves out as Source's purple/black missing-texture
@@ -268,10 +299,30 @@ textarea {
   padding: 0 10px;
   flex-wrap: nowrap;
   overflow: hidden;
+  /* controls only: a page selection dragged across it doesn't paint them (or the search's
+     placeholder) as highlighted. Typing in the search, and selecting what's typed, still work */
+  user-select: none;
 }
 .page-toolbar .search {
   flex: 1 1 120px;
   min-width: 70px;
+}
+/* every control in the bar one height and one frame: ZenKit's fields (search, menus, at their small
+   size) raised to its usual control height, and our switches dressed as fields to match */
+.page-toolbar {
+  --tb-h: var(--zen-control-h, 28px);
+  --zen-control-h-sm: var(--tb-h);
+}
+.page-toolbar .view-switch {
+  height: var(--tb-h);
+  align-items: center;
+  background: var(--zen-field-bg, var(--zen-input, #1b1b20));
+  border: 1px solid var(--zen-control-border, var(--zen-border, #34343c));
+  border-radius: var(--zen-radius, 7px);
+}
+.page-toolbar .view-switch button {
+  height: calc(var(--tb-h) - 6px);
+  border-radius: max(0px, calc(var(--zen-radius, 7px) - 2px));
 }
 /* a phone: the controls wrap onto a second row rather than past the edge (the search, the side
    panel's button) */

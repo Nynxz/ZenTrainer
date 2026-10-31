@@ -21,7 +21,7 @@ const router = useRouter()
 
 const ds = useDataset(() => props.name)
 provide(DATASET, ds)
-const { view, zoom, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, query, selected, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
+const { view, zoom, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, query, selected, boxing, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
 
 // In a narrow window the panel would land under every picture, out of reach: there it's a drawer
 // over the right edge instead, opened by the same button, closed on its own (not remembered)
@@ -126,8 +126,13 @@ async function upload(files: File[]) {
   }
 }
 let depth = 0
+// a picture dragged from this page (a card, the lightbox) carries itself as a file too: only files
+// from outside are added
+let inner = false
+const onDragStart = () => (inner = true)
+const onDragEnd = () => (inner = false)
 const onEnter = (e: DragEvent) => {
-  if (e.dataTransfer?.types.includes('Files')) {
+  if (!inner && e.dataTransfer?.types.includes('Files')) {
     depth++
     dragging.value = true
   }
@@ -143,13 +148,15 @@ const onDrop = (e: DragEvent) => {
   e.preventDefault()
   depth = 0
   dragging.value = false
-  upload([...(e.dataTransfer?.files ?? [])])
+  if (!inner) upload([...(e.dataTransfer?.files ?? [])])
 }
 onMounted(() => {
   addEventListener('dragenter', onEnter)
   addEventListener('dragleave', onLeave)
   addEventListener('dragover', onOver)
   addEventListener('drop', onDrop)
+  addEventListener('dragstart', onDragStart)
+  addEventListener('dragend', onDragEnd)
   addEventListener('keydown', onEsc)
 })
 onUnmounted(() => {
@@ -157,6 +164,8 @@ onUnmounted(() => {
   removeEventListener('dragleave', onLeave)
   removeEventListener('dragover', onOver)
   removeEventListener('drop', onDrop)
+  removeEventListener('dragstart', onDragStart)
+  removeEventListener('dragend', onDragEnd)
   removeEventListener('keydown', onEsc)
 })
 </script>
@@ -232,16 +241,16 @@ onUnmounted(() => {
 
     <!-- selecting doesn't move anything: the actions float over the bottom of the page -->
     <Transition name="selbar">
-      <div v-if="selected.size" class="sel-bar">
-        <b>{{ selected.size }} selected</b>
+      <div v-if="selected.size || boxing" class="sel-bar zen-surface">
+        <b>{{ selected.size }}<span class="lbl"> selected</span></b>
         <button class="chip-btn" :title="allShownSelected ? 'Deselect the shown images' : 'Select every shown image'" @click="toggleAll">
-          <i :class="allShownSelected ? 'mdi mdi-checkbox-marked' : 'mdi mdi-checkbox-multiple-blank-outline'" /> {{ allShownSelected ? 'Deselect shown' : 'Select shown' }}
+          <i :class="allShownSelected ? 'mdi mdi-checkbox-marked' : 'mdi mdi-checkbox-multiple-blank-outline'" /><span class="lbl">{{ allShownSelected ? 'Deselect shown' : 'Select shown' }}</span>
         </button>
         <span class="sel-sep" />
-        <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /> Mute</button>
-        <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /> Unmute</button>
-        <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /> Masks</button>
-        <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /> Delete</button>
+        <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /><span class="lbl">Mute</span></button>
+        <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /><span class="lbl">Unmute</span></button>
+        <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /><span class="lbl">Masks</span></button>
+        <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /><span class="lbl">Delete</span></button>
         <span class="sel-sep" />
         <button class="chip-btn" title="Clear the selection (Esc)" @click="selected.clear()"><i class="mdi mdi-close" /></button>
       </div>
@@ -407,7 +416,8 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
 }
-/* the selection's actions float over the page bottom: selecting moves nothing */
+/* the selection's actions float over the page bottom: selecting moves nothing. Its look (border,
+   corners, background, shadow) is the theme's floating surface, as the right-click menu's is */
 .sel-bar {
   position: fixed;
   left: 50%;
@@ -417,12 +427,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--zen-border);
-  background: var(--zen-surface);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  width: max-content; /* its own width, not the half window left: 50% would leave it */
+  max-width: calc(100vw - 32px);
+  white-space: nowrap;
+  padding: 6px 8px 6px 14px;
   font-size: 13px;
+}
+/* a narrow window: icons and the count only (each button's title still says what it does) */
+@media (max-width: 760px) {
+  .sel-bar .lbl {
+    display: none;
+  }
 }
 .sel-sep {
   width: 1px;

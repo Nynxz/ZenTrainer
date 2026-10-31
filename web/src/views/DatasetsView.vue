@@ -268,15 +268,16 @@ const ago = (t?: number) => {
   flex: 1;
   min-width: 0;
 }
+/* framed like the menu beside it (the toolbar's field look) */
 .dir {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: var(--tb-h, 28px);
+  height: var(--tb-h, 28px);
   flex: none;
-  border: 1px solid var(--zen-border);
-  border-radius: var(--r-sm);
-  background: none;
+  border: 1px solid var(--zen-control-border, var(--zen-border));
+  border-radius: var(--zen-radius, 7px);
+  background: var(--zen-field-bg, var(--zen-input));
   color: var(--zen-muted);
   font-size: 16px;
   cursor: pointer;
