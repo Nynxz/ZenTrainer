@@ -1,3 +1,5 @@
+"""The faces cache: a re-check of a dataset looks at, counts and saves only what changed."""
+
 import os
 import types
 
