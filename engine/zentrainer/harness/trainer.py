@@ -224,6 +224,8 @@ class _Lazy:
 
 
 class Trainer:
+    _rewarm_from: int | None = None  # the step a weights-only resume's LR ramp started at
+
     def __init__(self, spec: TrainSpec, run_id: str, *, store=None, emit: Callable = events.emit,
                  control: control_mod.Control | None = None, callbacks: list[Callback] | None = None,
                  resume_from: str | None = None, resume_state: str | None = None, sample_job: dict | None = None):
@@ -675,6 +677,8 @@ class Trainer:
         except pickle.UnpicklingError as e:
             raise RuntimeError(f"{state_path.name} holds more than a training state (tensors, numbers, lists): "
                                f"not loaded. Resume from another checkpoint, or Duplicate to start over ({e})") from None
+        except PermissionError:  # held open for a moment (Windows): not damaged, so not a reason to drop it
+            raise
         except (RuntimeError, EOFError, OSError) as e:
             # a truncated file (power cut while it was written): the LoRA file beside it is whole, so
             # go on from its weights and step with a fresh optimizer, scheduler, EMA and RNG
@@ -687,13 +691,16 @@ class Trainer:
                             " (with EMA on, the file holds the average: training goes on from that)" if self.ema is not None else "")
             self.step = int(tags[-1])
             # the LR schedule carries on from there (not from the top), after a short warmup for the cold optimizer
-            optim.resume_cold(self.optimizer, self.scheduler, self.spec.optim, self.step)
+            self._rewarm_from = self.step if optim.resume_cold(self.optimizer, self.scheduler, self.spec.optim, self.step) else None
             self._reseed_batches()
             self.progress.update_absolute(self.step)
             self._status("loading", message=f"resumed from step {self.step} (weights only: its training state was damaged)")
             return
         self.optimizer.load_state_dict(self._saved_optimizer_state(state["optimizer"]))
         self.scheduler.load_state_dict(state["scheduler"])
+        if state.get("rewarm_from") is not None:  # saved during that ramp: it goes on (lambdas aren't saved)
+            self._rewarm_from = int(state["rewarm_from"])
+            optim.rewarm(self.scheduler, self._rewarm_from)
         self.step = int(state["step"])
         if self.objective.balance is not None and state.get("balance"):  # its loss averages carry on
             self.objective.balance.load_state_dict(state["balance"])
@@ -1665,15 +1672,17 @@ class Trainer:
         _room_for(folder, sum(t.numel() * t.element_size() for t in weights.values()))
         # written beside it under a name ComfyUI doesn't list, flushed, then swapped in: a full disk,
         # a kill or a power cut mid-save leaves no half-written LoRA in the loras folder
-        safeio.write_bytes(path, sft.save(weights, metadata=write_metadata(self.spec.to_dict(), self.step)))
-        # a LoRA is an output like ComfyUI's images, readable by whatever else serves or syncs the
-        # folder (Docker, a share, another user's ComfyUI)
+        meta = write_metadata(self.spec.to_dict(), self.step)
+        safeio.write_to_path(path, lambda tmp: sft.save_file(weights, tmp, metadata=meta))
+        # safetensors writes owner-only (0600); a LoRA is an output like ComfyUI's images, readable
+        # by whatever else serves or syncs the folder (Docker, a share, another user's ComfyUI)
         os.chmod(path, 0o644)
         # resumable state (optimizer, schedule, step, RNG) goes outside the LoRA folders:
         # those are registered with ComfyUI, which would list a .pt there as a "LoRA"
         if keep != "none":
             state.parent.mkdir(parents=True, exist_ok=True)
-            # on disk before the older states are deleted below
+            ramping = self._rewarm_from is not None and self.step < self._rewarm_from + optim.REWARM_STEPS
+            # on disk, its name included, before the older states are deleted below
             safeio.write_with(state, lambda f: torch.save({
                 "step": self.step, "optimizer": self.optimizer.state_dict(), "scheduler": self.scheduler.state_dict(),
                 "rng": self.generator.get_state(),
@@ -1681,7 +1690,8 @@ class Trainer:
                 **({"balance": self.objective.balance.state_dict()} if self.objective.balance is not None else {}),
                 **({"live": {k: v.cpu() for k, v in live.items()}} if live is not None else {}),
                 **({"ema": self.ema.state_dict()} if self.ema is not None else {}),
-            }, f))
+                **({"rewarm_from": self._rewarm_from} if ramping else {}),
+            }, f), sync_dir=True)
             if keep == "latest":  # resume only ever needs the newest
                 for old in state.parent.glob("*.pt"):
                     if old != state:

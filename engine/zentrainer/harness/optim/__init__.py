@@ -307,14 +307,24 @@ def seek(opt: torch.optim.Optimizer, sched, step: int) -> None:
 REWARM_STEPS = 50  # a cold optimizer's ramp back up to the schedule (resume_cold)
 
 
-def resume_cold(opt: torch.optim.Optimizer, sched, spec: OptimSpec, step: int) -> None:
+def rewarm(sched, start: int) -> None:
+    """The schedule ramped up over REWARM_STEPS from `start`: a fresh optimizer's first steps are
+    its largest."""
+    sched.lr_lambdas = [lambda i, f=f: f(i) * min(1.0, (i - start + 1) / REWARM_STEPS) for f in sched.lr_lambdas]
+
+
+def resume_cold(opt: torch.optim.Optimizer, sched, spec: OptimSpec, step: int) -> bool:
     """A fresh optimizer and schedule going on at `step` (a resume whose state was lost): the
-    schedule carries on where it was, ramped up over REWARM_STEPS, since a fresh optimizer's
-    first steps are its largest. Optimizers that set their own LR keep their flat schedule."""
+    schedule carries on where it was, ramped up (rewarm) where the schedule sets the LR. True when
+    it ramps. Optimizers that set their own LR keep their flat schedule, and Automagic, which
+    seeds each weight's LR from the group's on its first step and then scales it by the schedule
+    again, would count a ramp twice."""
     d = OPTIMIZERS.get(spec.optimizer)
-    if d is not None and not (d.adaptive or d.schedule_free):
-        sched.lr_lambdas = [lambda i, f=f: f(i) * min(1.0, (i - step + 1) / REWARM_STEPS) for f in sched.lr_lambdas]
+    ramp = d is not None and not (d.adaptive or d.schedule_free) and d.id != "Automagic"
+    if ramp:
+        rewarm(sched, step)
     seek(opt, sched, step)
+    return ramp
 
 
 def remap_state(state: dict, old_names: list[list[str]], new_names: list[list[str]]) -> dict:

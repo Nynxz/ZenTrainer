@@ -147,6 +147,44 @@ def test_a_missing_state_still_fails(tmp_path):
         restore()
 
 
+def test_a_held_state_file_is_not_treated_as_damaged(tmp_path, monkeypatch):
+    def held(*a, **k):
+        raise PermissionError("in use by another process")
+
+    monkeypatch.setattr(torch, "load", held)
+    _, _, restore = _resumer(tmp_path, "my_style_step000060.safetensors", b"whole")
+    with pytest.raises(PermissionError):
+        restore()
+
+
+def test_automagic_resumes_cold_without_the_ramp():
+    spec = OptimSpec(optimizer="Automagic", lr_scheduler="constant", steps=1000, learning_rate=1e-6)
+    opt, sched = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    assert not optim.resume_cold(opt, sched, spec, 600)  # it seeds its LRs from the group's: a ramp would count twice
+    assert opt.param_groups[0]["lr"] == pytest.approx(1e-6)
+
+
+def test_a_ramp_saved_midway_goes_on_after_a_resume():
+    spec = OptimSpec(lr_scheduler="linear", warmup_steps=0, steps=1000, learning_rate=1.0)
+    opt, sched = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    assert optim.resume_cold(opt, sched, spec, 600)
+    for _ in range(20):
+        opt.step()
+        sched.step()
+    saved_opt, saved_sched = opt.state_dict(), sched.state_dict()
+    opt.step()
+    sched.step()
+    expected = opt.param_groups[0]["lr"]
+    # a fresh run restoring that save, as _restore does
+    opt2, sched2 = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    opt2.load_state_dict(saved_opt)
+    sched2.load_state_dict(saved_sched)
+    optim.rewarm(sched2, 600)
+    opt2.step()
+    sched2.step()
+    assert opt2.param_groups[0]["lr"] == pytest.approx(expected)  # still ramping, not jumped to the schedule
+
+
 def test_buckets_respect_area_step_and_pick_by_aspect():
     sizes = data.bucket_sizes(1024, 64)
     assert all(w % 64 == 0 and h % 64 == 0 and w * h <= 1024 * 1024 for w, h in sizes)
