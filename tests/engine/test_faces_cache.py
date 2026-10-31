@@ -42,13 +42,14 @@ def test_a_recheck_of_an_unchanged_dataset_looks_at_nothing_and_reports_no_progr
     out, seen = _check()
     assert sorted(looked) == ["a.png", "b.png"] and seen == [(1, 2), (2, 2)] and out["total"] == 2
     (cache_file,) = cache_dir.iterdir()
-    os.utime(cache_file, ns=(1, 1))  # an old stamp: a rewrite would move it
+    os.utime(cache_file, ns=(10**9, 10**9))  # an old stamp: a rewrite would move it
+    stamped = cache_file.stat().st_mtime_ns  # as the filesystem stored it (Windows rounds to 100 ns)
 
     looked.clear()
     out, seen = _check()
     assert looked == [] and seen == []  # cached: no detection, nothing to count
     assert out["total"] == 2 and out["with_face"] == 2
-    assert cache_file.stat().st_mtime_ns == 1  # and the cache wasn't written again
+    assert cache_file.stat().st_mtime_ns == stamped  # and the cache wasn't written again
 
 
 def test_only_a_changed_picture_is_looked_at_and_counted(tmp_path, monkeypatch):
