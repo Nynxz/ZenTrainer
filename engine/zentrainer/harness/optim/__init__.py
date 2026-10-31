@@ -295,6 +295,28 @@ def set_lr(opt: torch.optim.Optimizer, sched, lr: float) -> None:
         group["lr"] = base * f(sched.last_epoch)
 
 
+def seek(opt: torch.optim.Optimizer, sched, step: int) -> None:
+    """Put a fresh schedule at `step`, as if it had been stepped that many times (a resume with
+    no saved scheduler state)."""
+    sched.last_epoch = step
+    for group, base, f in zip(opt.param_groups, sched.base_lrs, sched.lr_lambdas):
+        group["lr"] = base * f(step)
+    sched._last_lr = [g["lr"] for g in opt.param_groups]
+
+
+REWARM_STEPS = 50  # a cold optimizer's ramp back up to the schedule (resume_cold)
+
+
+def resume_cold(opt: torch.optim.Optimizer, sched, spec: OptimSpec, step: int) -> None:
+    """A fresh optimizer and schedule going on at `step` (a resume whose state was lost): the
+    schedule carries on where it was, ramped up over REWARM_STEPS, since a fresh optimizer's
+    first steps are its largest. Optimizers that set their own LR keep their flat schedule."""
+    d = OPTIMIZERS.get(spec.optimizer)
+    if d is not None and not (d.adaptive or d.schedule_free):
+        sched.lr_lambdas = [lambda i, f=f: f(i) * min(1.0, (i - step + 1) / REWARM_STEPS) for f in sched.lr_lambdas]
+    seek(opt, sched, step)
+
+
 def remap_state(state: dict, old_names: list[list[str]], new_names: list[list[str]]) -> dict:
     """An optimizer state_dict saved over one set of named tensors, renumbered for another: what
     the new set lacks is dropped (states saved while LoRA alphas still trained). Torch numbers a

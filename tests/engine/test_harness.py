@@ -94,6 +94,59 @@ def test_schedules_warmup_then_decay():
     assert opt.param_groups[0]["lr"] == pytest.approx(0.5 * sched.lr_lambdas[0](sched.last_epoch))
 
 
+def test_seek_puts_a_fresh_schedule_where_a_stepped_one_is():
+    p = [torch.nn.Parameter(torch.zeros(1))]
+    spec = OptimSpec(lr_scheduler="cosine", warmup_steps=10, steps=110, learning_rate=1.0)
+    opt, sched = optim.build(p, spec)
+    for _ in range(75):
+        opt.step()
+        sched.step()
+    fresh_opt, fresh = optim.build([torch.nn.Parameter(torch.zeros(1))], spec)
+    optim.seek(fresh_opt, fresh, 75)
+    assert fresh_opt.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"])
+    fresh_opt.step()
+    fresh.step()
+    opt.step()
+    sched.step()
+    assert fresh_opt.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"])
+
+
+def _resumer(tmp_path, lora_name, state_bytes):
+    from zentrainer.harness.trainer import Trainer
+
+    p = [torch.nn.Parameter(torch.zeros(1))]
+    spec = OptimSpec(lr_scheduler="linear", warmup_steps=0, steps=1000, learning_rate=1.0)
+    opt, sched = optim.build(p, spec)
+    state = tmp_path / "run.pt"
+    if state_bytes is not None:
+        state.write_bytes(state_bytes)
+    t = types.SimpleNamespace(resume_from=str(tmp_path / lora_name), optimizer=opt, scheduler=sched, ema=None, step=0,
+                              spec=types.SimpleNamespace(optim=spec),
+                              _reseed_batches=lambda: None, progress=types.SimpleNamespace(update_absolute=lambda n: None),
+                              _status=lambda *a, **k: None)
+    return t, state, (lambda: Trainer._restore(t, state))
+
+
+def test_a_damaged_state_resumes_from_the_loras_step_and_schedule(tmp_path):
+    t, _, restore = _resumer(tmp_path, "my_2step3_style_20261031-000000-abcdef_step000600.safetensors", b"PK\x03\x04 cut short")
+    restore()
+    assert t.step == 600  # the last stepNNN, not the 3 in the name
+    lrs = []
+    for _ in range(optim.REWARM_STEPS + 1):
+        lrs.append(t.optimizer.param_groups[0]["lr"])
+        t.optimizer.step()
+        t.scheduler.step()
+    # the fresh optimizer ramps up to where a linear decay is at 600 of 1000, then follows it down
+    assert lrs[0] == pytest.approx(0.4 / optim.REWARM_STEPS)
+    assert lrs[-1] == pytest.approx(1 - (600 + optim.REWARM_STEPS) / 1000)
+
+
+def test_a_missing_state_still_fails(tmp_path):
+    _, _, restore = _resumer(tmp_path, "my_style_step000060.safetensors", None)
+    with pytest.raises(OSError):
+        restore()
+
+
 def test_buckets_respect_area_step_and_pick_by_aspect():
     sizes = data.bucket_sizes(1024, 64)
     assert all(w % 64 == 0 and h % 64 == 0 and w * h <= 1024 * 1024 for w, h in sizes)

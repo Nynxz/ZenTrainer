@@ -677,12 +677,16 @@ class Trainer:
         except (RuntimeError, EOFError, OSError) as e:
             # a truncated file (power cut while it was written): the LoRA file beside it is whole, so
             # go on from its weights and step with a fresh optimizer, scheduler, EMA and RNG
-            m = re.search(r"step(\d+)", Path(self.resume_from).name)
-            if not m:
+            # (a missing file isn't damaged: that still fails)
+            tags = re.findall(r"step(\d+)", Path(self.resume_from).name)  # our own _stepNNNNNN tag is the last
+            if not tags or not state_path.is_file():
                 raise
             logging.warning("[ZenTrainer] %s is unreadable (%s): resuming from the LoRA's weights with a fresh "
-                            "optimizer state", state_path.name, str(e).splitlines()[0])
-            self.step = int(m.group(1))
+                            "optimizer state%s", state_path.name, str(e).splitlines()[0],
+                            " (with EMA on, the file holds the average: training goes on from that)" if self.ema is not None else "")
+            self.step = int(tags[-1])
+            # the LR schedule carries on from there (not from the top), after a short warmup for the cold optimizer
+            optim.resume_cold(self.optimizer, self.scheduler, self.spec.optim, self.step)
             self._reseed_batches()
             self.progress.update_absolute(self.step)
             self._status("loading", message=f"resumed from step {self.step} (weights only: its training state was damaged)")
