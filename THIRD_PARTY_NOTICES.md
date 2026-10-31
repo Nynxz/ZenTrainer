@@ -16,6 +16,104 @@ their own licences, listed here with the notices those licences ask for.
   Fizgig, Copyright 2026 Peter Neill
   ```
 
+## ai-toolkit
+
+- **Used in:** `engine/zentrainer/harness/optim/automagic3.py` and `automagic4.py`, the Automagic v3
+  and v4 optimizers, vendored unchanged below a ZenTrainer header; `automagic3_batched.py` and
+  `automagic4_batched.py`, the same steps run on stacks of same-shaped tensors; and `FLEX_WEIGHTS` in
+  `engine/zentrainer/harness/objective.py`, averaged down from ai-toolkit's timestep weighting.
+- **Source:** https://github.com/ostris/ai-toolkit
+- **Licence:** MIT License, below.
+- **Notice:**
+
+  ```
+  Copyright (c) 2024 Ostris, LLC
+  ```
+
+## VGL
+
+- **Used in:** `engine/zentrainer/datasets/vgl/`, Fibo 2.0's structured-caption schema and the
+  prompts that write it (commit 5eeecc2), run on a local model instead of VGL's API models.
+- **Source:** https://github.com/Bria-AI/vgl
+- **Licence:** MIT License, below (also in that folder's LICENSE).
+- **Notice:**
+
+  ```
+  Copyright (c) 2025 BRIA AI
+  ```
+
+## InsightFace
+
+- **Used in:** `engine/zentrainer/analysis/faces.py`, the face pipeline as InsightFace runs it
+  (SCRFD's anchor decoding and overlap suppression, alignment on the five keypoints to ArcFace's
+  template), and `engine/zentrainer/analysis/nets/scrfd.py` and `iresnet.py`, the SCRFD-10G and
+  ArcFace IResNet networks, written to load InsightFace's exported weights.
+- **Source:** https://github.com/deepinsight/insightface
+- **Licence:** the code is under the MIT License, below. InsightFace's pretrained models are for
+  non-commercial research use only; they aren't part of ZenTrainer and are downloaded the first
+  time faces run (see "Downloaded when needed" below).
+- **Notice:**
+
+  ```
+  Copyright (c) Jiankang Deng, Jia Guo and the InsightFace contributors
+  ```
+
+## OpenCV
+
+- **Used in:** `engine/zentrainer/analysis/faces.py`, which reproduces OpenCV's resize and affine
+  warp (so the aligned faces match InsightFace's to the byte) and decodes YuNet's outputs as
+  OpenCV's `FaceDetectorYN` does; `engine/zentrainer/analysis/nets/yunet.py`, the YuNet network
+  (opencv_zoo's face_detection_yunet_2023mar), written to load its exported weights.
+- **Source:** https://github.com/opencv/opencv and https://github.com/opencv/opencv_zoo
+- **Licence:** OpenCV is under the Apache License 2.0, below; the YuNet model is under the MIT
+  License, below.
+- **Notice:**
+
+  ```
+  OpenCV: Copyright (C) 2000-2022, Intel Corporation; 2009-2011, Willow Garage Inc.;
+  2009-2016, NVIDIA Corporation; 2010-2013, Advanced Micro Devices, Inc.; 2015-2023, OpenCV
+  Foundation; 2008-2016, Itseez Inc.; 2019-2023, Xperience AI; 2019-2022, Shenzhen Institute of
+  Artificial Intelligence and Robotics for Society; 2022-2023, Southern University of Science
+  And Technology; 2023-2025, OpenCV AI. All rights reserved.
+  YuNet: Copyright (c) 2020 Shiqi Yu
+  ```
+
+## Downloaded when needed
+
+These aren't part of ZenTrainer's code or packages: it downloads them the first time a feature
+uses them, and each keeps its own licence.
+
+- **Face models** (likeness scores, face reports), at a pinned revision, converted to safetensors in
+  https://huggingface.co/nynxz/Zentrainer, which lists each file's source and licence:
+  InsightFace's SCRFD-10G and ArcFace models (non-commercial research use only), and for
+  commercial use OpenCV's YuNet (MIT) and fal's AuraFace (Apache License 2.0).
+- **Training adapters** offered in the run form (Ostris's and others'), from their own Hugging
+  Face repositories under their own licences.
+- **Model files** a recipe or the model catalog offers to download, from their publishers, under
+  their own licences.
+
+### MIT License
+
+```
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### Apache License 2.0
 
 ```
