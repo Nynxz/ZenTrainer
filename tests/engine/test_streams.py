@@ -307,6 +307,13 @@ def test_locked_changes_at_resume():
     new["optim"]["learning_rate"] = 5e-5
     new["samples"]["steps"] = 6
     assert locked_changes(old, new) == []
+    new["optim"]["batch_size"] = 4  # shapes each step, not the LoRA or its optimizer state
+    old["dataset"]["stages"] = [{"resolution": 512, "until": 0.5}]
+    new["dataset"]["stages"] = [{"resolution": 512, "until": 0.5, "batch_size": 8}]
+    assert locked_changes(old, new) == []
+    new["dataset"]["stages"] = [{"resolution": 768, "until": 0.5, "batch_size": 8}]
+    assert locked_changes(old, new) == ["dataset.stages"]
+    new["dataset"]["stages"] = old["dataset"]["stages"]
     new["network"]["rank"] = 32
     new["optim"]["optimizer"] = "Prodigy"
     assert locked_changes(old, new) == ["network.rank", "optim.optimizer"]
@@ -973,6 +980,10 @@ def test_resolution_stages_are_checked():
 
     base = {"model": {"kind": "checkpoint", "ckpt_name": "x.safetensors"}, "dataset": {"folder": "d", "resolution": 1024}}
     for bad in ([{"resolution": 1024, "until": 0.5}], [{"resolution": 768, "until": 1.0}],
-                [{"resolution": 512, "until": 0.6}, {"resolution": 768, "until": 0.4}]):
+                [{"resolution": 512, "until": 0.6}, {"resolution": 768, "until": 0.4}],
+                [{"resolution": 768, "until": 0.5, "batch_size": 0}], [{"resolution": 768, "until": 0.5, "batch_size": 2.5}],
+                [{"resolution": 768, "until": 0.5, "batch_size": True}], [{"resolution": 768, "until": 0.5, "batch": 2}]):
         with pytest.raises(SpecError):
             TrainSpec.from_dict({**base, "dataset": {**base["dataset"], "stages": bad}})
+    ok = TrainSpec.from_dict({**base, "dataset": {**base["dataset"], "stages": [{"resolution": 768, "until": 0.5, "batch_size": 4}]}})
+    assert ok.dataset.stages[0]["batch_size"] == 4

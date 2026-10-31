@@ -627,6 +627,7 @@ class Trainer:
         self.denoiser = Denoiser(patcher, attention_override(s.memory.attention))
         self.streams = Streams(patcher.model)
         biggest = max([s.optim.batch_size] + [int(st.get("batch_size") or 1) for st in s.dataset.stages])
+        self._spread_stride = biggest  # noise levels a step may draw, at most: spread positions never overlap
         if self.streams.multi and biggest > 1:
             raise ValueError(f"{type(patcher.model).__name__} trains one image per step: set batch size 1 "
                              f"and use gradient accumulation {biggest} instead")
@@ -1221,7 +1222,7 @@ class Trainer:
             conds = [self._cond(i, x0, shapes) for i in idx]
 
             noise = torch.randn(x0.shape, generator=self.generator).to(self.device)
-            drawn = (self.step * acc + a) * s.optim.batch_size  # noise levels before these (spread)
+            drawn = (self.step * acc + a) * self._spread_stride  # noise levels before these (spread)
             percents = sample_percents(s.objective, len(idx), self.generator, drawn, s.seed)
             sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
             x_t = self.objective.noisy(ms, sigma, noise, x0)
