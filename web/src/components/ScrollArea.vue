@@ -3,15 +3,18 @@
 // shifts when it starts or stops overflowing) and a themed thumb floats over the edge.
 // Scrolling itself stays native: wheel, touch, keyboard, momentum, scroll-into-view.
 // `axis="x"` scrolls sideways instead, with the thumb along the bottom edge.
+// `endInset` (px) is how much of the far end something lies over (the app's log drawer): the
+// track stops short of it, and the thumb measures the part still seen against the content without
+// the scroll room the caller added below it for the same reason.
 // UPSTREAM: an `overlay` mode for ZenKit's ZenScroll.
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-const props = withDefaults(defineProps<{ axis?: 'x' | 'y' }>(), { axis: 'y' })
+const props = withDefaults(defineProps<{ axis?: 'x' | 'y'; endInset?: number }>(), { axis: 'y', endInset: 0 })
 const X = props.axis === 'x'
-// the scroll metrics along the chosen axis
+// the scroll metrics along the chosen axis, less what endInset covers
 const pos = (el: HTMLElement) => (X ? el.scrollLeft : el.scrollTop)
-const full = (el: HTMLElement) => (X ? el.scrollWidth : el.scrollHeight)
-const span = (el: HTMLElement) => (X ? el.clientWidth : el.clientHeight)
+const full = (el: HTMLElement) => (X ? el.scrollWidth : el.scrollHeight) - props.endInset
+const span = (el: HTMLElement) => (X ? el.clientWidth : el.clientHeight) - props.endInset
 
 const viewport = ref<HTMLElement | null>(null)
 const thumbTop = ref(0)
@@ -85,6 +88,8 @@ function onTrackDown(e: PointerEvent) {
   el.scrollBy({ [X ? 'left' : 'top']: by, behavior: 'smooth' })
 }
 
+watch(() => props.endInset, () => nextTick(measure))
+
 onMounted(async () => {
   await nextTick()
   measure()
@@ -145,7 +150,7 @@ defineExpose({
 <template>
   <div class="scroll-area" :class="{ active, scrollable, x: X }">
     <div ref="viewport" class="viewport" @scroll.passive="onScroll"><slot /></div>
-    <div v-show="scrollable" class="track" @pointerdown="onTrackDown">
+    <div v-show="scrollable" class="track" :style="endInset ? { [X ? 'right' : 'bottom']: `${endInset}px` } : undefined" @pointerdown="onTrackDown">
       <div
         class="thumb"
         :style="X ? { width: `${thumbSize}px`, transform: `translateX(${thumbTop}px)` } : { height: `${thumbSize}px`, transform: `translateY(${thumbTop}px)` }"
