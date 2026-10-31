@@ -141,6 +141,22 @@ def test_a_damaged_state_resumes_from_the_loras_step_and_schedule(tmp_path):
     assert lrs[-1] == pytest.approx(1 - (600 + optim.REWARM_STEPS) / 1000)
 
 
+def test_a_final_lora_resumes_from_its_saved_step_not_its_name(tmp_path):
+    from safetensors.torch import save_file
+
+    name = "portrait-step100_20261031-000000-abcdef.safetensors"  # a final save: no tag of ours
+    save_file({"w": torch.zeros(1)}, str(tmp_path / name), metadata={"zentrainer.step": "1000"})
+    t, _, restore = _resumer(tmp_path, name, b"PK\x03\x04 cut short")
+    restore()
+    assert t.step == 1000
+
+
+def test_no_saved_step_fails_rather_than_guess_one_from_the_name(tmp_path):
+    _, _, restore = _resumer(tmp_path, "portrait-step100_20261031-000000-abcdef.safetensors", b"PK\x03\x04 cut short")
+    with pytest.raises(RuntimeError):
+        restore()
+
+
 def test_a_missing_state_still_fails(tmp_path):
     _, _, restore = _resumer(tmp_path, "my_style_step000060.safetensors", None)
     with pytest.raises(OSError):

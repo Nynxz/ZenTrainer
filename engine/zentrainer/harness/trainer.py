@@ -125,6 +125,23 @@ def state_for(checkpoint: dict, run_id: str) -> str | None:
     return None
 
 
+def _saved_step(lora: str) -> int | None:
+    """The step one of our LoRA files was saved at: its metadata (every save writes it), else the
+    tag our checkpoint names end in (_step000100, -step000123). Never a number from the run's name:
+    a final LoRA has no tag, and "portrait-step100" says nothing about where it stopped."""
+    from safetensors import SafetensorError, safe_open
+
+    try:
+        with safe_open(lora, "pt") as f:
+            step = (f.metadata() or {}).get("zentrainer.step", "")
+        if step.isdigit():
+            return int(step)
+    except (OSError, SafetensorError):  # missing or unreadable, or not a safetensors file: the name's tag
+        pass
+    m = re.search(r"[_-]step(\d{6})\.safetensors$", Path(lora).name)
+    return int(m.group(1)) if m else None
+
+
 def _comfy_waiting() -> bool:
     """Another ComfyUI prompt is queued behind the one running (this run's): someone wants the GPU."""
     try:
@@ -683,13 +700,13 @@ class Trainer:
             # a truncated file (power cut while it was written): the LoRA file beside it is whole, so
             # go on from its weights and step with a fresh optimizer, scheduler, EMA and RNG
             # (a missing file isn't damaged: that still fails)
-            tags = re.findall(r"step(\d+)", Path(self.resume_from).name)  # our own _stepNNNNNN tag is the last
-            if not tags or not state_path.is_file():
+            step = _saved_step(self.resume_from)
+            if step is None or not state_path.is_file():
                 raise
             logging.warning("[ZenTrainer] %s is unreadable (%s): resuming from the LoRA's weights with a fresh "
                             "optimizer state%s", state_path.name, str(e).splitlines()[0],
                             " (with EMA on, the file holds the average: training goes on from that)" if self.ema is not None else "")
-            self.step = int(tags[-1])
+            self.step = step
             # the LR schedule carries on from there (not from the top), after a short warmup for the cold optimizer
             self._rewarm_from = self.step if optim.resume_cold(self.optimizer, self.scheduler, self.spec.optim, self.step) else None
             self._reseed_batches()

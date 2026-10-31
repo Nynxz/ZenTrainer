@@ -306,13 +306,21 @@ export function useRunForm() {
   const epochs = computed(() => {
     const per = dataset.value?.steps_per_epoch
     if (!per) return null
-    // pictures per step over the run: each stage's batch for its share (the blends roughly even out)
+    // pictures per step over the run: each stage's batch for its share. A change blends over
+    // stage_blend (0.2, the engine's default, when unset), the earlier stage's odds falling evenly
+    // to nothing, so on average a stage runs on past its end: half the blend, or less when the next
+    // stage ends first (from there the engine blends only from that one)
+    const blend = spec.dataset.stage_blend ?? 0.2
+    const stages = spec.dataset.stages ?? []
     let from = 0
     let batch = 0
-    for (const st of spec.dataset.stages ?? []) {
-      batch += (st.until - from) * (st.batch_size ?? spec.optim.batch_size)
-      from = st.until
-    }
+    stages.forEach((st, i) => {
+      const window = Math.min(blend, (stages[i + 1]?.until ?? 1) - st.until)
+      const past = blend > 0 ? window - (window * window) / (2 * blend) : 0
+      const end = Math.min(1, st.until + past)
+      batch += Math.max(0, end - from) * (st.batch_size ?? spec.optim.batch_size)
+      from = Math.max(from, end)
+    })
     batch += (1 - from) * spec.optim.batch_size
     return (spec.optim.steps * batch * spec.optim.grad_accumulation_steps) / per
   })
