@@ -3,7 +3,11 @@
 // offsetWidth, scrollTop and the px a style is given are the page's own. Divide the first by this
 // to get the second.
 
-/** The CSS zoom `el` is drawn at; the page's by default. 1 in a browser that can't tell. */
+/** The CSS zoom `el` is drawn at; the page's by default. */
 export function zoomOf(el: Element | null | undefined = document.documentElement): number {
-  return el?.currentCSSZoom || 1
+  if (!el) return 1
+  if (typeof el.currentCSSZoom === 'number') return el.currentCSSZoom || 1
+  // an engine that can't say: its box on screen against its own width
+  const w = el instanceof HTMLElement ? el.offsetWidth : 0
+  return (w && el.getBoundingClientRect().width / w) || 1
 }
