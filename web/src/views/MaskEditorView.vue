@@ -13,6 +13,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EngineError, engine, thumbUrl, viewUrl, type DatasetItem } from '@/api/engine'
 import { remembered } from '@/lib/remembered'
+import { zoomOf } from '@/lib/zoom'
 
 const props = defineProps<{ name: string }>()
 const route = useRoute()
@@ -221,7 +222,8 @@ watch([grow, feather, show, highVis], render)
 // ---- input ---------------------------------------------------------------------------------
 const toImage = (e: PointerEvent) => {
   const r = view.value!.getBoundingClientRect()
-  return { x: (e.clientX - r.left - fit.value.x) / fit.value.s, y: (e.clientY - r.top - fit.value.y) / fit.value.s }
+  const z = zoomOf(view.value) // fit is in the page's px, the pointer on screen
+  return { x: ((e.clientX - r.left) / z - fit.value.x) / fit.value.s, y: ((e.clientY - r.top) / z - fit.value.y) / fit.value.s }
 }
 let painting = false
 let last: { x: number; y: number } | null = null

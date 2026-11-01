@@ -8,6 +8,7 @@
 // the scroll room the caller added below it for the same reason.
 // UPSTREAM: an `overlay` mode for ZenKit's ZenScroll.
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { zoomOf } from '@/lib/zoom'
 
 const props = withDefaults(defineProps<{ axis?: 'x' | 'y'; endInset?: number }>(), { axis: 'y', endInset: 0 })
 const X = props.axis === 'x'
@@ -71,7 +72,8 @@ function onThumbMove(e: PointerEvent) {
   if (!dragging || !el) return
   const track = span(el) - 8 - thumbSize.value
   const ratio = (full(el) - span(el)) / Math.max(1, track)
-  const to = startTop + ((X ? e.clientX : e.clientY) - startY) * ratio
+  // the pointer moves in screen px, the thumb in the page's: they differ when it's zoomed
+  const to = startTop + (((X ? e.clientX : e.clientY) - startY) / zoomOf(el)) * ratio
   if (X) el.scrollLeft = to
   else el.scrollTop = to
 }
@@ -84,7 +86,7 @@ function onTrackDown(e: PointerEvent) {
   const el = viewport.value
   if (!el || e.target !== e.currentTarget) return
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const dir = (X ? e.clientX - rect.left : e.clientY - rect.top) < thumbTop.value ? -1 : 1
+  const dir = (X ? e.clientX - rect.left : e.clientY - rect.top) / zoomOf(el) < thumbTop.value ? -1 : 1
   const by = dir * span(el) * 0.9
   el.scrollBy({ [X ? 'left' : 'top']: by, behavior: 'smooth' })
 }

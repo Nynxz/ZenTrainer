@@ -5,6 +5,7 @@ import { ZenTip } from '@nynxz/zenkit-ui'
 import { onMounted, onUnmounted, ref } from 'vue'
 import { fileInfo, pct, secs, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
+import { zoomOf } from '@/lib/zoom'
 
 const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, thumbSize, boxing, maskHighVis } = useDatasetContext()
 
@@ -31,10 +32,11 @@ function startsBox(e: MouseEvent) {
   if (!bar || e.clientY < bar.getBoundingClientRect().bottom) return false
   return !t.closest('button, a, input, textarea, select, label, [contenteditable], [role], .ds-side, .drawer-scrim, .reviewing, .notice, .sel-bar')
 }
-// in the grid's own coordinates, which scrolling doesn't change
+// in the grid's own coordinates, which scrolling doesn't change (and its own px: the page may be zoomed)
 function local(cx: number, cy: number) {
   const g = grid.value!.getBoundingClientRect()
-  return { x: cx - g.left, y: cy - g.top, g }
+  const z = zoomOf(grid.value)
+  return { x: (cx - g.left) / z, y: (cy - g.top) / z, g, z }
 }
 function onDown(e: PointerEvent) {
   if (e.pointerType === 'touch' || !startsBox(e)) return
@@ -75,8 +77,8 @@ function update() {
   const next = press.add ? new Set(press.base) : new Set<string>()
   for (const el of grid.value.querySelectorAll<HTMLElement>('.card-item')) {
     const r = el.getBoundingClientRect()
-    const [l, t] = [r.left - p.g.left, r.top - p.g.top]
-    if (l < b.x + b.w && l + r.width > b.x && t < b.y + b.h && t + r.height > b.y) next.add(el.dataset.path!)
+    const [l, t, w, h] = [(r.left - p.g.left) / p.z, (r.top - p.g.top) / p.z, r.width / p.z, r.height / p.z]
+    if (l < b.x + b.w && l + w > b.x && t < b.y + b.h && t + h > b.y) next.add(el.dataset.path!)
   }
   for (const k of [...selected]) if (!next.has(k)) selected.delete(k)
   for (const k of next) selected.add(k)
