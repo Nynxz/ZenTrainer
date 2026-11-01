@@ -218,30 +218,6 @@ video,
 button {
   user-select: none;
 }
-/* the lightbox is pictures and controls: none of it highlights, but its side panel's text does.
-   UPSTREAM: ZenLightbox */
-.zlb {
-  user-select: none;
-}
-.zlb-panel {
-  user-select: text;
-}
-/* the lightbox's gallery: even room either side of the pictures, the right side holding a slimmer
-   scrollbar clear of them (it ran right alongside the right column). The room goes round the
-   scroller, not into its padding: the gallery sizes its rows from the scroller's width less its own
-   10px padding, and a wider padding left a gap under the last row. UPSTREAM: ZenLightbox */
-.zlb .zlb-tscroll {
-  padding: 0 4px;
-}
-.zlb .zlb-tscroll .zen-scroll-thumb {
-  width: 4px;
-  right: 4px;
-}
-.zlb .zlb-tscroll .zen-scroll-track:hover .zen-scroll-thumb,
-.zlb .zlb-tscroll .zen-scroll-thumb:active {
-  width: 6px;
-  right: 3px;
-}
 
 
 /* Masks in ZenKit's lightbox, with High-vis on (the dataset page and mask editor's switch): what
