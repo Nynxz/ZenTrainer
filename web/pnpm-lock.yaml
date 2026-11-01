@@ -12,11 +12,11 @@ importers:
         specifier: ^7.4.47
         version: 7.4.47
       '@nynxz/zenkit-client':
-        specifier: ^0.5.0
-        version: 0.5.0(vue@3.5.42(typescript@5.9.3))
+        specifier: ^0.5.1
+        version: 0.5.1(vue@3.5.42(typescript@5.9.3))
       '@nynxz/zenkit-ui':
-        specifier: ^0.5.0
-        version: 0.5.0(@nynxz/zenkit-client@0.5.0(vue@3.5.42(typescript@5.9.3)))(vue@3.5.42(typescript@5.9.3))
+        specifier: ^0.5.1
+        version: 0.5.1(@nynxz/zenkit-client@0.5.1(vue@3.5.42(typescript@5.9.3)))(vue@3.5.42(typescript@5.9.3))
       vue:
         specifier: 3.5.42
         version: 3.5.42(typescript@5.9.3)
@@ -225,15 +225,15 @@ packages:
     os: [linux]
     libc: [glibc]
 
-  '@nynxz/zenkit-client@0.5.0':
-    resolution: {integrity: sha512-PCxKrgaXHPcLQgLedXoLDpTH85NV/5ZuibwomAqb9NdqDEoKygThWG27coUNhVtiAqDrcDGSH/Cmq2j13yGAFA==}
+  '@nynxz/zenkit-client@0.5.1':
+    resolution: {integrity: sha512-X2cwYJsEudfUgLZKYJYyuiPW5snhVlOO4UxdhpZPpz/PIU/rMhyoUBJjmxC1RS6qgczz3CvZ5grzP19A5QZPgA==}
     peerDependencies:
       vue: ^3.5.0
 
-  '@nynxz/zenkit-ui@0.5.0':
-    resolution: {integrity: sha512-LzMfwCmZKy/sdREc8pUhrh5vf9CJauoH9iNRMNBSJK56I4GtobUm6p/2lukUQBCZ5ieABIFd2skQpEXrZuiahQ==}
+  '@nynxz/zenkit-ui@0.5.1':
+    resolution: {integrity: sha512-mgsxhuaX3Hq3EleykY9ZFmrq+wW3DS7OpB9jwRUD76Z6ocUScXoNS5DCLnp+JPhU1JouWua8sVitouktZOir4A==}
     peerDependencies:
-      '@nynxz/zenkit-client': ^0.5.0
+      '@nynxz/zenkit-client': ^0.5.1
       vue: ^3.5.0
     peerDependenciesMeta:
       '@nynxz/zenkit-client':
@@ -675,15 +675,15 @@ snapshots:
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
-  '@nynxz/zenkit-client@0.5.0(vue@3.5.42(typescript@5.9.3))':
+  '@nynxz/zenkit-client@0.5.1(vue@3.5.42(typescript@5.9.3))':
     dependencies:
       vue: 3.5.42(typescript@5.9.3)
 
-  '@nynxz/zenkit-ui@0.5.0(@nynxz/zenkit-client@0.5.0(vue@3.5.42(typescript@5.9.3)))(vue@3.5.42(typescript@5.9.3))':
+  '@nynxz/zenkit-ui@0.5.1(@nynxz/zenkit-client@0.5.1(vue@3.5.42(typescript@5.9.3)))(vue@3.5.42(typescript@5.9.3))':
     dependencies:
       vue: 3.5.42(typescript@5.9.3)
     optionalDependencies:
-      '@nynxz/zenkit-client': 0.5.0(vue@3.5.42(typescript@5.9.3))
+      '@nynxz/zenkit-client': 0.5.1(vue@3.5.42(typescript@5.9.3))
 
   '@rollup/rollup-android-arm-eabi@4.64.7':
     optional: true
