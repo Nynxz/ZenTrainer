@@ -21,7 +21,7 @@ const router = useRouter()
 
 const ds = useDataset(() => props.name)
 provide(DATASET, ds)
-const { view, zoom, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, query, selected, boxing, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
+const { view, zoom, fit, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, query, selected, boxing, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
 
 // In a narrow window the panel would land under every picture, out of reach: there it's a drawer
 // over the right edge instead, opened by the same button, closed on its own (not remembered)
@@ -258,7 +258,7 @@ onUnmounted(() => {
 
     <ZenContextMenu ref="menu" :items="menuItems" />
 
-    <ZenLightbox v-if="lightbox != null && lbItems.length" v-model:index="lightbox" :items="lbItems" :searchable="false" @close="lightbox = null">
+    <ZenLightbox v-if="lightbox != null && lbItems.length" v-model:index="lightbox" v-model:thumb-fit="fit" :items="lbItems" :searchable="false" @close="lightbox = null">
       <template #side="{ index }">
         <DatasetLightboxSide v-if="shown[index]" :it="shown[index]" :name="name" />
       </template>

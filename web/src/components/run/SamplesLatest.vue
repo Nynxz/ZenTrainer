@@ -31,7 +31,7 @@ const openLatest = (index: number) => openGrid(index, latestFor(index)!.step)
           <span class="tile-badge mono">{{ sampling?.s_step }}/{{ sampling?.s_total }}</span>
         </template>
         <template v-else-if="wipe(i - 1)">
-          <div class="tile-wipe"><ZenCompare :before="inputFor(i - 1)!" :after="viewUrl(latestFor(i - 1)!)" before-label="Input" :after-label="latestFor(i - 1)!.step === 0 ? 'Baseline' : `Step ${latestFor(i - 1)!.step}`" /></div>
+          <div class="tile-wipe"><ZenCompare fit="contain" :before="inputFor(i - 1)!" :after="viewUrl(latestFor(i - 1)!)" before-label="Input" :after-label="latestFor(i - 1)!.step === 0 ? 'Baseline' : `Step ${latestFor(i - 1)!.step}`" /></div>
           <button class="tile-open" title="Open in the viewer" @click="openLatest(i - 1)"><i class="mdi mdi-arrow-expand" /></button>
         </template>
         <button v-else-if="latestFor(i - 1)" class="tile-btn" :class="{ stale: sampling && sampling.phase === 'sampling' && (sampling.index ?? 0) < i - 1 }" @click="openLatest(i - 1)">
@@ -124,11 +124,6 @@ const openLatest = (index: number) => openGrid(index, latestFor(index)!.step)
 .tile-wipe :deep(.zen-compare) {
   width: 100%;
   height: 100%;
-}
-/* the whole picture, not ZenCompare's cover crop: an edit comes out its input's shape, not the
-   tile's, and both letterbox alike so they still line up. UPSTREAM: a fit prop on ZenCompare */
-.tile-wipe :deep(.zen-compare img) {
-  object-fit: contain;
 }
 .tile-open {
   position: absolute;

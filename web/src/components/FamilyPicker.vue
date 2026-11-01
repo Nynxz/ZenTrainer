@@ -538,12 +538,6 @@ defineExpose({ refresh: () => fam.value && open(fam.value.id, true), pick, CUSTO
   font-size: 12px;
   cursor: pointer;
 }
-/* ZenCombo keeps the last hovered option highlighted when the pointer moves on to the footer:
-   no highlight while the footer's under the pointer. UPSTREAM: ZenCombo clears its active
-   option on leaving the list */
-:global(.zen-combo-menu:has(.zc-footer:hover) .zc-opt.active) {
-  background: none;
-}
 .foot-btn:disabled {
   opacity: 0.6;
   cursor: default;
