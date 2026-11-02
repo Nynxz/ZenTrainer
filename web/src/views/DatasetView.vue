@@ -428,7 +428,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   width: max-content; /* its own width, not the half window left: 50% would leave it */
-  max-width: calc(100vw - 32px);
+  max-width: calc(100vw / var(--zen-page-zoom) - 32px);
   white-space: nowrap;
   padding: 6px 8px 6px 14px;
   font-size: 13px;

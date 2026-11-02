@@ -65,7 +65,7 @@ const open = computed(() => ({ path: `/datasets/${encodeURIComponent(props.name)
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 55vh;
+  max-height: calc(55vh / var(--zen-page-zoom));
   overflow-y: auto;
   scrollbar-width: thin;
 }

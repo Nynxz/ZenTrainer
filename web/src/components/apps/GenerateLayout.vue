@@ -437,7 +437,7 @@ watch([values, randomSeed, count], remember, { deep: true })
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   gap: 16px;
-  height: calc(100vh - 150px);
+  height: calc(100vh / var(--zen-page-zoom) - 150px);
   min-height: 560px;
 }
 @media (max-width: 900px) {

@@ -32,6 +32,19 @@ export const SETTINGS = {
       { value: 'advanced', label: 'Advanced', icon: 'mdi mdi-tune-variant' },
     ],
   }),
+  uiSize: def<number>({
+    category: 'Appearance',
+    label: 'Text size',
+    description: 'Scales the whole interface with the text, so nothing gets cramped. Saved with your ComfyUI user, so it follows you to other browsers.',
+    default: 1,
+    options: [
+      { value: 0.9, label: '90%' },
+      { value: 1, label: '100%' },
+      { value: 1.1, label: '110%' },
+      { value: 1.25, label: '125%' },
+      { value: 1.5, label: '150%' },
+    ],
+  }),
   motion: def<'system' | 'reduce' | 'full'>({
     category: 'Appearance',
     label: 'Motion',
@@ -119,7 +132,7 @@ export async function setSetting<K extends SettingId>(id: K, value: Values[K]): 
 /** Read the server copy (it wins over the cache) and start applying settings to the page. */
 export async function initSettings(): Promise<void> {
   apply()
-  watch(() => settings.motion, apply)
+  watch(() => [settings.motion, settings.uiSize], apply)
   try {
     const all = (await (await fetch('/settings')).json()) as Record<string, unknown>
     for (const id of Object.keys(SETTINGS) as SettingId[]) {
@@ -144,4 +157,13 @@ function apply() {
   const root = document.documentElement
   if (settings.motion === 'system') delete root.dataset.zenMotion
   else root.dataset.zenMotion = settings.motion // ZenKit and app.css read it
+  // CSS zoom, not a root font-size: sizes here are px, and zoom scales the boxes around the text too.
+  // It scales vw/vh as well, so lengths sized to the window divide by --zen-page-zoom (ZenKit's too).
+  if (settings.uiSize === 1) {
+    root.style.removeProperty('zoom')
+    root.style.removeProperty('--zen-page-zoom')
+  } else {
+    root.style.zoom = String(settings.uiSize)
+    root.style.setProperty('--zen-page-zoom', String(settings.uiSize))
+  }
 }

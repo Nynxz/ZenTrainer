@@ -78,7 +78,7 @@ function use(folder = picked.value) {
 </script>
 
 <template>
-  <ZenModal v-model:open="open" width="980px" height="min(660px, 86vh)">
+  <ZenModal v-model:open="open" width="980px" height="min(660px, calc(86vh / var(--zen-page-zoom)))">
     <template #header>
       <div class="head">
         <div class="head-text">

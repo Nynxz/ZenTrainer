@@ -437,7 +437,7 @@ onUnmounted(() => removeEventListener('keydown', onKey))
           </div>
 
           <div v-else-if="mode === 'swipe'" class="swipe">
-            <ZenCompare v-if="cellA && cellB" :style="{ aspectRatio: `${cellA.width || 1} / ${cellA.height || 1}`, width: `min(100%, calc(64vh * ${cellA.width || 1} / ${cellA.height || 1}))` }" :before="url(cellA)" :after="url(cellB)" :before-label="`${nameA} · ${cellA.step}`" :after-label="`${nameB} · ${cellB.step}`" />
+            <ZenCompare v-if="cellA && cellB" :style="{ aspectRatio: `${cellA.width || 1} / ${cellA.height || 1}`, width: `min(100%, calc(64vh / var(--zen-page-zoom) * ${cellA.width || 1} / ${cellA.height || 1}))` }" :before="url(cellA)" :after="url(cellB)" :before-label="`${nameA} · ${cellA.step}`" :after-label="`${nameB} · ${cellB.step}`" />
             <p v-else class="muted small">Swiping needs a sample of this prompt from both runs.</p>
           </div>
 
@@ -613,7 +613,7 @@ onUnmounted(() => removeEventListener('keydown', onKey))
 }
 .shot img {
   width: 100%;
-  max-height: 56vh;
+  max-height: calc(56vh / var(--zen-page-zoom));
   object-fit: contain;
   border-radius: var(--r-md);
   background: var(--zen-surface-2);
