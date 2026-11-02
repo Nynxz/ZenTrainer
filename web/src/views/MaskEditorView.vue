@@ -796,7 +796,7 @@ watch(path, load)
    a bound): the side panels scroll in their columns */
 .mask-page {
   box-sizing: border-box;
-  height: 100dvh;
+  height: calc(100dvh / var(--zen-page-zoom));
   padding-bottom: 16px;
   display: flex;
   flex-direction: column;
@@ -1082,7 +1082,7 @@ watch(path, load)
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
-  max-height: 56vh;
+  max-height: calc(56vh / var(--zen-page-zoom));
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -1120,7 +1120,7 @@ watch(path, load)
     grid-template-rows: none;
   }
   .stage {
-    height: 62vh;
+    height: calc(62vh / var(--zen-page-zoom));
   }
 }
 </style>

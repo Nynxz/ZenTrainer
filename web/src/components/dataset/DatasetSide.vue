@@ -312,7 +312,7 @@ function onCaptioned(set: string) {
   right: 12px;
   bottom: 12px;
   z-index: 40;
-  width: min(340px, calc(100vw - 24px));
+  width: min(340px, calc(100vw / var(--zen-page-zoom) - 24px));
   overflow-y: auto;
   scrollbar-width: thin;
   overscroll-behavior: contain;

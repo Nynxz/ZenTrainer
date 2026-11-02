@@ -333,7 +333,7 @@ dd {
 .log {
   font-size: 11px;
   line-height: 1.6;
-  max-height: 50vh;
+  max-height: calc(50vh / var(--zen-page-zoom));
   overflow: auto;
   scrollbar-width: thin;
 }

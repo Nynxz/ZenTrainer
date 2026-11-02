@@ -4,6 +4,9 @@
   box-sizing: border-box;
 }
 :root {
+  /* The Text size setting's page zoom (stores/settings.ts). Zoom scales vw/vh too, so a length
+     sized to the window divides by it: calc(90vh / var(--zen-page-zoom)). */
+  --zen-page-zoom: 1;
   /* Radius scale from the pack's --radius, shadcn-style. max() keeps a square pack square. */
   --r: var(--zen-radius, 8px);
   --r-sm: max(0px, calc(var(--r) - 4px));

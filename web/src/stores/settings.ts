@@ -157,7 +157,13 @@ function apply() {
   const root = document.documentElement
   if (settings.motion === 'system') delete root.dataset.zenMotion
   else root.dataset.zenMotion = settings.motion // ZenKit and app.css read it
-  // CSS zoom, not a root font-size: sizes here are px, and zoom scales the boxes around the text too
-  if (settings.uiSize === 1) root.style.removeProperty('zoom')
-  else root.style.zoom = String(settings.uiSize)
+  // CSS zoom, not a root font-size: sizes here are px, and zoom scales the boxes around the text too.
+  // It scales vw/vh as well, so lengths sized to the window divide by --zen-page-zoom (ZenKit's too).
+  if (settings.uiSize === 1) {
+    root.style.removeProperty('zoom')
+    root.style.removeProperty('--zen-page-zoom')
+  } else {
+    root.style.zoom = String(settings.uiSize)
+    root.style.setProperty('--zen-page-zoom', String(settings.uiSize))
+  }
 }

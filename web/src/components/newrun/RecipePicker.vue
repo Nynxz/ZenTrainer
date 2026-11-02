@@ -808,10 +808,10 @@ h4 {
 /* a phone: the whole screen, list then detail */
 @media (max-width: 720px) {
   :global(.zen-modal:has(.picker)) {
-    width: 100vw !important;
-    max-width: 100vw !important;
-    height: 100dvh !important;
-    max-height: 100dvh !important;
+    width: calc(100vw / var(--zen-page-zoom)) !important;
+    max-width: calc(100vw / var(--zen-page-zoom)) !important;
+    height: calc(100dvh / var(--zen-page-zoom)) !important;
+    max-height: calc(100dvh / var(--zen-page-zoom)) !important;
     border-radius: 0 !important;
     border: none !important;
   }

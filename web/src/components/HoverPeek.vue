@@ -41,7 +41,7 @@ const onChange = new MutationObserver(() => {
 })
 // the picture's own shape, to fill the screen with it whatever its pixel size
 const nat = ref<{ w: number; h: number } | null>(null)
-const fit = computed(() => (nat.value ? { width: `min(86vw, calc(86vh * ${nat.value.w} / ${nat.value.h}))`, height: 'auto' } : {}))
+const fit = computed(() => (nat.value ? { width: `min(calc(86vw / var(--zen-page-zoom)), calc(86vh / var(--zen-page-zoom) * ${nat.value.w} / ${nat.value.h}))`, height: 'auto' } : {}))
 function sized(e: Event) {
   const im = e.target as HTMLImageElement
   if (im.naturalWidth && im.naturalHeight) nat.value = { w: im.naturalWidth, h: im.naturalHeight }
@@ -163,8 +163,8 @@ onBeforeUnmount(() => {
 }
 .peek video,
 .peek img {
-  max-width: 86vw;
-  max-height: 86vh;
+  max-width: calc(86vw / var(--zen-page-zoom));
+  max-height: calc(86vh / var(--zen-page-zoom));
   border-radius: var(--r-lg, 12px);
   border: 1px solid var(--zen-border);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
