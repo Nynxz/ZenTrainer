@@ -221,11 +221,16 @@ export function useDataset(name: () => string) {
     // doesn't wipe the one the answer has
     return h && asFarAlong(h, j) ? { ...j, ...h, queue: h.queue?.length ? h.queue : j.queue } : j
   }
+  // when each job was last heard, counted in events: an answer only speaks for jobs not heard since it was asked
+  let events = 0
+  const heardAt = new Map<string, number>()
   async function askActive() {
+    const asked = events
     const all = await engine.captionActive()
-    // one it isn't running any more: it ended, and that event was missed (a reconnect)
+    // one it isn't running any more: it ended, and that event was missed (a reconnect). Not one
+    // heard since asking: the answer is older than that
     const running = new Set(all.map((j) => j.job_id))
-    for (const id of Object.keys(jobs)) if (!running.has(id)) delete jobs[id]
+    for (const id of Object.keys(jobs)) if (!running.has(id) && (heardAt.get(id) ?? 0) <= asked) delete jobs[id]
     for (const j of all) track(latest(j))
   }
   // a job heard mid-way, its queue unknown (it went out with its first events, and asking when the
@@ -241,6 +246,7 @@ export function useDataset(name: () => string) {
       if (m.type !== EVENTS.caption) return
       const j = m.data as unknown as CaptionJob
       heard.set(j.job_id, j)
+      heardAt.set(j.job_id, ++events)
       track(j)
       if (j.dataset && j.status === 'running' && j.done && !jobs[j.job_id]?.queue.length) askQueue(j.job_id)
     }),
