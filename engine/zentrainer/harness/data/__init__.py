@@ -729,8 +729,8 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
 
         for k, (i, inputs, text) in enumerate(grounded):
             pics = [grounding_pixels(c, clip) for c in inputs]
-            cond = _to_cpu(encode_grounded(clip, text, pics))
-            empty = _to_cpu(encode_grounded(clip, "", pics)) if spec.caption_dropout else None
+            cond = checked_encoding(_to_cpu(encode_grounded(clip, text, pics)), text)
+            empty = checked_encoding(_to_cpu(encode_grounded(clip, "", pics)), "") if spec.caption_dropout else None
             if disk:  # after every picture, as in RAM: the VAE and the text encoder each load once
                 fields = dict(torch.load(samples[i].file, weights_only=True))
                 _write_sample(Path(samples[i].file), {**fields, "cond": cond, "cond_empty": empty})
@@ -748,9 +748,9 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             return h3_keyframe_cond(clip, vae, text, first, last, size[0], size[1], nframes)
 
         for k, (i, inputs, first, last, text, size, nframes) in enumerate(h3_jobs):
-            samples[i].cond = _to_cpu(h3_cond(text, inputs, first, last, size, nframes))
+            samples[i].cond = checked_encoding(_to_cpu(h3_cond(text, inputs, first, last, size, nframes)), text)
             if spec.caption_dropout:
-                samples[i].cond_empty = _to_cpu(h3_cond("", inputs, first, last, size, nframes))
+                samples[i].cond_empty = checked_encoding(_to_cpu(h3_cond("", inputs, first, last, size, nframes)), "")
             if progress:
                 progress(k + 1, len(h3_jobs), "encoding captions with their references")
 
@@ -796,10 +796,15 @@ class TextCache:
         except Exception as e:  # noqa: BLE001 - cut short: encode it again
             logging.warning("[ZenTrainer] text cache %s couldn't be read (%s); encoding it again", f.name, e)
             return None
+        if not finite(cond):  # cached before encodings were checked: encode it again
+            logging.warning("[ZenTrainer] text cache %s holds NaN/inf; encoding it again", f.name)
+            f.unlink(missing_ok=True)
+            return None
         os.utime(f)
         return cond
 
     def put(self, caption: str, cond) -> None:
+        checked_encoding(cond, caption)
         self.dir.mkdir(parents=True, exist_ok=True)
         f = self.dir / f"{self.key(caption)}.pt"
         tmp = f.with_suffix(".tmp")
@@ -928,10 +933,14 @@ def _from_plain(d: dict, texts: "TextCache | None" = None, where: Path | None = 
     audio = d.get("audio") or [None] * len(d["latents"])
     n = len(d["latents"])
     refs, conds, empties = (d.get(k) or [None] * n for k in ("refs", "conds", "conds_empty"))
+    if not finite(conds) or not finite(empties):  # an edit's or H3's own encodings, from before they were checked
+        raise ValueError("an encoding in the cache holds NaN/inf")
     samples = [Sample(lat, c, m, v, a, r, g, e)
                for lat, c, m, v, a, r, g, e in zip(d["latents"], d["caption_idx"], masks, variants, audio, refs, conds, empties)]
     owners = d.get("owners") or list(range(len(samples)))  # before videos: one sample per item
     conditionings = d.get("conditionings")
+    if conditionings is not None and not finite(conditionings):  # inline in an older cache, from before the check
+        raise ValueError("a caption's encoding in the cache holds NaN/inf")
     if conditionings is None:  # version 4: each from the text cache (missing one: build it again)
         if texts is None:
             raise ValueError("this cache keeps its captions in the text cache")
@@ -952,6 +961,26 @@ def _expand_repeats(ds: Dataset, items: list[Item]) -> Dataset:
         buckets.setdefault(sample_shape(ds.samples[i]), []).append(i)
     ds.buckets = buckets
     return ds
+
+
+def finite(x) -> bool:
+    """No NaN or inf in any tensor of a conditioning (lists, dicts, tensors nested)."""
+    if isinstance(x, torch.Tensor):
+        return not x.is_floating_point() or bool(torch.isfinite(x).all())
+    if isinstance(x, dict):
+        return all(finite(v) for v in x.values())
+    if isinstance(x, (list, tuple)):
+        return all(finite(v) for v in x)
+    return True
+
+
+def checked_encoding(cond, text: str):
+    """A text encoding, or ValueError when it holds NaN/inf: a text encoder short of memory while
+    loading can hand back NaN, and a cached one would give every later sample and step black."""
+    if not finite(cond):
+        raise ValueError(f"the text encoder returned NaN/inf for {text[:60]!r}: it most likely ran out of memory "
+                         "(RAM or VRAM) while loading. Free some and start again; nothing was cached")
+    return cond
 
 
 def _to_cpu(x):

@@ -12,6 +12,11 @@ and Manager show.
   drawing, and no longer carries them over to the next picture.
 - The sidebar says which part of a model each loaded row is when one file holds several (SAM3's
   picture model and its text encoder looked like the same file loaded twice).
+- **Black samples that stayed black are fixed.** A text encoder short of memory can return NaN;
+  ZenTrainer cached that, and every later run with the same prompts or captions rendered black.
+  A NaN encoding is now never cached: the run stops and says the encoder likely ran out of
+  memory. One cached before this is found and encoded again, and a black first sample is no
+  longer kept to stand in for later runs.
 
 ## 0.4.1 (2026-10-31)
 

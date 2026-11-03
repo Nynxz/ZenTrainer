@@ -20,6 +20,7 @@ import torch
 
 from .. import events, paths
 from . import optim
+from .data import checked_encoding, finite
 from .data.streams import first_stream
 
 # a slider's samples: each prompt at these strengths, one strip (spec.slider; harness/slider.py)
@@ -206,11 +207,28 @@ class Samples(Callback):
     def _baseline_dir(self) -> Path:
         return paths.output_root() / "samples" / "_baseline"
 
+    def _baseline_file(self, t, i: int) -> Path | None:
+        """This sample's kept baseline, if any. A black picture isn't one: a NaN render (a text
+        encoder short of memory) was kept as black before renders were checked."""
+        from PIL import Image
+
+        for src in self._baseline_dir().glob(f"{self._baseline_key(t, i)}.*"):
+            if src.suffix == ".png":
+                try:
+                    with Image.open(src) as im:
+                        if im.convert("L").getextrema()[1] == 0:
+                            src.unlink(missing_ok=True)
+                            continue
+                except OSError:
+                    continue
+            return src
+        return None
+
     def _baseline_hit(self, t, i: int, out_dir: str) -> dict | None:
         import shutil
 
-        key = self._baseline_key(t, i)
-        for src in self._baseline_dir().glob(f"{key}.*"):
+        src = self._baseline_file(t, i)
+        if src is not None:
             name = f"step000000_{i:02d}{src.suffix}"
             shutil.copyfile(src, Path(out_dir) / name)
             return {"run_id": t.run_id, "step": 0, "index": i, "prompt": self.prompts[i], "filename": name,
@@ -339,18 +357,21 @@ class Samples(Callback):
             try:
                 cached = torch.load(path, weights_only=True)
                 negs = cached.get("negatives") or [None] * len(prompts)
-                return [(c, n if n is not None else cached["negative"]) for c, n in zip(cached["prompts"], negs)]
+                out = [(c, n if n is not None else cached["negative"]) for c, n in zip(cached["prompts"], negs)]
+                if finite(out):
+                    return out
+                logging.warning("[ZenTrainer] the sample prompts' cached encodings hold NaN/inf; encoding them again")
             except Exception:
                 pass
         clip = t.models.clip
-        neg = clip.encode_from_tokens_scheduled(clip.tokenize(negative))
+        neg = checked_encoding(clip.encode_from_tokens_scheduled(clip.tokenize(negative)), negative)
         conds = []
         for text, sp in zip(prompts, special):
             if sp is None:
-                conds.append((clip.encode_from_tokens_scheduled(clip.tokenize(text)), neg))
+                conds.append((checked_encoding(clip.encode_from_tokens_scheduled(clip.tokenize(text)), text), neg))
             else:
                 c, n = sp[1](clip, text, negative)
-                conds.append((c, neg if n is None else n))
+                conds.append((checked_encoding(c, text), neg if n is None else checked_encoding(n, negative)))
         if path is not None:
             from .data import _to_cpu
 
@@ -452,7 +473,7 @@ class Samples(Callback):
         out_dir = _out_dir(t)
         rows = []
 
-        if manual is None and t.step == 0 and all(any(self._baseline_dir().glob(f"{self._baseline_key(t, i)}.*")) for i in range(len(self._conds))):
+        if manual is None and t.step == 0 and all(self._baseline_file(t, i) is not None for i in range(len(self._conds))):
             # every baseline rendered before with these exact settings: copy them, load nothing
             for i in range(len(self._conds)):
                 row = self._baseline_hit(t, i, out_dir)
@@ -525,13 +546,15 @@ class Samples(Callback):
                     def cb(step, x0, _x, total, _i=i):
                         progress(_i, step + 1, total, x0)
 
-                    def draw(m):
+                    def draw(m, _i=i):
                         # as in training: bypass adapters keep their own (fp32) weights beside the
                         # model's bf16 activations, and only autocast reconciles the two
                         with torch.autocast(t.device.type, dtype=t.train_dtype, enabled=t.train_dtype != torch.float32):
                             o = comfy.sample.sample(m, noise, steps, s.cfg, s.sampler, s.scheduler, pos, neg, latent,
                                                     sigmas=sigmas, seed=it.seed, disable_pbar=True, callback=cb)
                         img = vae.decode(first_stream(o))
+                        if not finite(img):
+                            logging.warning("[ZenTrainer] sample %d came out NaN/inf (black)", _i)
                         return o, img.reshape(-1, *img.shape[-3:])
 
                     sweep = SLIDER_SWEEP if t.spec.slider.kind and manual is None and t.step > 0 and not t_lat else None
@@ -552,7 +575,7 @@ class Samples(Callback):
                         name = f"manual_{manual:03d}_{'base' if base else f'step{t.step:06d}'}.png" if manual is not None else f"step{t.step:06d}_{i:02d}.png"
                         pic = strip if sweep else Image.fromarray((img[0].clamp(0, 1).cpu().numpy() * 255).astype("uint8"))
                         pic.save(os.path.join(out_dir, name))
-                    if t.step == 0 and manual is None:
+                    if t.step == 0 and manual is None and finite(img):  # never a black NaN render
                         self._baseline_keep(t, i, Path(out_dir) / name)
                     row = {
                         "run_id": t.run_id, "step": t.step, "index": i, "prompt": self.prompts[i],
