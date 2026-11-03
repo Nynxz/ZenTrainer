@@ -7,7 +7,7 @@ import { fileInfo, pct, secs, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
 import { zoomOf } from '@/lib/zoom'
 
-const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, maskThumb, thumbSize, boxing, maskHighVis } = useDatasetContext()
+const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, maskThumb, working, thumbSize, boxing, maskHighVis } = useDatasetContext()
 
 // drag to select a box of cards (mouse and pen; touch scrolls), starting on a card or in the empty
 // space around them: the page's margins, gaps and below the last row. A plain drag starts a new
@@ -157,6 +157,7 @@ onUnmounted(() => {
           class="mask-lit"
           :style="{ objectFit: fit, maskImage: `url(${maskThumb(it, thumbSize)})`, WebkitMaskImage: `url(${maskThumb(it, thumbSize)})`, maskSize: fit, WebkitMaskSize: fit }"
         />
+        <span v-if="working.has(it.path)" class="working" :class="working.get(it.path)" :title="working.get(it.path) === 'now' ? 'Being worked on now' : 'Waiting its turn in a job'"><i class="mdi mdi-loading mdi-spin" /></span>
         <!-- an edit pair: its input picture in the corner (the big one is the target) -->
         <img v-if="inputs(it).length" :src="thumb({ path: inputs(it)[0]! }, 256)" loading="lazy" alt="" class="control-inset" :title="`Input: ${inputs(it).join(', ')}`" />
         <span class="badges">
@@ -330,6 +331,22 @@ onUnmounted(() => {
   border-radius: var(--r-sm);
   border: 2px solid var(--zen-surface);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+/* a job (auto-caption) has this picture still to do: brighter on the one it's on */
+.working {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 32px;
+  color: var(--zen-text);
+  background: rgb(0 0 0 / 0.35);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.working.now {
+  color: var(--zen-accent);
+  opacity: 1;
 }
 .badges {
   position: absolute;

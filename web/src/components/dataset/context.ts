@@ -193,6 +193,37 @@ export function useDataset(name: () => string) {
     const p = facesDone.value
     return p && p.total ? `${p.done}/${p.total}` : ''
   })
+  // ---- jobs going through the pictures (auto-caption, try-ons too): a spinner on each one still
+  // to do, cleared as the job passes it. A job sends its queue with its first events (and to
+  // /active), then only how many are done
+  const jobs = reactive<Record<string, { dataset: string; queue: string[]; done: number; running: boolean }>>({})
+  function track(j: Pick<CaptionJob, 'job_id' | 'dataset' | 'status' | 'done' | 'queue'>) {
+    if (!j.dataset) return // a prompt rewrite: no pictures
+    if (j.status !== 'queued' && j.status !== 'running') return void delete jobs[j.job_id]
+    const was = jobs[j.job_id]
+    jobs[j.job_id] = { dataset: j.dataset, queue: j.queue ?? was?.queue ?? [], done: j.done, running: j.status === 'running' }
+  }
+  /** path -> 'now' (the one it's on) or 'next' (waiting its turn) */
+  const working = computed(() => {
+    const out = new Map<string, 'now' | 'next'>()
+    for (const w of Object.values(jobs))
+      if (w.dataset === name()) w.queue.forEach((p, i) => i >= w.done && !out.has(p) && out.set(p, w.running && i === w.done ? 'now' : 'next'))
+    return out
+  })
+  // each job's latest event heard here: the list of what's running, asked as the page opens, can
+  // be older than them (a job that ended while it was on its way would spin on until a reload)
+  const heard = new Map<string, CaptionJob>()
+  onUnmounted(
+    onComfyMessage((m) => {
+      if (m.type !== EVENTS.caption) return
+      const j = m.data as unknown as CaptionJob
+      heard.set(j.job_id, j)
+      track(j)
+    }),
+  )
+  onMounted(async () => {
+    for (const j of await engine.captionActive().catch(() => [])) track({ ...j, ...heard.get(j.job_id) })
+  })
   const captionSubject = ref('') // this dataset's "caption_subject" setting: what auto-captions call the subject
   const facesSetting = ref(false) // this dataset's "faces" setting: on = checked on open, in the stats and runs
   async function toggleFaces() {
@@ -399,7 +430,7 @@ export function useDataset(name: () => string) {
 
   return {
     view, zoom, fit, showMasks, maskHighVis, sideOpen,
-    items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load, maskThumb,
+    items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load, maskThumb, working,
     filter, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
     isMuted, setMuted, imageFlags, statsPanel,
     faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, faceOf, faceIssue, faceNote,

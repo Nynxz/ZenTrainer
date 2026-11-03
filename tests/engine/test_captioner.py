@@ -88,6 +88,20 @@ def test_jobs_survive_a_restart(ds, monkeypatch):
     assert back.status == "stopped"  # it was running when ComfyUI went down
 
 
+def test_the_page_hears_the_queue_once_and_counts_it_down(ds, monkeypatch):
+    sent = []
+    monkeypatch.setattr(captioner.events, "emit", lambda kind, data: kind == captioner.CAPTION and sent.append(data))
+    j = job(mode="all")
+    sent.clear()  # what creating it said
+    captioner.update(j, status="running", total=3, queue=["a.png", "b.png", "c.png"])
+    captioner.update(j, done=1)
+    assert sent[0]["queue"] == ["a.png", "b.png", "c.png"]
+    assert "queue" not in sent[1]  # the page counts it down by done: not resent with each picture
+    assert captioner.active()[0]["queue"] == ["a.png", "b.png", "c.png"]  # a page that opens now
+    captioner.cancel(j)
+    assert j.queue == [] and not captioner.active()
+
+
 def test_mask_stats(tmp_path):
     m = Image.new("L", (100, 50), 0)
     m.paste(255, (0, 0, 50, 50))  # left half trained

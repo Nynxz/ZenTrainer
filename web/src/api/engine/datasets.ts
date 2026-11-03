@@ -154,6 +154,8 @@ export type CaptionMode = 'missing' | 'all' | 'selected'
 
 export interface CaptionJob {
   job_id: string
+  /** while it runs, the pictures it goes through in order (sent with its first events): queue[done:] are still to do */
+  queue?: string[]
   /** a prompt rewrite: the prompts (no dataset; the rewrites are its results) */
   rewrite?: string[]
   /** how its answers are kept ("fibo_json": structured captions) */

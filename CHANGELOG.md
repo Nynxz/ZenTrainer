@@ -5,6 +5,8 @@ and Manager show.
 
 ## Unreleased
 
+- **See a job go through the pictures.** While auto-captioning runs (a try-on too), every picture
+  it has still to do shows a spinner, brighter on the one it's on.
 - **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a
   replaced mask's old thumbnail until a hard refresh.
 - **The app asks in its own dialogs, not the browser's.** Every "are you sure?", every name to type
