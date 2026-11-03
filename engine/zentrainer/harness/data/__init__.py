@@ -102,7 +102,11 @@ class DiskSample:
 
     def __getattr__(self, name):
         if name in DISK_FIELDS:
-            return _disk_load(self.file).get(name)
+            value = _disk_load(self.file).get(name)
+            if name in ("cond", "cond_empty") and not finite(value):  # cached before encodings were checked
+                raise ValueError(f"{Path(self.file).name} in the dataset cache holds a NaN text encoding: "
+                                 "clear this dataset's cache and start again")
+            return value
         raise AttributeError(name)
 
 
@@ -801,7 +805,8 @@ class TextCache:
         return hashlib.sha256(caption.encode()).hexdigest()[:24]
 
     def has(self, caption: str) -> bool:
-        return (self.dir / f"{self.key(caption)}.pt").is_file()
+        """Cached and usable: one get() would refuse (cut short, NaN) is dropped and counts as missing."""
+        return self.get(caption) is not None
 
     def get(self, caption: str):
         f = self.dir / f"{self.key(caption)}.pt"

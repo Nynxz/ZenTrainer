@@ -89,3 +89,32 @@ def test_an_older_cache_with_a_nan_caption_inside_is_rebuilt():
         data._from_plain(d)
     d["conditionings"] = [OK]
     assert len(data._from_plain(d).samples) == 1
+
+
+def test_a_black_video_baseline_is_not_reused(tmp_path):
+    from zentrainer.harness.data import video
+
+    s = Samples(1)
+    s._baseline_dir = lambda: tmp_path
+    s._baseline_key = lambda _t, i: f"key{i}"
+    video.write(tmp_path / "key0.mp4", torch.zeros(3, 16, 16, 3), 8)
+    video.write(tmp_path / "key1.mp4", torch.full((3, 16, 16, 3), 0.5), 8)
+    assert s._baseline_file(None, 0) is None
+    assert s._baseline_file(None, 1) == tmp_path / "key1.mp4"
+
+
+def test_has_counts_only_usable_encodings(tmp_path):
+    texts = data.TextCache(tmp_path, "enc")
+    texts.put("a cat", OK)
+    assert texts.has("a cat")
+    torch.save(NAN, texts.dir / f"{texts.key('a cat')}.pt")
+    assert not texts.has("a cat")
+
+
+def test_a_disk_sample_with_a_nan_encoding_says_to_clear_the_cache(tmp_path):
+    f = tmp_path / "s.pt"
+    torch.save({"latent": torch.zeros(4, 8, 8), "cond": NAN}, f)
+    sample = data.DiskSample(f, (4, 8, 8), 0, [0], False, True)
+    assert sample.latent.shape == (4, 8, 8)
+    with pytest.raises(ValueError, match="clear this dataset's cache"):
+        sample.cond

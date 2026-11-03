@@ -218,14 +218,20 @@ class Samples(Callback):
         from PIL import Image
 
         for src in self._baseline_dir().glob(f"{self._baseline_key(t, i)}.*"):
-            if src.suffix == ".png":
-                try:
+            try:
+                if src.suffix == ".png":
                     with Image.open(src) as im:
-                        if im.convert("L").getextrema()[1] == 0:
-                            src.unlink(missing_ok=True)
-                            continue
-                except OSError:
-                    continue
+                        black = im.convert("L").getextrema()[1] == 0
+                else:  # a clip: its first frame
+                    import av
+
+                    with av.open(str(src)) as clip:
+                        black = next(clip.decode(video=0)).to_image().convert("L").getextrema()[1] == 0
+            except Exception:  # noqa: BLE001 - unreadable: not one to reuse
+                continue
+            if black:
+                src.unlink(missing_ok=True)
+                continue
             return src
         return None
 
