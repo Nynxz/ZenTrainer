@@ -222,6 +222,9 @@ export function useDataset(name: () => string) {
   }
   async function askActive() {
     const all = await engine.captionActive()
+    // one it isn't running any more: it ended, and that event was missed (a reconnect)
+    const running = new Set(all.map((j) => j.job_id))
+    for (const id of Object.keys(jobs)) if (!running.has(id)) delete jobs[id]
     for (const j of all) track(latest(j))
   }
   // a job heard mid-way, its queue unknown (it went out with its first events, and asking when the

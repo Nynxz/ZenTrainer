@@ -41,7 +41,7 @@ export function captionInfo(dataset: string): Promise<CaptionInfo> {
   if (!p) {
     p = engine.captionInfo(dataset)
     infos.set(dataset, p)
-    p.catch(() => infos.delete(dataset))
+    p.catch(() => infos.get(dataset) === p && infos.delete(dataset)) // not a newer ask that replaced it
   }
   return p
 }
