@@ -221,7 +221,7 @@ function onCaptioned(set: string) {
         <button :class="{ on: capTab === 'auto' }" @click="capTab = 'auto'"><i class="mdi mdi-creation-outline" /> Auto-caption</button>
         <button :class="{ on: capTab === 'bulk' }" @click="capTab = 'bulk'"><i class="mdi mdi-format-text-variant-outline" /> Bulk edit</button>
       </div>
-      <CaptionPanel v-if="capOpen && capTab === 'auto'" :dataset="name" :items="items" :sets="sets" :selected="[...selected]" :subject="captionSubject" class="side-caption" @changed="onCaptioned" @review="review" />
+      <CaptionPanel v-if="capOpen && capTab === 'auto'" :key="name" :dataset="name" :items="items" :sets="sets" :selected="[...selected]" :subject="captionSubject" class="side-caption" @changed="onCaptioned" @review="review" />
       <div v-if="capOpen && capTab === 'bulk'" class="side-bulk">
         <span class="muted small">Every caption in “{{ activeSet }}”:</span>
         <ZenInput v-model="bulkText" placeholder="trigger word / text" size="sm" />

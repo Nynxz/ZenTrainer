@@ -202,7 +202,8 @@ export function useDataset(name: () => string) {
     if (!j.dataset) return // a prompt rewrite: no pictures
     if (j.status !== 'queued' && j.status !== 'running') return void delete jobs[j.job_id]
     const was = jobs[j.job_id]
-    jobs[j.job_id] = { dataset: j.dataset, queue: j.queue ?? was?.queue ?? [], done: j.done, running: j.status === 'running' }
+    // an empty queue never wipes a known one (an answer that came late, a first event before the list)
+    jobs[j.job_id] = { dataset: j.dataset, queue: j.queue?.length ? j.queue : (was?.queue ?? []), done: j.done, running: j.status === 'running' }
   }
   /** path -> 'now' (the one it's on) or 'next' (waiting its turn) */
   const working = computed(() => {
