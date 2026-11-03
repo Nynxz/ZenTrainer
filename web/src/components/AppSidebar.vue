@@ -72,7 +72,7 @@ async function resumeQueue() {
     await engine.editQueue({ action: 'resume' })
     await Promise.all([refreshQueue(), refreshRuns()])
   } catch (e) {
-    tellError(e, 'Couldn’t resume the queue')
+    await tellError(e, 'Couldn’t resume the queue') // the button waits for the notice
   } finally {
     resuming.value = false
   }
