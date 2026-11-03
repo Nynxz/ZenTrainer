@@ -245,6 +245,7 @@ def main():
     patcher = tiny_model(build)
     vae = Vae(patcher.model.latent_format, channels, down)
     models.load = lambda spec: models.Models(patcher, Clip(text_width), vae)
+    models.load_text = lambda spec: models.Models(None, Clip(text_width), None)  # the text encoded first
     dataset(WORK / "input" / "smoke")
     spec = {
         "name": "smoke",

@@ -102,3 +102,17 @@ def test_a_dataset_saves_its_captions_by_name_and_loads_them_back(tmp_path):
     assert torch.equal(back.conditionings[1][0][0], conds[1][0][0])
     old = data._to_plain(ds)  # an older cache, its encodings inside: still loads as it is
     assert data._from_plain(old).conditionings is conds
+
+
+def test_caption_texts_are_what_a_build_encodes(tmp_path):
+    from PIL import Image
+
+    from zentrainer.spec import DatasetSpec
+
+    for name, caption in (("a", "[trigger] in a hat"), ("b", "a red door")):
+        Image.new("RGB", (8, 8)).save(tmp_path / f"{name}.png")
+        (tmp_path / f"{name}.txt").write_text(caption)
+    spec = DatasetSpec(folder="x", trigger="zk", trigger_prepend=True)
+    assert data.caption_texts(spec, tmp_path) == ["", "zk in a hat", "zk, a red door"]
+    with_classes = data.caption_texts(spec, tmp_path, ("a man",))
+    assert "a man in a hat" in with_classes and set(with_classes) > {"", "zk in a hat", "zk, a red door"}
