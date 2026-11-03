@@ -156,7 +156,8 @@ def _save() -> None:
     path = _file()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps([asdict(j) for j in keep]))
+    # not the queue: only a running job has one, and it's saved with every picture (a restart stops it)
+    tmp.write_text(json.dumps([{k: v for k, v in asdict(j).items() if k != "queue"} for j in keep]))
     tmp.replace(path)
 
 
