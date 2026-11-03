@@ -97,6 +97,8 @@ class CaptionJob:
     done: int = 0
     total: int = 0
     file: str = ""
+    # the pictures it goes through, in order, while it runs: the page spins on queue[done:]
+    queue: list[str] = field(default_factory=list)
     text: str = ""
     message: str = ""
     prompt_id: str = ""
@@ -154,7 +156,8 @@ def _save() -> None:
     path = _file()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps([asdict(j) for j in keep]))
+    # not the queue: only a running job has one, and it's saved with every picture (a restart stops it)
+    tmp.write_text(json.dumps([{k: v for k, v in asdict(j).items() if k != "queue"} for j in keep]))
     tmp.replace(path)
 
 
@@ -268,19 +271,22 @@ def recent(dataset: str | None = None) -> list[dict]:
         _load()
         jobs = [j for j in _jobs.values() if (dataset is None or j.dataset == dataset)
                 and (not j.preview or j.status in ACTIVE or now - (j.finished or j.created) < PREVIEW_KEEP)]
-    return [j.public() for j in sorted(jobs, key=lambda j: j.created, reverse=True)[:20]]
+    # light: a panel lists them (a job's own page fetches the rest: what it wrote, its log)
+    return [_light(j, queue=True) for j in sorted(jobs, key=lambda j: j.created, reverse=True)[:20]]
 
 
 def active() -> list[dict]:
     """Every queued or running job, try-ons included: what the sidebar shows."""
     with _lock:
         _load()
-        return [_light(j) for j in sorted(_jobs.values(), key=lambda j: j.created) if j.status in ACTIVE]
+        return [_light(j, queue=True) for j in sorted(_jobs.values(), key=lambda j: j.created) if j.status in ACTIVE]
 
 
-def _light(job: CaptionJob) -> dict:
+def _light(job: CaptionJob, queue: bool = False) -> dict:
+    """A job without its long lists. The queue goes out with the first events and to a page that
+    asks (active); the page counts it down by `done`, so it isn't resent with every picture."""
     d = job.public()
-    for k in ("prompt", "written", "paths", "log"):
+    for k in ("prompt", "written", "paths", "log") + (() if queue or job.done == 0 else ("queue",)):
         d.pop(k)
     return d
 
@@ -460,7 +466,7 @@ def run(job: CaptionJob) -> None:
                 return
             root = _dataset_root(job)
             items = todo(job, scan(root, warn=False))
-            update(job, total=len(items))
+            update(job, total=len(items), queue=[str(it.path.relative_to(root)) for it in items])
             log(job, f"{len(items)} to caption")
             if not items:
                 log(job, "nothing to caption: every image already has one in this set")
@@ -512,11 +518,11 @@ def run(job: CaptionJob) -> None:
         if job.status == "running":
             log(job, (f"done: {len(job.written)} written, {len(job.previous)} of them replaced"
                       + (f", {len(job.cut)} cut off" if job.cut else "")) if not job.preview else "done (try-on: nothing saved)")
-            update(job, status="done", finished=time.time())
+            update(job, status="done", queue=[], finished=time.time())
     except BaseException as e:
         stopped = type(e).__name__ == "InterruptProcessingException"
         log(job, "interrupted" if stopped else f"failed: {type(e).__name__}: {e}", "warn" if stopped else "error")
-        update(job, status="stopped" if stopped else "error", message=str(e) or type(e).__name__, finished=time.time())
+        update(job, status="stopped" if stopped else "error", queue=[], message=str(e) or type(e).__name__, finished=time.time())
         if not stopped:
             raise
     finally:
@@ -713,7 +719,7 @@ def cancel(job: CaptionJob) -> None:
     """Stop at the next image (what's written stays, and can be undone)."""
     if job.status in ACTIVE:
         log(job, "cancelled", "warn")
-        update(job, status="stopped", message="cancelled", finished=time.time())
+        update(job, status="stopped", queue=[], message="cancelled", finished=time.time())
 
 
 def undo(job: CaptionJob) -> int:

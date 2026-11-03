@@ -5,7 +5,7 @@ import { ZenButton, ZenInput, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { engine } from '@/api/engine'
 import { remembered } from '@/lib/remembered'
-import { activeCaptions } from '@/stores/captions'
+import { activeCaptions, captionInfo } from '@/stores/captions'
 import CaptionPanel from '@/components/CaptionPanel.vue'
 import DatasetStats from '@/components/DatasetStats.vue'
 import { useDatasetContext } from './context'
@@ -96,7 +96,7 @@ async function undoBulk() {
 }
 
 // ---- edit inputs: control sets, named layers of input pictures beside the dataset -----------
-const inputsOpen = ref(true)
+const inputsOpen = remembered('zentrainer.datasetSide.inputs', true)
 const inputCount = (set: string) => items.value.filter((it) => it.control_sets?.[set]?.length).length
 const SET_RE = /^[a-z0-9][a-z0-9_-]{0,23}$/
 async function askSetName(title: string, message: string, ok: string, now = ''): Promise<string | null> {
@@ -151,8 +151,12 @@ const settingsOpen = remembered('zentrainer.datasetSide.settings', false)
 // ---- auto-caption: CaptionPanel runs it as a job -----------------------------------------
 // open while this dataset has a caption job going, so coming back to the page shows it
 const capRunning = computed(() => activeCaptions.value.some((j) => j.dataset === props.name))
-// captions: auto-caption and bulk edit, one section (open while a caption job runs here)
-const capOpen = ref(capRunning.value)
+// captions: auto-caption and bulk edit, one section, folded or not as last left (and opened while a
+// caption job runs here)
+const capOpen = remembered('zentrainer.datasetSide.captions', false)
+if (capRunning.value) capOpen.value = true
+// what the caption panel shows, asked now: it opens with it instead of waiting on the server
+watch(() => props.name, (n) => void captionInfo(n).catch(() => {}), { immediate: true })
 const capTab = ref<'auto' | 'bulk'>((() => {
   try {
     return localStorage.getItem('zentrainer.datasetSide.capTab') === 'bulk' ? 'bulk' : 'auto'
@@ -217,7 +221,7 @@ function onCaptioned(set: string) {
         <button :class="{ on: capTab === 'auto' }" @click="capTab = 'auto'"><i class="mdi mdi-creation-outline" /> Auto-caption</button>
         <button :class="{ on: capTab === 'bulk' }" @click="capTab = 'bulk'"><i class="mdi mdi-format-text-variant-outline" /> Bulk edit</button>
       </div>
-      <CaptionPanel v-if="capOpen && capTab === 'auto'" :dataset="name" :items="items" :sets="sets" :selected="[...selected]" :subject="captionSubject" class="side-caption" @changed="onCaptioned" @review="review" />
+      <CaptionPanel v-if="capOpen && capTab === 'auto'" :key="name" :dataset="name" :items="items" :sets="sets" :selected="[...selected]" :subject="captionSubject" class="side-caption" @changed="onCaptioned" @review="review" />
       <div v-if="capOpen && capTab === 'bulk'" class="side-bulk">
         <span class="muted small">Every caption in “{{ activeSet }}”:</span>
         <ZenInput v-model="bulkText" placeholder="trigger word / text" size="sm" />
@@ -339,6 +343,7 @@ function onCaptioned(set: string) {
 .cap-tabs {
   display: flex;
   gap: 4px;
+  margin-top: 10px;
 }
 .cap-tabs button {
   flex: 1;

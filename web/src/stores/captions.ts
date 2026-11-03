@@ -30,3 +30,25 @@ export async function startCaptionSync(): Promise<void> {
     // engine unreachable; events will fill it in
   }
 }
+
+// ---- the caption panel's styles, models and recent jobs -------------------------------------
+export type CaptionInfo = Awaited<ReturnType<typeof engine.captionInfo>>
+const infos = new Map<string, Promise<CaptionInfo>>()
+/** Asked once per dataset (the dataset page asks as it opens) and kept, so the panel opens with
+ * it instead of waiting on the server. */
+export function captionInfo(dataset: string): Promise<CaptionInfo> {
+  let p = infos.get(dataset)
+  if (!p) {
+    p = engine.captionInfo(dataset)
+    infos.set(dataset, p)
+    p.catch(() => infos.get(dataset) === p && infos.delete(dataset)) // not a newer ask that replaced it
+  }
+  return p
+}
+/** Ask again (the panel does as it opens, to show what changed since) */
+export function refreshCaptionInfo(dataset: string): Promise<CaptionInfo> {
+  infos.delete(dataset)
+  return captionInfo(dataset)
+}
+/** What was asked before, if anything */
+export const keptCaptionInfo = (dataset: string) => infos.get(dataset)

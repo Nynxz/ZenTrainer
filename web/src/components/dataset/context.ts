@@ -11,6 +11,7 @@ import type DatasetStats from '@/components/DatasetStats.vue'
 import { remembered } from '@/lib/remembered'
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
 import { ask } from '@/lib/ask'
+import { asFarAlong } from '@/lib/jobs'
 
 export const isVideoPath = (p: string) => /\.(mp4|webm|mov|mkv)$/i.test(p)
 export const aspect = (it: DatasetItem) => (it.width && it.height ? `${it.width} / ${it.height}` : '1')
@@ -193,6 +194,84 @@ export function useDataset(name: () => string) {
     const p = facesDone.value
     return p && p.total ? `${p.done}/${p.total}` : ''
   })
+  // ---- jobs going through the pictures (auto-caption, try-ons too): a spinner on each one still
+  // to do, cleared as the job passes it. A job sends its queue with its first events (and to
+  // /active), then only how many are done
+  const jobs = reactive<Record<string, { dataset: string; queue: string[]; done: number; running: boolean }>>({})
+  function track(j: Pick<CaptionJob, 'job_id' | 'dataset' | 'status' | 'done' | 'queue'>) {
+    if (!j.dataset) return // a prompt rewrite: no pictures
+    if (j.status !== 'queued' && j.status !== 'running') return void delete jobs[j.job_id]
+    const was = jobs[j.job_id]
+    // an empty queue never wipes a known one (an answer that came late, a first event before the list)
+    jobs[j.job_id] = { dataset: j.dataset, queue: j.queue?.length ? j.queue : (was?.queue ?? []), done: j.done, running: j.status === 'running' }
+  }
+  /** path -> 'now' (the one it's on) or 'next' (waiting its turn) */
+  const working = computed(() => {
+    const out = new Map<string, 'now' | 'next'>()
+    for (const w of Object.values(jobs))
+      if (w.dataset === name()) w.queue.forEach((p, i) => i >= w.done && !out.has(p) && out.set(p, w.running && i === w.done ? 'now' : 'next'))
+    return out
+  })
+  // each job's latest event heard here: the list of what's running, asked as the page opens, can
+  // be older than them (a job that ended while it was on its way would spin on until a reload)
+  const heard = new Map<string, CaptionJob>()
+  const latest = (j: CaptionJob) => {
+    const h = heard.get(j.job_id)
+    // a job's first running event comes before it has listed its pictures: an empty queue there
+    // doesn't wipe the one the answer has
+    return h && asFarAlong(h, j) ? { ...j, ...h, queue: h.queue?.length ? h.queue : j.queue } : j
+  }
+  // when each job was last heard, counted in events: an answer only speaks for jobs not heard since it was asked
+  let events = 0
+  let recheck: ReturnType<typeof setTimeout> | undefined
+  let gone = false
+  onUnmounted(() => {
+    gone = true
+    clearTimeout(recheck)
+  })
+  // ask again in a while; one that fails waits twice as long, up to 30 s
+  function askAgain(ms: number) {
+    if (!gone) recheck = setTimeout(() => askActive().catch(() => askAgain(Math.min(ms * 2, 30000))), ms)
+  }
+  const heardAt = new Map<string, number>()
+  // answers can come back out of order (the page opening, a queue asked for): an older one is dropped
+  let asks = 0
+  let answered = 0
+  async function askActive() {
+    clearTimeout(recheck)
+    const asked = events
+    const mine = ++asks
+    const all = await engine.captionActive()
+    if (mine < answered) return
+    answered = mine
+    // one it isn't running any more: it ended, and that event was missed (a reconnect). Not one
+    // heard since asking: the answer is older than that
+    const running = new Set(all.map((j) => j.job_id))
+    for (const id of Object.keys(jobs)) if (!running.has(id) && (heardAt.get(id) ?? 0) <= asked) delete jobs[id]
+    // one heard since asking but not in the answer: it may have ended since, its last event missed. Ask
+    // again in a moment (a running one will be in that answer)
+    if (Object.keys(jobs).some((id) => !running.has(id))) askAgain(2000)
+    for (const j of all) track(latest(j))
+  }
+  // a job heard mid-way, its queue unknown (it went out with its first events, and asking when the
+  // page opened failed): ask again, once, and again on its next event if that fails too
+  const asking = new Set<string>()
+  function askQueue(id: string) {
+    if (asking.has(id)) return
+    asking.add(id)
+    askActive().catch(() => asking.delete(id))
+  }
+  onUnmounted(
+    onComfyMessage((m) => {
+      if (m.type !== EVENTS.caption) return
+      const j = m.data as unknown as CaptionJob
+      heard.set(j.job_id, j)
+      heardAt.set(j.job_id, ++events)
+      track(j)
+      if (j.dataset && j.status === 'running' && j.done && !jobs[j.job_id]?.queue.length) askQueue(j.job_id)
+    }),
+  )
+  onMounted(() => askActive().catch(() => {}))
   const captionSubject = ref('') // this dataset's "caption_subject" setting: what auto-captions call the subject
   const facesSetting = ref(false) // this dataset's "faces" setting: on = checked on open, in the stats and runs
   async function toggleFaces() {
@@ -379,6 +458,8 @@ export function useDataset(name: () => string) {
   // what holding Shift over an item shows: the file itself (a video plays), not its thumbnail
   const full = (it: DatasetItem) => `${viewUrl({ ...it, type: 'input' })}&v=${bust.value}`
   const thumb = (it: Pick<DatasetItem, 'path'>, size = 384) => `${thumbUrl(name(), it.path, size)}&v=${bust.value}`
+  // a mask is rewritten in place (the mask editor): its mtime keeps the URL fresh
+  const maskThumb = (it: DatasetItem, size = 384) => `${thumb({ path: it.mask! }, size)}&m=${it.mask_mtime ?? ''}`
   const thumbSize = computed(() => (zoom.value > 260 ? 768 : 384))
 
   // ---- lightbox -----------------------------------------------------------------------------
@@ -389,7 +470,7 @@ export function useDataset(name: () => string) {
       thumb: thumb(it, 256),
       label: it.path,
       meta: it.width ? `${it.width}×${it.height} · ${kb(it.bytes)}` : kb(it.bytes),
-      overlay: it.mask ? thumb({ path: it.mask } as DatasetItem, 1024) : undefined,
+      overlay: it.mask ? maskThumb(it, 1024) : undefined,
       overlayMode: 'mask' as const, // the picture dims; what the mask trains shows at full strength
       kind: it.kind === 'video' ? ('video' as const) : undefined,
     })),
@@ -397,7 +478,7 @@ export function useDataset(name: () => string) {
 
   return {
     view, zoom, fit, showMasks, maskHighVis, sideOpen,
-    items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load,
+    items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load, maskThumb, working,
     filter, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
     isMuted, setMuted, imageFlags, statsPanel,
     faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, faceOf, faceIssue, faceNote,

@@ -131,6 +131,8 @@ export interface DatasetItem {
   height: number | null
   bytes: number
   mask: string | null
+  /** the mask's mtime (ns), so its thumbnail URL changes when it does */
+  mask_mtime?: number | null
   /** share of the image the mask trains at full weight (0-1) */
   mask_coverage?: number
   /** the mask's shape differs from the image's: stretched over it, it won't line up */
@@ -152,6 +154,8 @@ export type CaptionMode = 'missing' | 'all' | 'selected'
 
 export interface CaptionJob {
   job_id: string
+  /** while it runs, the pictures it goes through in order (sent with its first events): queue[done:] are still to do */
+  queue?: string[]
   /** a prompt rewrite: the prompts (no dataset; the rewrites are its results) */
   rewrite?: string[]
   /** how its answers are kept ("fibo_json": structured captions) */

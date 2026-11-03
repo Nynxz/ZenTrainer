@@ -5,9 +5,11 @@
 import { ZenButton, ZenCombo, ZenInput, ZenNumber, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { onComfyMessage } from '@/api/comfy'
+import { captionInfo, keptCaptionInfo, refreshCaptionInfo, type CaptionInfo } from '@/stores/captions'
 import { setSetting, settings } from '@/stores/settings'
 import { EVENTS, EngineError, engine, thumbUrl, type CaptionFormat, type CaptionJob, type CaptionLora, type CaptionMode, type CaptionStyle, type DatasetItem, type ModelSenses } from '@/api/engine'
 import { ask, askText } from '@/lib/ask'
+import { asFarAlong } from '@/lib/jobs'
 
 const props = defineProps<{ dataset: string; items: DatasetItem[]; sets: string[]; selected: string[]; subject?: string }>()
 const emit = defineEmits<{ changed: [set: string]; review: [job: CaptionJob] }>()
@@ -169,8 +171,7 @@ watch(
   },
 )
 
-onMounted(async () => {
-  const info = await engine.captionInfo(props.dataset)
+function apply(info: CaptionInfo) {
   styles.value = info.styles
   notes.value = info.notes ?? null
   models.value = info.models // loadable only, vision-language first
@@ -180,8 +181,20 @@ onMounted(async () => {
   catalog.value = info.lora_catalog ?? []
   jobs.value = info.jobs.filter((j) => !j.preview)
   preview.value = info.jobs.find((j) => j.preview) ?? null // a try-on still running, or just done
+  // an event heard while the answer was on its way is newer; one from before it (its job since done,
+  // and that event missed) isn't
+  for (const j of heard.values()) {
+    const said = info.jobs.find((x) => x.job_id === j.job_id)
+    if (!said || asFarAlong(j, said)) upsert(j)
+  }
   if (!models.value.includes(form.clip_name))
     form.clip_name = models.value.find((n) => /qwen3vl_4b/i.test(n)) ?? models.value.find((n) => /qwen3vl/i.test(n)) ?? models.value[0] ?? ''
+}
+// what the dataset page already asked shows at once; then asked again, for what changed since
+onMounted(async () => {
+  const kept = keptCaptionInfo(props.dataset)
+  if (kept) await kept.then(apply, () => {})
+  apply(await (kept ? refreshCaptionInfo(props.dataset) : captionInfo(props.dataset)))
 })
 
 // ---- what a run would do -------------------------------------------------------------------
@@ -193,6 +206,9 @@ const targets = computed(() => {
   }
   return form.mode === 'all' ? props.items : props.items.filter((it) => !has(it))
 })
+// a try-on of up to TRY: no more than there are to do (a dataset of 2 tries 2)
+const TRY = 3
+const tryN = computed(() => Math.min(TRY, targets.value.length))
 const replaces = computed(() => targets.value.filter(has).length)
 const counts = computed(() => ({
   missing: props.items.filter((it) => !has(it)).length,
@@ -286,7 +302,28 @@ const gist = (t: string) => {
   return o ? `${String(o.short_description ?? '')} {…}` : t
 }
 
-const validSet = computed(() => form.set === 'default' || /^[a-z0-9][a-z0-9_-]{0,23}$/.test(form.set))
+const SET_RE = /^[a-z0-9][a-z0-9_-]{0,23}$/
+const validSet = computed(() => form.set === 'default' || SET_RE.test(form.set))
+// Into set: the dataset's sets, then new ones (made with +, or the one a style suggests) until
+// a job writes into them
+const made = ref<string[]>([])
+const setChips = computed(() => {
+  const out = props.sets.map((s) => ({ name: s, fresh: false }))
+  for (const s of [...made.value, form.set]) if (s && !out.some((c) => c.name === s)) out.push({ name: s, fresh: true })
+  return out
+})
+async function newSet() {
+  const name = await askText({
+    title: 'New caption set',
+    message: 'Another caption per picture, e.g. tags, nl or short: a run picks which set it trains on. It’s made when this job writes into it.',
+    ok: 'Use it',
+    input: { placeholder: 'tags', check: (v) => (SET_RE.test(v.toLowerCase()) ? null : 'Lowercase letters, digits, - and _ (24 at most)') },
+  })
+  if (!name) return
+  const s = name.toLowerCase()
+  if (!made.value.includes(s)) made.value = [...made.value, s]
+  form.set = s
+}
 
 // ---- jobs ------------------------------------------------------------------------------------
 const active = computed(() => jobs.value.find((j) => !j.preview && ['queued', 'running'].includes(j.status)) ?? null)
@@ -381,11 +418,14 @@ function upsert(j: CaptionJob) {
   const i = jobs.value.findIndex((x) => x.job_id === j.job_id)
   jobs.value = i < 0 ? [j, ...jobs.value] : jobs.value.map((x, n) => (n === i ? { ...x, ...j } : x))
 }
+// each job's latest event heard here, laid over what the server answers (apply)
+const heard = new Map<string, CaptionJob>()
 let off = () => {}
 onMounted(() => {
   off = onComfyMessage((m) => {
     if (m.type !== EVENTS.caption || m.data.dataset !== props.dataset) return
     const j = m.data as unknown as CaptionJob
+    heard.set(j.job_id, j)
     const before = jobs.value.find((x) => x.job_id === j.job_id)?.done ?? 0
     upsert(j)
     if (!j.preview && (j.done !== before || ['done', 'stopped', 'error'].includes(j.status))) emit('changed', j.set_name)
@@ -505,13 +545,22 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
     </div>
 
     <div class="row">
-      <label class="f set"><span class="eyebrow">Into set</span>
-        <ZenInput v-model="form.set" size="sm" :class="{ bad: !validSet }" placeholder="a set, or a new name" />
-        <!-- every set the dataset has, whatever's typed (a datalist only suggests what starts with it) -->
-        <span v-if="sets.length" class="set-picks">
-          <button v-for="s in sets" :key="s" type="button" class="set-pick" :class="{ on: s === form.set }" :title="`Caption into “${s}”`" @click.prevent="form.set = s">{{ s }}</button>
+      <div class="f set"><span class="eyebrow">Into set</span>
+        <span class="set-picks">
+          <button
+            v-for="c in setChips"
+            :key="c.name"
+            type="button"
+            class="set-pick"
+            :class="{ on: c.name === form.set, fresh: c.fresh }"
+            :title="c.fresh ? `A new set: “${c.name}” is made when this job writes into it` : `Caption into “${c.name}”`"
+            @click.prevent="form.set = c.name"
+          >
+            {{ c.name }}<span v-if="c.fresh" class="new"> · new</span>
+          </button>
+          <button type="button" class="set-pick add" title="A new caption set" @click.prevent="newSet"><i class="mdi mdi-plus" /></button>
         </span>
-      </label>
+      </div>
       <div class="f"><span class="eyebrow">Images</span>
         <div class="seg">
           <button :class="{ on: form.mode === 'missing' }" title="Only images with no caption in this set" @click="form.mode = 'missing'">Missing {{ counts.missing }}</button>
@@ -585,7 +634,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
       </span>
       <span class="spacer" />
       <span class="foot-acts">
-      <ZenButton size="sm" icon="mdi mdi-eye-outline" :disabled="busy || !form.clip_name || !targets.length || !!active" title="Caption 3 of these without saving anything" @click="start(3)">Try on 3</ZenButton>
+      <ZenButton size="sm" icon="mdi mdi-eye-outline" :disabled="busy || !form.clip_name || !targets.length || !!active" :title="tryN && tryN === targets.length ? `Caption ${tryN === 1 ? 'it' : `all ${tryN}`} without saving anything` : `Caption ${tryN || TRY} of these without saving anything`" @click="start(tryN)">{{ tryN ? `Try on ${tryN}` : 'Try it' }}</ZenButton>
       <ZenButton size="sm" variant="primary" icon="mdi mdi-creation-outline" :disabled="busy || !form.clip_name || !validSet || !targets.length || !!active" @click="start()">
         Caption {{ targets.length || '' }}
       </ZenButton>
@@ -597,7 +646,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
     <div v-if="preview" class="preview">
       <div class="line">
         <b class="small">Preview</b>
-        <span class="muted small">{{ preview.status === 'done' ? 'not saved: run it to write them' : preview.status === 'running' ? `${preview.done}/${preview.total || 3}${preview.message ? ` · ${preview.message}` : ''}` : preview.status === 'queued' && preview.message ? preview.message : preview.status }}</span>
+        <span class="muted small">{{ preview.status === 'done' ? 'not saved: run it to write them' : preview.status === 'running' ? `${preview.done}/${preview.total || preview.preview || TRY}${preview.message ? ` · ${preview.message}` : ''}` : preview.status === 'queued' && preview.message ? preview.message : preview.status }}</span>
         <span class="spacer" />
         <button class="x" title="Close the preview" @click="preview = null"><i class="mdi mdi-close" /></button>
       </div>
@@ -608,7 +657,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
           <p v-else class="small">{{ r.text }}</p>
           <p v-if="r.cut" class="small warn"><i class="mdi mdi-content-cut" /> cut off: raise the length</p>
         </div>
-        <div v-for="n in Math.max(0, (preview.total || 3) - (preview.results?.length ?? 0))" :key="`w${n}`" class="pv waiting">
+        <div v-for="n in Math.max(0, (preview.total || preview.preview || TRY) - (preview.results?.length ?? 0))" :key="`w${n}`" class="pv waiting">
           <div class="ph"><i class="mdi mdi-creation-outline" /></div>
           <p class="small muted">{{ preview.status === 'queued' ? 'waiting for the GPU' : 'writing…' }}</p>
         </div>
@@ -1066,7 +1115,6 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 6px;
 }
 .set-pick {
   font: inherit;
@@ -1085,5 +1133,15 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
 .set-pick.on {
   color: var(--zen-accent);
   border-color: var(--zen-accent);
+}
+/* not made yet: the job makes it */
+.set-pick.fresh {
+  border-style: dashed;
+}
+.set-pick .new {
+  opacity: 0.7;
+}
+.set-pick.add {
+  padding: 0 5px;
 }
 </style>

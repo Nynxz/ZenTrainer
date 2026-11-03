@@ -88,6 +88,58 @@ def test_jobs_survive_a_restart(ds, monkeypatch):
     assert back.status == "stopped"  # it was running when ComfyUI went down
 
 
+def test_the_page_hears_the_queue_once_and_counts_it_down(ds, monkeypatch):
+    sent = []
+    monkeypatch.setattr(captioner.events, "emit", lambda kind, data: kind == captioner.CAPTION and sent.append(data))
+    j = job(mode="all")
+    sent.clear()  # what creating it said
+    captioner.update(j, status="running", total=3, queue=["a.png", "b.png", "c.png"])
+    captioner.update(j, done=1)
+    assert sent[0]["queue"] == ["a.png", "b.png", "c.png"]
+    assert "queue" not in sent[1]  # the page counts it down by done: not resent with each picture
+    assert captioner.active()[0]["queue"] == ["a.png", "b.png", "c.png"]  # a page that opens now
+    captioner.cancel(j)
+    assert j.queue == [] and not captioner.active()
+
+
+def test_a_run_goes_through_its_queue_and_keeps_it_off_disk(ds, monkeypatch):
+    import json
+    import sys
+    import types
+
+    comfy = types.ModuleType("comfy")
+    comfy.model_management = types.SimpleNamespace(throw_exception_if_processing_interrupted=lambda: None)
+    comfy.utils = types.SimpleNamespace(ProgressBar=lambda n: types.SimpleNamespace(update_absolute=lambda i: None))
+    for name, mod in (("comfy", comfy), ("comfy.model_management", comfy.model_management), ("comfy.utils", comfy.utils),
+                      ("folder_paths", types.SimpleNamespace(get_full_path=lambda *a: None))):
+        monkeypatch.setitem(sys.modules, name, mod)
+    from zentrainer.datasets import segment
+    from zentrainer.harness import trainer
+
+    monkeypatch.setattr(segment, "release", lambda: None)
+    monkeypatch.setattr(trainer, "_comfy_compiler", lambda on: None)
+    clip = types.SimpleNamespace(tokenizer=types.SimpleNamespace(clip_name="qwen"), tokenize=lambda *a, **k: "tokens")
+    monkeypatch.setattr(captioner, "_load_clip", lambda job: clip)
+    monkeypatch.setattr(captioner, "_picture", lambda path, mask: None)
+    on_disk = []
+
+    def answer(clip, tokens, job):
+        on_disk.append(json.loads(captioner._file().read_text())[0])  # saved as it goes
+        return f"auto {job.done}", False
+
+    monkeypatch.setattr(captioner, "_answer", answer)
+    sent = []
+    monkeypatch.setattr(captioner.events, "emit", lambda kind, data: kind == captioner.CAPTION and sent.append(data))
+    j = job(mode="missing")  # a.png has a caption: b and c to do
+    captioner.run(j)
+    assert j.status == "done" and j.done == 2 and j.queue == []
+    queues = [e["queue"] for e in sent if "queue" in e]
+    assert ["b.png", "c.png"] in queues  # the page heard it while nothing was done yet
+    assert all("queue" not in e for e in sent if e["done"] and e["status"] == "running")
+    assert on_disk and all("queue" not in row for row in on_disk)
+    assert (ds / "b.txt").read_text() == "auto 0\n" and (ds / "c.txt").read_text() == "auto 1\n"
+
+
 def test_mask_stats(tmp_path):
     m = Image.new("L", (100, 50), 0)
     m.paste(255, (0, 0, 50, 50))  # left half trained

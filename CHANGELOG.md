@@ -5,11 +5,23 @@ and Manager show.
 
 ## Unreleased
 
+- **See a job go through the pictures.** While auto-captioning runs (a try-on too), every picture
+  it has still to do shows a spinner, brighter on the one it's on.
+- **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a
+  replaced mask's old thumbnail until a hard refresh.
+- **The Captions section opens at once.** It used to wait on the server (and the last jobs' every
+  caption and log) before showing anything.
 - **The app asks in its own dialogs, not the browser's.** Every "are you sure?", every name to type
   (a caption set, an input set, a caption style) and every "that didn't work" is a dialog in the
   app's look: Enter says yes, Escape says no, and a name that won't do says why as you type.
 - The mask editor asks before you leave a picture with an unsaved grow or feather, as it did for
   drawing, and no longer carries them over to the next picture.
+- **Auto-caption's "Into set" is a pick.** The dataset's caption sets as chips, and + for a new one
+  (shown dashed, "new", until the job writes into it), instead of a text box with chips under it.
+- **Captions and Edit inputs stay as you left them.** Folded or open, a dataset page's Captions and
+  Edit inputs sections come back that way after a refresh, like the others already did.
+- **Try-ons fit small datasets.** With fewer pictures to do than a try-on takes, it says "Try on 2"
+  (and does 2) instead of offering more.
 - The sidebar says which part of a model each loaded row is when one file holds several (SAM3's
   picture model and its text encoder looked like the same file loaded twice).
 

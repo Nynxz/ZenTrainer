@@ -167,6 +167,14 @@ def _size(path: Path) -> tuple[int, int] | tuple[None, None]:
     return _sizes[key]
 
 
+def _mtime(p: Path | None) -> int | None:
+    """A file's mtime (ns), or None: no file, or it went (a mask removed while the dataset's listed)."""
+    try:
+        return p.stat().st_mtime_ns if p else None
+    except OSError:
+        return None
+
+
 def items(name: str, caption_ext: str = ".txt") -> dict:
 
     d, r = folder(name), root()
@@ -187,6 +195,8 @@ def items(name: str, caption_ext: str = ".txt") -> dict:
             "height": h,
             "bytes": it.path.stat().st_size,
             "mask": str(it.mask.relative_to(d)) if it.mask else None,
+            # changes when the mask does: the browser keeps a thumbnail URL for good
+            "mask_mtime": _mtime(it.mask),
             "captions": it.captions,
             # edit training's inputs, per control set
             "control_sets": {k: [str(c.relative_to(d)) for c in v] for k, v in it.control_sets.items()},
