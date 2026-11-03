@@ -216,7 +216,9 @@ export function useDataset(name: () => string) {
   const heard = new Map<string, CaptionJob>()
   const latest = (j: CaptionJob) => {
     const h = heard.get(j.job_id)
-    return h && asFarAlong(h, j) ? { ...j, ...h } : j
+    // a job's first running event comes before it has listed its pictures: an empty queue there
+    // doesn't wipe the one the answer has
+    return h && asFarAlong(h, j) ? { ...j, ...h, queue: h.queue?.length ? h.queue : j.queue } : j
   }
   async function askActive() {
     const all = await engine.captionActive()
