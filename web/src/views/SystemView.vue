@@ -7,6 +7,7 @@ import CleanupDialog, { type Cleanup } from '@/components/CleanupDialog.vue'
 import MemChart from '@/components/MemChart.vue'
 import { RAM_SERIES as RAM, VRAM_SERIES as VRAM } from '@/lib/memSeries'
 import { gb, memLatest, samples, startSystemSync } from '@/stores/system'
+import { ask } from '@/lib/ask'
 
 const health = ref<Health | null>(null)
 onMounted(async () => {
@@ -183,7 +184,7 @@ async function trim(run?: { run_id: string; name: string }) {
 const restarting = ref(false)
 const restartError = ref<string | null>(null)
 async function restart() {
-  if (!confirm('Restart ComfyUI? The app reconnects when it is back.')) return
+  if (!(await ask({ title: 'Restart ComfyUI?', message: 'The app reconnects when it’s back.', ok: 'Restart' }))) return
   restartError.value = null
   try {
     await engine.restart()

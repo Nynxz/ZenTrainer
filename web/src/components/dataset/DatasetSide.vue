@@ -10,6 +10,7 @@ import CaptionPanel from '@/components/CaptionPanel.vue'
 import DatasetStats from '@/components/DatasetStats.vue'
 import { useDatasetContext } from './context'
 import { zoomOf } from '@/lib/zoom'
+import { ask, askText, tell, tellError } from '@/lib/ask'
 
 const props = defineProps<{ name: string; drawer: boolean }>()
 const { fit, showMasks, maskHighVis, view, items, sets, activeSet, controlSets, activeControl, selected, load, review, counts, imageFlags, statsPanel, faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, flash } =
@@ -72,7 +73,7 @@ async function bulk(op: 'prefix' | 'suffix' | 'replace') {
   const before = Object.fromEntries(items.value.map((it) => [it.path, it.captions[set] ?? '']))
   const touched = Object.values(before).filter((c) => (op === 'replace' ? c.includes(findText.value) : true)).length
   const what = op === 'replace' ? `Replace “${findText.value}” with “${bulkText.value}”` : `${op === 'prefix' ? 'Put' : 'Append'} “${bulkText.value}” ${op === 'prefix' ? 'at the start of' : 'to'}`
-  if (!touched || !confirm(`${what} ${op === 'replace' ? 'in' : ''} ${touched} caption${touched === 1 ? '' : 's'} in “${set}”? You can undo it from here.`)) return
+  if (!touched || !(await ask({ title: `${what} ${op === 'replace' ? 'in' : ''} ${touched} caption${touched === 1 ? '' : 's'}?`, message: `In “${set}”. You can undo it from here.`, ok: op === 'replace' ? 'Replace' : op === 'prefix' ? 'Prefix' : 'Append' }))) return
   const { changed } = await engine.bulkCaptions(props.name, op, bulkText.value, findText.value, set)
   bulkUndo.value = changed ? { set, before } : null
   flash(`${changed} caption${changed === 1 ? '' : 's'} updated`)
@@ -98,17 +99,12 @@ async function undoBulk() {
 const inputsOpen = ref(true)
 const inputCount = (set: string) => items.value.filter((it) => it.control_sets?.[set]?.length).length
 const SET_RE = /^[a-z0-9][a-z0-9_-]{0,23}$/
-function askSetName(text: string, now = ''): string | null {
-  const v = prompt(text, now)?.trim().toLowerCase()
-  if (!v) return null
-  if (!SET_RE.test(v)) {
-    alert('Use lowercase letters, digits, - and _ (max 24).')
-    return null
-  }
-  return v
+async function askSetName(title: string, message: string, ok: string, now = ''): Promise<string | null> {
+  const v = await askText({ title, message, ok, input: { value: now, placeholder: 'faceswap', check: (s) => (SET_RE.test(s.toLowerCase()) ? null : 'Lowercase letters, digits, - and _ (24 at most)') } })
+  return v ? v.toLowerCase() : null
 }
 async function newInputSet() {
-  const set = askSetName('New input set (e.g. faceswap, depth, sketch):')
+  const set = await askSetName('New input set', 'A layer of input pictures beside the dataset’s, for edit training: e.g. faceswap, depth or sketch.', 'Add')
   if (!set) return
   await engine.createControlSet(props.name, set)
   await load()
@@ -116,12 +112,12 @@ async function newInputSet() {
 }
 async function renameInputSet() {
   const from = activeControl.value
-  const to = askSetName(`Rename “${from}” to:`, from)
+  const to = await askSetName(`Rename “${from}”`, 'Its input pictures keep their place.', 'Rename', from)
   if (!to || to === from) return
   try {
     await engine.renameControlSet(props.name, from, to)
   } catch (e) {
-    return alert(String((e as Error).message ?? e))
+    return tellError(e, 'Couldn’t rename it')
   }
   await load()
   activeControl.value = to
@@ -129,7 +125,7 @@ async function renameInputSet() {
 async function deleteInputSet() {
   const set = activeControl.value
   const n = items.value.reduce((sum, it) => sum + (it.control_sets?.[set]?.length ?? 0), 0) // files, not pictures
-  if (!confirm(`Delete the input set “${set}”${n ? ` and its ${n} input picture${n === 1 ? '' : 's'}` : ''}? The dataset's pictures stay.`)) return
+  if (!(await ask({ title: `Delete the input set “${set}”?`, message: `${n ? `Its ${n} input picture${n === 1 ? '' : 's'} go${n === 1 ? 'es' : ''} too. ` : ''}The dataset’s own pictures stay.`, ok: 'Delete', danger: true }))) return
   await engine.deleteControlSet(props.name, set)
   flash(`“${set}” deleted`)
   await load()
@@ -141,7 +137,7 @@ async function addInputs(files: FileList | null) {
   const r = await engine.uploadControls(props.name, set, [...files])
   if (inputFiles.value) inputFiles.value.value = ''
   flash(`${r.saved.length} input${r.saved.length === 1 ? '' : 's'} added to “${set}”`)
-  if (r.errors.length) alert(`${r.errors.length} not added:\n${r.errors.slice(0, 12).join('\n')}`)
+  if (r.errors.length) void tell(`${r.errors.length} not added`, r.errors.slice(0, 12).join('\n'))
   await load()
   if (r.saved.length) view.value = 'pairs'
 }

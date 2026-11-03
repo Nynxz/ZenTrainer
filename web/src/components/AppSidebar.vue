@@ -15,6 +15,7 @@ import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads
 import { disks, gb, memLatest, startSystemSync } from '@/stores/system'
 import { drawerOpen, toggleDrawer, unseenErrors } from '@/stores/logs'
 import { engine, type LoadedModel } from '@/api/engine'
+import { ask, tellError } from '@/lib/ask'
 
 const props = defineProps<{ collapsed: boolean; mobileOpen: boolean }>()
 const emit = defineEmits<{ toggle: []; navigate: [] }>()
@@ -71,7 +72,7 @@ async function resumeQueue() {
     await engine.editQueue({ action: 'resume' })
     await Promise.all([refreshQueue(), refreshRuns()])
   } catch (e) {
-    alert(String((e as Error).message ?? e))
+    tellError(e, 'Couldn’t resume the queue')
   } finally {
     resuming.value = false
   }
@@ -138,12 +139,12 @@ const update = computed(() => {
   if (engineStale.value && trainingNow.value) return { ok: false, title: 'An update is waiting: it loads once nothing is training' }
   if (webStale.value && !webBuildable.value)
     return { ok: false, title: 'The web app’s source changed (a pull?), but pnpm isn’t here to rebuild it: run `pnpm install && pnpm build` in web/' }
-  return { ok: true, title: `Updated code is on disk: ${what}`, confirm: `Update now: ${what}?${engineStale.value ? ' The restart takes about a minute.' : ''}` }
+  return { ok: true, title: `Updated code is on disk: ${what}`, what, restart: engineStale.value }
 })
 async function onUpdate() {
   const u = update.value
-  if (!u.ok || !confirm(u.confirm)) return
-  await restartEngine().catch((e) => alert(String((e as Error).message ?? e)))
+  if (!u.ok || !(await ask({ title: 'Update now?', message: `${u.what}.${u.restart ? ' ComfyUI restarts, which takes about a minute.' : ''}`, ok: 'Update' }))) return
+  await restartEngine().catch((e) => tellError(e, 'Couldn’t update'))
 }
 
 // ---- folding & keys ------------------------------------------------------------------

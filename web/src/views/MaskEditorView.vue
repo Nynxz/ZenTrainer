@@ -14,6 +14,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { EngineError, engine, thumbUrl, viewUrl, type DatasetItem } from '@/api/engine'
 import { remembered } from '@/lib/remembered'
 import { zoomOf } from '@/lib/zoom'
+import { ask, current as asking } from '@/lib/ask'
 
 const props = defineProps<{ name: string }>()
 const route = useRoute()
@@ -422,7 +423,7 @@ async function saveNext() {
   go(1)
 }
 async function remove() {
-  if (!item.value || !confirm('Delete this image’s mask? It trains on the whole image again.')) return
+  if (!item.value || !(await ask({ title: 'Delete this image’s mask?', message: 'It trains on the whole image again.', ok: 'Delete mask', danger: true }))) return
   await engine.saveMask(props.name, item.value.path, '')
   await refresh()
   await load()
@@ -430,10 +431,11 @@ async function remove() {
 async function refresh() {
   items.value = (await engine.dataset(props.name)).items.filter((i) => i.kind !== 'video')
 }
-function go(by: number) {
+const leave = () => ask({ title: 'Leave without saving this mask?', message: 'What you’ve drawn on it since the last save is lost.', ok: 'Leave', cancel: 'Stay', danger: true })
+async function go(by: number) {
   const next = items.value[index.value + by]
   if (!next) return
-  if (dirty.value && !confirm('Leave without saving this mask?')) return
+  if (dirty.value && !(await leave())) return
   router.replace({ query: { path: next.path } })
 }
 
@@ -445,10 +447,10 @@ let anchor: string | null = null
 const sameSize = computed(() => (item.value ? items.value.filter((i) => i.width === item.value!.width && i.height === item.value!.height) : []))
 const selectedSame = computed(() => sameSize.value.filter((i) => selected.value.has(i.path)))
 const sameMasks = computed(() => sameSize.value.filter((i) => i.mask && i.path !== item.value?.path))
-function pick(it: DatasetItem, e: MouseEvent, viaBox = false) {
+async function pick(it: DatasetItem, e: MouseEvent, viaBox = false) {
   if (!viaBox && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
     if (it.path === path.value) return
-    if (dirty.value && !confirm('Leave without saving this mask?')) return
+    if (dirty.value && !(await leave())) return
     router.replace({ query: { path: it.path } })
     return
   }
@@ -585,7 +587,8 @@ async function undoApply() {
 }
 
 function onKey(e: KeyboardEvent) {
-  if ((e.target as HTMLElement).closest('input, textarea')) return
+  // a dialog's open (leave without saving?): a held arrow key mustn't ask again and again
+  if (asking.value || (e.target as HTMLElement).closest('input, textarea')) return
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault()
     save()

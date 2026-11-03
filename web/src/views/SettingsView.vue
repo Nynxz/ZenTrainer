@@ -10,6 +10,7 @@ import { engine, type EngineSettings, type Health } from '@/api/engine'
 import { SETTINGS, setSetting, settings, type SettingId } from '@/stores/settings'
 import { checkingUpdates, checkUpdates, comfyVersion as comfy, engineStale, restartEngine, restarting, webBuildable, webNewer, webStale, ztVersion as zt } from '@/stores/status'
 import { currentModes, currentTheme, packCards, setMode, setTheme } from '@/lib/theme'
+import { ask, tellError } from '@/lib/ask'
 
 const mode = computed(() => currentTheme.value.mode)
 // registry settings, by category (Appearance renders inside its own section)
@@ -89,8 +90,8 @@ const reload = () => location.reload()
 // a web-only update: rebuild here (an engine restart too goes through the sidebar's button, which
 // waits for training to finish)
 async function rebuild() {
-  if (!confirm('Rebuild the web app now? The page reloads when it’s done.')) return
-  await restartEngine().catch((e) => alert(String((e as Error).message ?? e)))
+  if (!(await ask({ title: 'Rebuild the web app now?', message: 'The page reloads when it’s done.', ok: 'Rebuild' }))) return
+  await restartEngine().catch((e) => tellError(e, 'Couldn’t rebuild'))
 }
 
 // Storage: the ZenTrainer folder (datasets and results out of ComfyUI's input/output). The engine
