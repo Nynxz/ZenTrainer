@@ -166,14 +166,19 @@ async function pollLoaded() {
   loadedTimer = setTimeout(pollLoaded, 3000)
 }
 const KIND_ICON: Record<string, string> = { 'diffusion model': 'mdi-cube-outline', 'text encoder': 'mdi-format-text', vae: 'mdi-image-filter-center-focus' }
-const loadedRows = computed(() =>
-  [...loaded.value]
+const loadedRows = computed(() => {
+  const rows = [...loaded.value]
     .sort((a, b) => b.vram - a.vram)
     .map((m) => {
       const file = (m.file ?? m.name).split(' + ')[0]!.split(/[\\/]/).pop()!.replace(/\.(safetensors|sft|ckpt|pt|pth|bin)$/, '')
       return { key: `${m.name}:${m.file}`, label: file, icon: KIND_ICON[m.kind ?? ''] ?? 'mdi-shape-outline', vram: m.vram, bytes: m.bytes, kind: m.kind ?? 'model', full: m.file ?? m.name }
-    }),
-)
+    })
+  // one file can hold several models (SAM3: its vision model and its text encoder): say which
+  // part each row is (first: the label is cut short), or it reads as the same file loaded twice
+  const seen = new Map<string, number>()
+  for (const r of rows) seen.set(r.label, (seen.get(r.label) ?? 0) + 1)
+  return rows.map((r) => (seen.get(r.label)! > 1 ? { ...r, label: `${r.kind} · ${r.label}` } : r))
+})
 onMounted(() => {
   pollLoaded()
   startSystemSync()
