@@ -223,14 +223,20 @@ export function useDataset(name: () => string) {
   }
   // when each job was last heard, counted in events: an answer only speaks for jobs not heard since it was asked
   let events = 0
+  let recheck: ReturnType<typeof setTimeout> | undefined
+  onUnmounted(() => clearTimeout(recheck))
   const heardAt = new Map<string, number>()
   async function askActive() {
+    clearTimeout(recheck)
     const asked = events
     const all = await engine.captionActive()
     // one it isn't running any more: it ended, and that event was missed (a reconnect). Not one
     // heard since asking: the answer is older than that
     const running = new Set(all.map((j) => j.job_id))
     for (const id of Object.keys(jobs)) if (!running.has(id) && (heardAt.get(id) ?? 0) <= asked) delete jobs[id]
+    // one heard since asking but not in the answer: it may have ended since, its last event missed. Ask
+    // again in a moment (a running one will be in that answer)
+    if (Object.keys(jobs).some((id) => !running.has(id))) recheck = setTimeout(() => askActive().catch(() => {}), 2000)
     for (const j of all) track(latest(j))
   }
   // a job heard mid-way, its queue unknown (it went out with its first events, and asking when the
