@@ -379,6 +379,8 @@ export function useDataset(name: () => string) {
   // what holding Shift over an item shows: the file itself (a video plays), not its thumbnail
   const full = (it: DatasetItem) => `${viewUrl({ ...it, type: 'input' })}&v=${bust.value}`
   const thumb = (it: Pick<DatasetItem, 'path'>, size = 384) => `${thumbUrl(name(), it.path, size)}&v=${bust.value}`
+  // a mask is rewritten in place (the mask editor): its mtime keeps the URL fresh
+  const maskThumb = (it: DatasetItem, size = 384) => `${thumb({ path: it.mask! }, size)}&m=${it.mask_mtime ?? ''}`
   const thumbSize = computed(() => (zoom.value > 260 ? 768 : 384))
 
   // ---- lightbox -----------------------------------------------------------------------------
@@ -389,7 +391,7 @@ export function useDataset(name: () => string) {
       thumb: thumb(it, 256),
       label: it.path,
       meta: it.width ? `${it.width}×${it.height} · ${kb(it.bytes)}` : kb(it.bytes),
-      overlay: it.mask ? thumb({ path: it.mask } as DatasetItem, 1024) : undefined,
+      overlay: it.mask ? maskThumb(it, 1024) : undefined,
       overlayMode: 'mask' as const, // the picture dims; what the mask trains shows at full strength
       kind: it.kind === 'video' ? ('video' as const) : undefined,
     })),
@@ -397,7 +399,7 @@ export function useDataset(name: () => string) {
 
   return {
     view, zoom, fit, showMasks, maskHighVis, sideOpen,
-    items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load,
+    items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load, maskThumb,
     filter, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
     isMuted, setMuted, imageFlags, statsPanel,
     faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, faceOf, faceIssue, faceNote,

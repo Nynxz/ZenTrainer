@@ -5,6 +5,8 @@ and Manager show.
 
 ## Unreleased
 
+- **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a
+  replaced mask's old thumbnail until a hard refresh.
 - **The app asks in its own dialogs, not the browser's.** Every "are you sure?", every name to type
   (a caption set, an input set, a caption style) and every "that didn't work" is a dialog in the
   app's look: Enter says yes, Escape says no, and a name that won't do says why as you type.

@@ -7,7 +7,7 @@ import { vAutosize } from '@/lib/autosize'
 import { isVideoPath, kb, pct, secs, useDatasetContext } from './context'
 
 const props = defineProps<{ it: DatasetItem; name: string }>()
-const { activeSet, activeControl, inputs, cap, k, drafts, saving, save, ctrlView, thumb } = useDatasetContext()
+const { activeSet, activeControl, inputs, cap, k, drafts, saving, save, ctrlView, thumb, maskThumb } = useDatasetContext()
 
 // the image's captions in the other sets, to compare (and copy one across)
 const otherSets = (it: DatasetItem) => Object.entries(it.captions ?? {}).filter(([st, t]) => st !== activeSet.value && t)
@@ -54,7 +54,7 @@ const toggleSet = (st: string) => (openSets.has(st) ? openSets.delete(st) : open
       <p :class="{ open: openSets.has(st) }" :title="openSets.has(st) ? '' : 'Show all'" @click="toggleSet(st)">{{ text }}</p>
     </div>
     <div v-if="it.mask" class="mask-info">
-      <img :src="thumb({ path: it.mask! }, 256)" alt="" />
+      <img :src="maskThumb(it, 256)" alt="" />
       <div class="small">
         <b>Mask</b> · {{ pct(it.mask_coverage) }} trains at full weight
         <div v-if="it.mask_mismatch" class="warn">A different shape from the image: it's stretched over it and won't line up.</div>

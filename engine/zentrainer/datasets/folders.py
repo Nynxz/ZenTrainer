@@ -187,6 +187,8 @@ def items(name: str, caption_ext: str = ".txt") -> dict:
             "height": h,
             "bytes": it.path.stat().st_size,
             "mask": str(it.mask.relative_to(d)) if it.mask else None,
+            # changes when the mask does: the browser keeps a thumbnail URL for good
+            "mask_mtime": it.mask.stat().st_mtime_ns if it.mask else None,
             "captions": it.captions,
             # edit training's inputs, per control set
             "control_sets": {k: [str(c.relative_to(d)) for c in v] for k, v in it.control_sets.items()},

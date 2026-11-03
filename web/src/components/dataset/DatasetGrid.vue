@@ -7,7 +7,7 @@ import { fileInfo, pct, secs, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
 import { zoomOf } from '@/lib/zoom'
 
-const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, thumbSize, boxing, maskHighVis } = useDatasetContext()
+const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, maskThumb, thumbSize, boxing, maskHighVis } = useDatasetContext()
 
 // drag to select a box of cards (mouse and pen; touch scrolls), starting on a card or in the empty
 // space around them: the page's margins, gaps and below the last row. A plain drag starts a new
@@ -155,7 +155,7 @@ onUnmounted(() => {
           loading="lazy"
           alt=""
           class="mask-lit"
-          :style="{ objectFit: fit, maskImage: `url(${thumb({ path: it.mask }, thumbSize)})`, WebkitMaskImage: `url(${thumb({ path: it.mask }, thumbSize)})`, maskSize: fit, WebkitMaskSize: fit }"
+          :style="{ objectFit: fit, maskImage: `url(${maskThumb(it, thumbSize)})`, WebkitMaskImage: `url(${maskThumb(it, thumbSize)})`, maskSize: fit, WebkitMaskSize: fit }"
         />
         <!-- an edit pair: its input picture in the corner (the big one is the target) -->
         <img v-if="inputs(it).length" :src="thumb({ path: inputs(it)[0]! }, 256)" loading="lazy" alt="" class="control-inset" :title="`Input: ${inputs(it).join(', ')}`" />

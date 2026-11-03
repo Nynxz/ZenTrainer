@@ -131,6 +131,8 @@ export interface DatasetItem {
   height: number | null
   bytes: number
   mask: string | null
+  /** the mask's mtime (ns), so its thumbnail URL changes when it does */
+  mask_mtime?: number | null
   /** share of the image the mask trains at full weight (0-1) */
   mask_coverage?: number
   /** the mask's shape differs from the image's: stretched over it, it won't line up */
