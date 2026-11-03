@@ -14,6 +14,8 @@ and Manager show.
 - **The app asks in its own dialogs, not the browser's.** Every "are you sure?", every name to type
   (a caption set, an input set, a caption style) and every "that didn't work" is a dialog in the
   app's look: Enter says yes, Escape says no, and a name that won't do says why as you type.
+- The mask editor asks before you leave a picture with an unsaved grow or feather, as it did for
+  drawing, and no longer carries them over to the next picture.
 - **Auto-caption's "Into set" is a pick.** The dataset's caption sets as chips, and + for a new one
   (shown dashed, "new", until the job writes into it), instead of a text box with chips under it.
 - **Captions and Edit inputs stay as you left them.** Folded or open, a dataset page's Captions and

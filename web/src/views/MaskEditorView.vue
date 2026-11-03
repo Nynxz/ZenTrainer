@@ -431,11 +431,18 @@ async function remove() {
 async function refresh() {
   items.value = (await engine.dataset(props.name)).items.filter((i) => i.kind !== 'video')
 }
-const leave = () => ask({ title: 'Leave without saving this mask?', message: 'What you’ve drawn on it since the last save is lost.', ok: 'Leave', cancel: 'Stay', danger: true })
+// grow and feather are this mask's too (Save writes them): leaving drops them, or the next picture
+// would take them on
+async function leave(): Promise<boolean> {
+  if (!dirty.value && !grow.value && !feather.value) return true
+  const ok = await ask({ title: 'Leave without saving this mask?', message: 'What you’ve done to it since the last save is lost.', ok: 'Leave', cancel: 'Stay', danger: true })
+  if (ok) [grow.value, feather.value] = [0, 0]
+  return ok
+}
 async function go(by: number) {
   const next = items.value[index.value + by]
   if (!next) return
-  if (dirty.value && !(await leave())) return
+  if (!(await leave())) return
   router.replace({ query: { path: next.path } })
 }
 
@@ -450,7 +457,7 @@ const sameMasks = computed(() => sameSize.value.filter((i) => i.mask && i.path !
 async function pick(it: DatasetItem, e: MouseEvent, viaBox = false) {
   if (!viaBox && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
     if (it.path === path.value) return
-    if (dirty.value && !(await leave())) return
+    if (!(await leave())) return
     router.replace({ query: { path: it.path } })
     return
   }

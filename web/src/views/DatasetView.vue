@@ -97,6 +97,8 @@ const filterItems = computed(() => [
   ...(controlSets.value.length ? [{ value: 'pairs', label: `With a “${activeControl.value}” input · ${counts.value.pairs}` }] : []),
 ])
 function onEsc(e: KeyboardEvent) {
+  // Escape in a dialog or menu (a ZenKit layer) is that one's: cancelling "Delete these?" keeps them selected
+  if ((e.target as HTMLElement).closest?.('[data-zen-layer]')) return
   if (e.key === 'Escape' && narrow.value && drawerOpen.value && lightbox.value == null) {
     drawerOpen.value = false
     return
