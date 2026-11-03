@@ -130,3 +130,11 @@ def test_a_clip_that_fades_in_from_black_is_reused(tmp_path):
     frames[2:] = 0.6
     video.write(tmp_path / "key0.mp4", frames, 8)
     assert s._baseline_file(None, 0) == tmp_path / "key0.mp4"
+
+
+def test_a_kept_file_that_isnt_a_clip_is_not_reused(tmp_path):
+    s = Samples(1)
+    s._baseline_dir = lambda: tmp_path
+    s._baseline_key = lambda _t, i: f"key{i}"
+    (tmp_path / "key0.mp4").write_bytes(b"not a video")
+    assert s._baseline_file(None, 0) is None

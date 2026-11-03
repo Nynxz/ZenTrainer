@@ -225,9 +225,10 @@ class Samples(Callback):
                     with Image.open(src) as im:
                         black = im.convert("L").getextrema()[1] == 0
                 else:  # a clip: black only if every frame is (one may fade in)
-                    with av.open(str(src)) as clip:
-                        black = all(f.to_image().convert("L").getextrema()[1] == 0 for f in clip.decode(video=0))
-            except (OSError, ValueError, av.FFmpegError):  # unreadable: not one to reuse
+                    with av.open(str(src)) as clip:  # every frame decoded: a damaged one isn't reused either
+                        brightest = [f.to_image().convert("L").getextrema()[1] for f in clip.decode(video=0)]
+                    black = not any(brightest)
+            except (OSError, ValueError, IndexError, av.FFmpegError):  # unreadable, or no picture: not one to reuse
                 continue
             if black:
                 try:
