@@ -439,6 +439,12 @@ class Trainer:
         random.seed(s.seed)
         self.generator = torch.Generator().manual_seed(s.seed)
 
+        encoder_id = repr((s.model.kind, s.model.ckpt_name, s.model.clip_name, s.model.clip_type, s.model.vae_name))
+        root = paths.find_dataset(s.dataset.folder)  # where it is now, or where an earlier setting kept it
+        cache = Path(folder_paths.get_user_directory()) / "zentrainer" / "cache"
+        self.encoder_id, self.cache_dir = encoder_id, cache
+        self._text_first(root)
+
         self.models = models.load(s.model)
         patcher = self.models.patcher
         compat.prune_unused(patcher)
@@ -459,10 +465,6 @@ class Trainer:
             self._card()  # Windows: the allocator's cap, before anything loads or encodes
         self.train_dtype = _DTYPES[s.memory.training_dtype]
 
-        encoder_id = repr((s.model.kind, s.model.ckpt_name, s.model.clip_name, s.model.clip_type, s.model.vae_name))
-        root = paths.find_dataset(s.dataset.folder)  # where it is now, or where an earlier setting kept it
-        cache = Path(folder_paths.get_user_directory()) / "zentrainer" / "cache"
-        self.encoder_id, self.cache_dir = encoder_id, cache
         if s.dataset.video_audio and self.models.audio_vae is None:
             raise ValueError("training on video sound needs the model's audio VAE: set Model -> Audio VAE")
         from .data.edit import is_h3
@@ -733,6 +735,46 @@ class Trainer:
         self._reseed_batches()
         self.progress.update_absolute(self.step)
         self._status("loading", message=f"resumed from step {self.step}")
+
+    def _text_first(self, root: Path) -> None:
+        """Encode the run's captions and sample prompts into their caches before the diffusion model
+        loads, then free the text encoder: the two are never in RAM together (MiniMax H3's 27 GB
+        encoder beside its 21 GB model ran a 128 GB machine out of memory, and an encoder short of
+        memory returns NaN). What's cached already needs nothing. Text encoded with pictures (edits,
+        keyframes, an image slider's pairs) waits for the model, as before."""
+        import comfy.model_management as mm
+
+        s = self.spec
+        d = self._data_spec(s.dataset)
+        if d.edit or d.video_keyframes or self.sample_job:
+            return
+        text = models.load_text(s.model)
+        if text is None:
+            return
+        texts = data.TextCache(self.cache_dir, self.encoder_id)
+        todo = [c for c in data.caption_texts(d, root, self._classes()) if not texts.has(c)]
+        if s.validation.every and s.validation.dataset:
+            todo += [c for c in data.caption_texts(dataclasses.replace(d, folder=s.validation.dataset, stages=[]),
+                                                    paths.find_dataset(s.validation.dataset)) if not texts.has(c)]
+        if s.slider.kind == "text":
+            todo += [t for t in self._slider_prompts().values() if not texts.has(t)]
+        todo = list(dict.fromkeys(todo))
+        self.models = text
+        try:
+            with torch.no_grad():
+                for n, c in enumerate(todo):
+                    clip = self.models.clip
+                    texts.put(c, data._to_cpu(clip.encode_from_tokens_scheduled(clip.tokenize(c))))
+                    self._status("loading", message=f"encoding captions ({n + 1}/{len(todo)})")
+                if self._samples is not None:  # on_start encodes them even unscheduled: cached for it
+                    self._samples.encode_prompts(self)
+        finally:
+            if self.models._clip is not None:
+                self.models.release_clip()
+                mm.cleanup_models_gc()
+                mm.soft_empty_cache()
+                logging.info("[ZenTrainer] text encoded before the model loads (%d captions); text encoder released", len(todo))
+            self.models = None
 
     def _drop_text_encoder(self) -> None:
         """Captions are encoded into the dataset cache and the sample prompts at on_start: past

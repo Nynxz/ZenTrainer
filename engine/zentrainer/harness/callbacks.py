@@ -172,6 +172,11 @@ class Samples(Callback):
         if self._liker:
             self._liker.submit(row)
 
+    def encode_prompts(self, t) -> None:
+        """The sample prompts' encodings, into their cache (Trainer._text_first, before the model loads)."""
+        with torch.no_grad():
+            self._encode(t, t.spec.samples)
+
     def on_start(self, t):
         s = t.spec.samples
         if s.turbo_lora and s.turbo_strength and t.spec.output.keep.startswith("likeness"):

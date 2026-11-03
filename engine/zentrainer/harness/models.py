@@ -45,6 +45,17 @@ class Models:
 _WEIGHT_DTYPES = {"fp8_e4m3fn": "float8_e4m3fn", "fp8_e4m3fn_fast": "float8_e4m3fn", "fp8_e5m2": "float8_e5m2"}
 
 
+def load_text(spec: ModelSpec) -> Models | None:
+    """Only a split model's text encoder, loaded on first use: the run's text is encoded with it
+    before the diffusion model loads (Trainer._text_first). None for a checkpoint, whose encoder
+    is inside it."""
+    if spec.kind != "split":
+        return None
+    import nodes
+
+    return Models(None, None, None, lambda: nodes.CLIPLoader().load_clip(spec.clip_name, spec.clip_type)[0])
+
+
 def load(spec: ModelSpec) -> Models:
     import comfy.sd
     import folder_paths

@@ -17,6 +17,10 @@ and Manager show.
   A NaN encoding is now never cached: the run stops and says the encoder likely ran out of
   memory. One cached before this is found and encoded again, and a black first sample is no
   longer kept to stand in for later runs.
+- Most runs now encode their captions and sample prompts before the model loads, then free the
+  text encoder, so the two aren't in memory at once: a big encoder beside its model (MiniMax H3's
+  is 27 GB) could run out of memory. Edit, keyframe and single-file checkpoint runs still load the
+  model first.
 
 ## 0.4.1 (2026-10-31)
 

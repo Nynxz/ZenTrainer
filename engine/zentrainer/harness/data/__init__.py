@@ -549,8 +549,9 @@ def muted(root: Path) -> dict[str, set[str]]:
     return {s: set(v) for s, v in (data.get("muted") or {}).items()}
 
 
-def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=None, h3: bool = False,
-           preserve: tuple[str, ...] = ()) -> Dataset:
+def _captions(spec, root: Path, preserve: tuple[str, ...] = ()):
+    """The pictures this run trains on and each one's captions, trigger applied (`variants`), plus
+    objective.preserve's class-word versions (`classes`): what the text encoder is given."""
     items = scan(root, spec.caption_ext)
     if not items:
         raise FileNotFoundError(f"no images found in {root}")
@@ -592,6 +593,18 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
     if preserve:
         for it, cl in zip(items, classes):
             it.caption += " ||| preserve: " + " ||| ".join(cl)
+    return items, variants, classes
+
+
+def caption_texts(spec, root: Path, preserve: tuple[str, ...] = ()) -> list[str]:
+    """Every caption build() encodes for this dataset, the empty one (caption dropout) included."""
+    _, variants, classes = _captions(spec, root, preserve)
+    return sorted({t for v in variants + classes for t in v} | {""})
+
+
+def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=None, h3: bool = False,
+           preserve: tuple[str, ...] = ()) -> Dataset:
+    items, variants, classes = _captions(spec, root, preserve)
 
     # H3 builds references/keyframes its own way, a four-channel VAE encodes alpha (caches from
     # before it was kept were opaque); other runs keep their caches
@@ -786,6 +799,9 @@ class TextCache:
     @staticmethod
     def key(caption: str) -> str:
         return hashlib.sha256(caption.encode()).hexdigest()[:24]
+
+    def has(self, caption: str) -> bool:
+        return (self.dir / f"{self.key(caption)}.pt").is_file()
 
     def get(self, caption: str):
         f = self.dir / f"{self.key(caption)}.pt"
