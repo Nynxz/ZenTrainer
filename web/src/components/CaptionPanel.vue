@@ -200,6 +200,9 @@ const targets = computed(() => {
   }
   return form.mode === 'all' ? props.items : props.items.filter((it) => !has(it))
 })
+// a try-on of up to TRY: no more than there are to do (a dataset of 2 tries 2)
+const TRY = 3
+const tryN = computed(() => Math.min(TRY, targets.value.length))
 const replaces = computed(() => targets.value.filter(has).length)
 const counts = computed(() => ({
   missing: props.items.filter((it) => !has(it)).length,
@@ -625,7 +628,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
       </span>
       <span class="spacer" />
       <span class="foot-acts">
-      <ZenButton size="sm" icon="mdi mdi-eye-outline" :disabled="busy || !form.clip_name || !targets.length || !!active" title="Caption 3 of these without saving anything" @click="start(3)">Try on 3</ZenButton>
+      <ZenButton size="sm" icon="mdi mdi-eye-outline" :disabled="busy || !form.clip_name || !targets.length || !!active" :title="tryN && tryN === targets.length ? `Caption ${tryN === 1 ? 'it' : `all ${tryN}`} without saving anything` : `Caption ${tryN || TRY} of these without saving anything`" @click="start(tryN)">{{ tryN ? `Try on ${tryN}` : 'Try it' }}</ZenButton>
       <ZenButton size="sm" variant="primary" icon="mdi mdi-creation-outline" :disabled="busy || !form.clip_name || !validSet || !targets.length || !!active" @click="start()">
         Caption {{ targets.length || '' }}
       </ZenButton>
@@ -637,7 +640,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
     <div v-if="preview" class="preview">
       <div class="line">
         <b class="small">Preview</b>
-        <span class="muted small">{{ preview.status === 'done' ? 'not saved: run it to write them' : preview.status === 'running' ? `${preview.done}/${preview.total || 3}${preview.message ? ` · ${preview.message}` : ''}` : preview.status === 'queued' && preview.message ? preview.message : preview.status }}</span>
+        <span class="muted small">{{ preview.status === 'done' ? 'not saved: run it to write them' : preview.status === 'running' ? `${preview.done}/${preview.total || preview.preview || TRY}${preview.message ? ` · ${preview.message}` : ''}` : preview.status === 'queued' && preview.message ? preview.message : preview.status }}</span>
         <span class="spacer" />
         <button class="x" title="Close the preview" @click="preview = null"><i class="mdi mdi-close" /></button>
       </div>
@@ -648,7 +651,7 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
           <p v-else class="small">{{ r.text }}</p>
           <p v-if="r.cut" class="small warn"><i class="mdi mdi-content-cut" /> cut off: raise the length</p>
         </div>
-        <div v-for="n in Math.max(0, (preview.total || 3) - (preview.results?.length ?? 0))" :key="`w${n}`" class="pv waiting">
+        <div v-for="n in Math.max(0, (preview.total || preview.preview || TRY) - (preview.results?.length ?? 0))" :key="`w${n}`" class="pv waiting">
           <div class="ph"><i class="mdi mdi-creation-outline" /></div>
           <p class="small muted">{{ preview.status === 'queued' ? 'waiting for the GPU' : 'writing…' }}</p>
         </div>

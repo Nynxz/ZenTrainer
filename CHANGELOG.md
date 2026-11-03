@@ -16,6 +16,8 @@ and Manager show.
   app's look: Enter says yes, Escape says no, and a name that won't do says why as you type.
 - **Auto-caption's "Into set" is a pick.** The dataset's caption sets as chips, and + for a new one
   (shown dashed, "new", until the job writes into it), instead of a text box with chips under it.
+- **Try-ons fit small datasets.** With fewer pictures to do than a try-on takes, it says "Try on 2"
+  (and does 2) instead of offering more.
 - The sidebar says which part of a model each loaded row is when one file holds several (SAM3's
   picture model and its text encoder looked like the same file loaded twice).
 
