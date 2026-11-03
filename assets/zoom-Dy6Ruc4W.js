@@ -1,0 +1,1 @@
+function o(t=document.documentElement){if(!t)return 1;if(typeof t.currentCSSZoom=="number")return t.currentCSSZoom||1;const n=t instanceof HTMLElement?t.offsetWidth:0;return n&&t.getBoundingClientRect().width/n||1}export{o as z};
