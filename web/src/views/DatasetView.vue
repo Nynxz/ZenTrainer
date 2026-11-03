@@ -15,6 +15,7 @@ import DatasetLightboxSide from '@/components/dataset/DatasetLightboxSide.vue'
 import DatasetPairs from '@/components/dataset/DatasetPairs.vue'
 import DatasetSide from '@/components/dataset/DatasetSide.vue'
 import DatasetTable from '@/components/dataset/DatasetTable.vue'
+import { askText } from '@/lib/ask'
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
@@ -63,10 +64,16 @@ async function toggleSide() {
   }
 }
 
-function addSet() {
-  const name = prompt('New caption set (e.g. tags, nl, short):')?.trim().toLowerCase()
+async function addSet() {
+  const name = (
+    await askText({
+      title: 'New caption set',
+      message: 'Another caption per picture, e.g. tags, nl or short: a run picks which set it trains on.',
+      ok: 'Add',
+      input: { placeholder: 'tags', check: (v) => (/^[a-z0-9][a-z0-9_-]{0,23}$/.test(v.toLowerCase()) ? null : 'Lowercase letters, digits, - and _ (24 at most)') },
+    })
+  )?.toLowerCase()
   if (!name) return
-  if (!/^[a-z0-9][a-z0-9_-]{0,23}$/.test(name)) return alert('Use lowercase letters, digits, - and _ (max 24).')
   if (!sets.value.includes(name)) sets.value = [...sets.value, name]
   activeSet.value = name
 }
@@ -90,6 +97,8 @@ const filterItems = computed(() => [
   ...(controlSets.value.length ? [{ value: 'pairs', label: `With a “${activeControl.value}” input · ${counts.value.pairs}` }] : []),
 ])
 function onEsc(e: KeyboardEvent) {
+  // Escape in a dialog or menu (a ZenKit layer) is that one's: cancelling "Delete these?" keeps them selected
+  if ((e.target as HTMLElement).closest?.('[data-zen-layer]')) return
   if (e.key === 'Escape' && narrow.value && drawerOpen.value && lightbox.value == null) {
     drawerOpen.value = false
     return

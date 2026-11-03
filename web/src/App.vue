@@ -3,6 +3,7 @@ import { ZenLotus } from '@nynxz/zenkit-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppSidebar from './components/AppSidebar.vue'
+import AskDialog from './components/AskDialog.vue'
 import HoverPeek from './components/HoverPeek.vue'
 import LogDrawer from './components/LogDrawer.vue'
 import ScrollArea from './components/ScrollArea.vue'
@@ -150,6 +151,7 @@ watch(
       </ScrollArea>
       <LogDrawer />
       <HoverPeek />
+      <AskDialog />
     </div>
   </div>
 </template>

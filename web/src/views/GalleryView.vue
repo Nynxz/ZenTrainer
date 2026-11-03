@@ -7,6 +7,7 @@ import type { LightboxItem } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { engine, viewUrl, type AppInfo, type AppInput, type GalleryItem, type ModelFamily } from '@/api/engine'
+import { ask } from '@/lib/ask'
 
 const route = useRoute()
 const router = useRouter()
@@ -103,7 +104,7 @@ async function copy(it: GalleryItem) {
   }
 }
 async function remove(it: GalleryItem) {
-  if (!confirm('Delete this image? The file is removed from the output folder.')) return
+  if (!(await ask({ title: 'Delete this image?', message: 'The file is removed from the output folder.', ok: 'Delete', danger: true }))) return
   try {
     await engine.deleteGalleryItem(it.batch_id, it.prompt_id)
     const pos = shown.value.indexOf(it)

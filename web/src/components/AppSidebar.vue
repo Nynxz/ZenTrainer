@@ -15,6 +15,7 @@ import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads
 import { disks, gb, memLatest, startSystemSync } from '@/stores/system'
 import { drawerOpen, toggleDrawer, unseenErrors } from '@/stores/logs'
 import { engine, type LoadedModel } from '@/api/engine'
+import { ask, tellError } from '@/lib/ask'
 
 const props = defineProps<{ collapsed: boolean; mobileOpen: boolean }>()
 const emit = defineEmits<{ toggle: []; navigate: [] }>()
@@ -71,7 +72,7 @@ async function resumeQueue() {
     await engine.editQueue({ action: 'resume' })
     await Promise.all([refreshQueue(), refreshRuns()])
   } catch (e) {
-    alert(String((e as Error).message ?? e))
+    await tellError(e, 'Couldn’t resume the queue') // the button waits for the notice
   } finally {
     resuming.value = false
   }
@@ -138,12 +139,12 @@ const update = computed(() => {
   if (engineStale.value && trainingNow.value) return { ok: false, title: 'An update is waiting: it loads once nothing is training' }
   if (webStale.value && !webBuildable.value)
     return { ok: false, title: 'The web app’s source changed (a pull?), but pnpm isn’t here to rebuild it: run `pnpm install && pnpm build` in web/' }
-  return { ok: true, title: `Updated code is on disk: ${what}`, confirm: `Update now: ${what}?${engineStale.value ? ' The restart takes about a minute.' : ''}` }
+  return { ok: true, title: `Updated code is on disk: ${what}`, what, restart: engineStale.value }
 })
 async function onUpdate() {
   const u = update.value
-  if (!u.ok || !confirm(u.confirm)) return
-  await restartEngine().catch((e) => alert(String((e as Error).message ?? e)))
+  if (!u.ok || !(await ask({ title: 'Update now?', message: `${u.what}.${u.restart ? ' ComfyUI restarts, which takes about a minute.' : ''}`, ok: 'Update' }))) return
+  await restartEngine().catch((e) => tellError(e, 'Couldn’t update'))
 }
 
 // ---- folding & keys ------------------------------------------------------------------
@@ -165,14 +166,19 @@ async function pollLoaded() {
   loadedTimer = setTimeout(pollLoaded, 3000)
 }
 const KIND_ICON: Record<string, string> = { 'diffusion model': 'mdi-cube-outline', 'text encoder': 'mdi-format-text', vae: 'mdi-image-filter-center-focus' }
-const loadedRows = computed(() =>
-  [...loaded.value]
+const loadedRows = computed(() => {
+  const rows = [...loaded.value]
     .sort((a, b) => b.vram - a.vram)
     .map((m) => {
       const file = (m.file ?? m.name).split(' + ')[0]!.split(/[\\/]/).pop()!.replace(/\.(safetensors|sft|ckpt|pt|pth|bin)$/, '')
       return { key: `${m.name}:${m.file}`, label: file, icon: KIND_ICON[m.kind ?? ''] ?? 'mdi-shape-outline', vram: m.vram, bytes: m.bytes, kind: m.kind ?? 'model', full: m.file ?? m.name }
-    }),
-)
+    })
+  // one file can hold several models (SAM3: its vision model and its text encoder): say which
+  // part each row is (first: the label is cut short), or it reads as the same file loaded twice
+  const seen = new Map<string, number>()
+  for (const r of rows) seen.set(r.label, (seen.get(r.label) ?? 0) + 1)
+  return rows.map((r) => (seen.get(r.label)! > 1 ? { ...r, label: `${r.kind} · ${r.label}` } : r))
+})
 onMounted(() => {
   pollLoaded()
   startSystemSync()

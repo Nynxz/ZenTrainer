@@ -6,6 +6,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { EngineError, engine, thumbUrl, type CaptionJob } from '@/api/engine'
 import StatusPill from '@/components/StatusPill.vue'
 import { captionJobs, startCaptionSync } from '@/stores/captions'
+import { ask } from '@/lib/ask'
 
 const props = defineProps<{ id: string }>()
 const job = ref<CaptionJob | null>(null)
@@ -98,7 +99,7 @@ const took = computed(() => {
 
 async function act(action: 'cancel' | 'undo') {
   if (!job.value) return
-  if (action === 'undo' && !confirm(`Undo this job? ${written.value.length} caption(s) in “${job.value.set_name}” go back to how they were (any you edited since stay).`)) return
+  if (action === 'undo' && !(await ask({ title: 'Undo this job?', message: `${written.value.length} caption${written.value.length === 1 ? '' : 's'} in “${job.value.set_name}” go back to how they were. Any you’ve edited since stay.`, ok: 'Undo' }))) return
   try {
     await engine.captionAction(job.value.job_id, action)
     await load()

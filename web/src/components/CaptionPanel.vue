@@ -7,6 +7,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { onComfyMessage } from '@/api/comfy'
 import { setSetting, settings } from '@/stores/settings'
 import { EVENTS, EngineError, engine, thumbUrl, type CaptionFormat, type CaptionJob, type CaptionLora, type CaptionMode, type CaptionStyle, type DatasetItem, type ModelSenses } from '@/api/engine'
+import { ask, askText } from '@/lib/ask'
 
 const props = defineProps<{ dataset: string; items: DatasetItem[]; sets: string[]; selected: string[]; subject?: string }>()
 const emit = defineEmits<{ changed: [set: string]; review: [job: CaptionJob] }>()
@@ -247,19 +248,19 @@ function editCopy() {
   form.style = 'custom'
 }
 const dirty = computed(() => !!own.value && (own.value.prompt !== form.prompt || (own.value.format ?? 'text') !== form.format))
-function saveStyle() {
+async function saveStyle() {
   if (own.value) {
     setSetting('captionStyles', mine.value.map((x) => (x.id === own.value!.id ? { ...x, prompt: form.prompt, format: form.format } : x)))
     return
   }
-  const label = prompt('Name this caption style:')?.trim()
+  const label = await askText({ title: 'Name this caption style', message: 'It’s kept on this ComfyUI, for every browser.', ok: 'Save', input: { placeholder: 'e.g. Outfit and pose' } })
   if (!label) return
   const id = `${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'style'}-${Date.now().toString(36).slice(-4)}`
   setSetting('captionStyles', [...mine.value, { id, label, prompt: form.prompt, format: form.format }])
   form.style = `u:${id}`
 }
-function removeStyle() {
-  if (!own.value || !confirm(`Delete the caption style “${own.value.label}”?`)) return
+async function removeStyle() {
+  if (!own.value || !(await ask({ title: `Delete the caption style “${own.value.label}”?`, message: 'Captions it already wrote stay.', ok: 'Delete', danger: true }))) return
   setSetting('captionStyles', mine.value.filter((x) => x.id !== own.value!.id))
   form.style = 'custom'
 }
@@ -314,7 +315,7 @@ function body(extra: Record<string, unknown> = {}) {
 async function recaptionCut(j: CaptionJob) {
   const n = j.cut?.length ?? 0
   if (!n) return
-  if (j.set_name === 'default' && !confirm(`Re-caption the ${n} cut-off caption${n === 1 ? '' : 's'} in the default set, with no length limit?\n\nUndo puts the cut ones back.`))
+  if (j.set_name === 'default' && !(await ask({ title: `Re-caption ${n === 1 ? 'the cut-off caption' : `${n} cut-off captions`}?`, message: 'In the default set, with no length limit. Undo puts the cut ones back.', ok: 'Re-caption' })))
     return
   busy.value = true
   error.value = null
@@ -333,10 +334,12 @@ function reviewCut(j: CaptionJob) {
 }
 async function start(previewN = 0) {
   if (!previewN && form.set === 'default' && replaces.value) {
-    const ok = confirm(
-      `Replace ${replaces.value} existing caption${replaces.value === 1 ? '' : 's'} in the default set?\n\n` +
-        'These are the captions training uses. The job keeps what they said, so Undo puts them back.',
-    )
+    const ok = await ask({
+      title: `Replace ${replaces.value} caption${replaces.value === 1 ? '' : 's'} in the default set?`,
+      message: 'These are the captions training uses. The job keeps what they said, so Undo puts them back.',
+      ok: 'Replace',
+      danger: true,
+    })
     if (!ok) return
   }
   busy.value = true
@@ -355,7 +358,8 @@ async function start(previewN = 0) {
   }
 }
 async function act(j: CaptionJob, action: 'cancel' | 'undo') {
-  if (action === 'undo' && !confirm(`Undo this job? ${j.written?.length ?? j.done} caption(s) in “${j.set_name}” go back to how they were (any you edited since stay).`))
+  const n = j.written?.length ?? j.done
+  if (action === 'undo' && !(await ask({ title: 'Undo this job?', message: `${n === 1 ? 'The caption' : `${n} captions`} it wrote in “${j.set_name}” go back to how they were. Any you’ve edited since stay.`, ok: 'Undo' })))
     return
   try {
     const r = await engine.captionAction(j.job_id, action)

@@ -4,6 +4,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, shallowReactive, type InjectionKey, type Ref, watch } from 'vue'
 import { onComfyMessage } from '@/api/comfy'
 import { likeCeiling, likeShare } from '@/lib/likeness'
+import { ask } from '@/lib/ask'
 import { keepCompact } from '@/lib/resumed'
 import {
   ACTIVE,
@@ -238,7 +239,15 @@ export function useRun(id: Ref<string>) {
   const canResume = computed(() => resumable.value && (!!resumePoint.value || retryable.value))
   async function resumeFrom(c: CheckpointRow) {
     const later = (detail.value?.checkpoints ?? []).filter((x) => x.step > c.step).length
-    if (later && !confirm(`Go back to step ${c.step} and train on from there? The ${later} checkpoint${later === 1 ? '' : 's'} after it, and their samples, move to a "replaced" folder beside them (kept, not deleted).`)) return
+    if (
+      later &&
+      !(await ask({
+        title: `Go back to step ${c.step} and train on from there?`,
+        message: `The ${later === 1 ? 'checkpoint' : `${later} checkpoints`} after it, and their samples, move to a “replaced” folder beside them: kept, not deleted.`,
+        ok: 'Go back',
+      }))
+    )
+      return
     await resume(c.path)
   }
   async function resume(checkpoint?: string) {

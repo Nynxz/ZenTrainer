@@ -10,6 +10,7 @@ import { EVENTS, engine, thumbUrl, viewUrl, type CaptionJob, type DatasetFaces, 
 import type DatasetStats from '@/components/DatasetStats.vue'
 import { remembered } from '@/lib/remembered'
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
+import { ask } from '@/lib/ask'
 
 export const isVideoPath = (p: string) => /\.(mp4|webm|mov|mkv)$/i.test(p)
 export const aspect = (it: DatasetItem) => (it.width && it.height ? `${it.width} / ${it.height}` : '1')
@@ -361,7 +362,7 @@ export function useDataset(name: () => string) {
     }
   }
   async function removeMany(paths: string[]) {
-    if (!paths.length || !confirm(`Delete ${paths.length} image${paths.length === 1 ? '' : 's'} with their captions and masks?`)) return
+    if (!paths.length || !(await ask({ title: `Delete ${paths.length === 1 ? 'this picture' : `${paths.length} pictures`}?`, message: 'With their captions and masks. This can’t be undone.', ok: 'Delete', danger: true }))) return
     for (const p of paths) await engine.deleteItem(name(), p)
     for (const p of paths) selected.delete(p)
     items.value = items.value.filter((x) => !paths.includes(x.path))
