@@ -8,6 +8,8 @@ and Manager show.
 - **The app asks in its own dialogs, not the browser's.** Every "are you sure?", every name to type
   (a caption set, an input set, a caption style) and every "that didn't work" is a dialog in the
   app's look: Enter says yes, Escape says no, and a name that won't do says why as you type.
+- The mask editor asks before you leave a picture with an unsaved grow or feather, as it did for
+  drawing, and no longer carries them over to the next picture.
 - The sidebar says which part of a model each loaded row is when one file holds several (SAM3's
   picture model and its text encoder looked like the same file loaded twice).
 
