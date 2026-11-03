@@ -11,6 +11,7 @@ import type DatasetStats from '@/components/DatasetStats.vue'
 import { remembered } from '@/lib/remembered'
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
 import { ask } from '@/lib/ask'
+import { asFarAlong } from '@/lib/jobs'
 
 export const isVideoPath = (p: string) => /\.(mp4|webm|mov|mkv)$/i.test(p)
 export const aspect = (it: DatasetItem) => (it.width && it.height ? `${it.width} / ${it.height}` : '1')
@@ -213,17 +214,32 @@ export function useDataset(name: () => string) {
   // each job's latest event heard here: the list of what's running, asked as the page opens, can
   // be older than them (a job that ended while it was on its way would spin on until a reload)
   const heard = new Map<string, CaptionJob>()
+  const latest = (j: CaptionJob) => {
+    const h = heard.get(j.job_id)
+    return h && asFarAlong(h, j) ? { ...j, ...h } : j
+  }
+  async function askActive() {
+    const all = await engine.captionActive()
+    for (const j of all) track(latest(j))
+  }
+  // a job heard mid-way, its queue unknown (it went out with its first events, and asking when the
+  // page opened failed): ask again, once, and again on its next event if that fails too
+  const asking = new Set<string>()
+  function askQueue(id: string) {
+    if (asking.has(id)) return
+    asking.add(id)
+    askActive().catch(() => asking.delete(id))
+  }
   onUnmounted(
     onComfyMessage((m) => {
       if (m.type !== EVENTS.caption) return
       const j = m.data as unknown as CaptionJob
       heard.set(j.job_id, j)
       track(j)
+      if (j.dataset && j.status === 'running' && j.done && !jobs[j.job_id]?.queue.length) askQueue(j.job_id)
     }),
   )
-  onMounted(async () => {
-    for (const j of await engine.captionActive().catch(() => [])) track({ ...j, ...heard.get(j.job_id) })
-  })
+  onMounted(() => askActive().catch(() => {}))
   const captionSubject = ref('') // this dataset's "caption_subject" setting: what auto-captions call the subject
   const facesSetting = ref(false) // this dataset's "faces" setting: on = checked on open, in the stats and runs
   async function toggleFaces() {

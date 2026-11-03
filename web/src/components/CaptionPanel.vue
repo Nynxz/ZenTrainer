@@ -9,6 +9,7 @@ import { captionInfo, keptCaptionInfo, refreshCaptionInfo, type CaptionInfo } fr
 import { setSetting, settings } from '@/stores/settings'
 import { EVENTS, EngineError, engine, thumbUrl, type CaptionFormat, type CaptionJob, type CaptionLora, type CaptionMode, type CaptionStyle, type DatasetItem, type ModelSenses } from '@/api/engine'
 import { ask, askText } from '@/lib/ask'
+import { asFarAlong } from '@/lib/jobs'
 
 const props = defineProps<{ dataset: string; items: DatasetItem[]; sets: string[]; selected: string[]; subject?: string }>()
 const emit = defineEmits<{ changed: [set: string]; review: [job: CaptionJob] }>()
@@ -180,7 +181,12 @@ function apply(info: CaptionInfo) {
   catalog.value = info.lora_catalog ?? []
   jobs.value = info.jobs.filter((j) => !j.preview)
   preview.value = info.jobs.find((j) => j.preview) ?? null // a try-on still running, or just done
-  for (const j of heard.values()) upsert(j) // newer than the answer, maybe: it was on its way
+  // an event heard while the answer was on its way is newer; one from before it (its job since done,
+  // and that event missed) isn't
+  for (const j of heard.values()) {
+    const said = info.jobs.find((x) => x.job_id === j.job_id)
+    if (!said || asFarAlong(j, said)) upsert(j)
+  }
   if (!models.value.includes(form.clip_name))
     form.clip_name = models.value.find((n) => /qwen3vl_4b/i.test(n)) ?? models.value.find((n) => /qwen3vl/i.test(n)) ?? models.value[0] ?? ''
 }
