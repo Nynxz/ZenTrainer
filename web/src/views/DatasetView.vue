@@ -426,7 +426,10 @@ onUnmounted(() => {
   z-index: 50;
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* too many for the window (a phone, a large Text size): a second row, not buttons off screen */
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 8px;
   width: max-content; /* its own width, not the half window left: 50% would leave it */
   max-width: calc(100vw / var(--zen-page-zoom) - 32px);
   white-space: nowrap;
@@ -435,7 +438,8 @@ onUnmounted(() => {
 }
 /* a narrow window: icons and the count only (each button's title still says what it does) */
 @media (max-width: 760px) {
-  .sel-bar .lbl {
+  .sel-bar .lbl,
+  .sel-bar .sel-sep {
     display: none;
   }
 }
