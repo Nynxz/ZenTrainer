@@ -104,6 +104,7 @@ class DiskSample:
         if name in DISK_FIELDS:
             value = _disk_load(self.file).get(name)
             if name in ("cond", "cond_empty") and not finite(value):  # cached before encodings were checked
+                _disk_load.cache_clear()  # a rebuilt cache's file at this path is read afresh
                 raise ValueError(f"{Path(self.file).name} in the dataset cache holds a NaN text encoding: "
                                  "clear this dataset's cache and start again")
             return value

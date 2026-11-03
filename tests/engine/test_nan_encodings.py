@@ -118,3 +118,15 @@ def test_a_disk_sample_with_a_nan_encoding_says_to_clear_the_cache(tmp_path):
     assert sample.latent.shape == (4, 8, 8)
     with pytest.raises(ValueError, match="clear this dataset's cache"):
         sample.cond
+
+
+def test_a_clip_that_fades_in_from_black_is_reused(tmp_path):
+    from zentrainer.harness.data import video
+
+    s = Samples(1)
+    s._baseline_dir = lambda: tmp_path
+    s._baseline_key = lambda _t, i: f"key{i}"
+    frames = torch.zeros(4, 16, 16, 3)
+    frames[2:] = 0.6
+    video.write(tmp_path / "key0.mp4", frames, 8)
+    assert s._baseline_file(None, 0) == tmp_path / "key0.mp4"

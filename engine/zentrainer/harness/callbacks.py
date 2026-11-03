@@ -217,20 +217,23 @@ class Samples(Callback):
         encoder short of memory) was kept as black before renders were checked."""
         from PIL import Image
 
+        import av
+
         for src in self._baseline_dir().glob(f"{self._baseline_key(t, i)}.*"):
             try:
                 if src.suffix == ".png":
                     with Image.open(src) as im:
                         black = im.convert("L").getextrema()[1] == 0
-                else:  # a clip: its first frame
-                    import av
-
+                else:  # a clip: black only if every frame is (one may fade in)
                     with av.open(str(src)) as clip:
-                        black = next(clip.decode(video=0)).to_image().convert("L").getextrema()[1] == 0
-            except Exception:  # noqa: BLE001 - unreadable: not one to reuse
+                        black = all(f.to_image().convert("L").getextrema()[1] == 0 for f in clip.decode(video=0))
+            except (OSError, ValueError, av.FFmpegError):  # unreadable: not one to reuse
                 continue
             if black:
-                src.unlink(missing_ok=True)
+                try:
+                    src.unlink()
+                except OSError as e:
+                    logging.warning("[ZenTrainer] can't remove the black kept sample %s: %s", src.name, e)
                 continue
             return src
         return None
