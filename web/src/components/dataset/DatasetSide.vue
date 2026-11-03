@@ -5,7 +5,7 @@ import { ZenButton, ZenInput, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { engine } from '@/api/engine'
 import { remembered } from '@/lib/remembered'
-import { activeCaptions } from '@/stores/captions'
+import { activeCaptions, captionInfo } from '@/stores/captions'
 import CaptionPanel from '@/components/CaptionPanel.vue'
 import DatasetStats from '@/components/DatasetStats.vue'
 import { useDatasetContext } from './context'
@@ -153,6 +153,8 @@ const settingsOpen = remembered('zentrainer.datasetSide.settings', false)
 const capRunning = computed(() => activeCaptions.value.some((j) => j.dataset === props.name))
 // captions: auto-caption and bulk edit, one section (open while a caption job runs here)
 const capOpen = ref(capRunning.value)
+// what the caption panel shows, asked now: it opens with it instead of waiting on the server
+watch(() => props.name, (n) => void captionInfo(n).catch(() => {}), { immediate: true })
 const capTab = ref<'auto' | 'bulk'>((() => {
   try {
     return localStorage.getItem('zentrainer.datasetSide.capTab') === 'bulk' ? 'bulk' : 'auto'

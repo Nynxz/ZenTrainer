@@ -5,6 +5,7 @@
 import { ZenButton, ZenCombo, ZenInput, ZenNumber, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { onComfyMessage } from '@/api/comfy'
+import { captionInfo, keptCaptionInfo, refreshCaptionInfo, type CaptionInfo } from '@/stores/captions'
 import { setSetting, settings } from '@/stores/settings'
 import { EVENTS, EngineError, engine, thumbUrl, type CaptionFormat, type CaptionJob, type CaptionLora, type CaptionMode, type CaptionStyle, type DatasetItem, type ModelSenses } from '@/api/engine'
 import { ask, askText } from '@/lib/ask'
@@ -169,8 +170,7 @@ watch(
   },
 )
 
-onMounted(async () => {
-  const info = await engine.captionInfo(props.dataset)
+function apply(info: CaptionInfo) {
   styles.value = info.styles
   notes.value = info.notes ?? null
   models.value = info.models // loadable only, vision-language first
@@ -180,8 +180,15 @@ onMounted(async () => {
   catalog.value = info.lora_catalog ?? []
   jobs.value = info.jobs.filter((j) => !j.preview)
   preview.value = info.jobs.find((j) => j.preview) ?? null // a try-on still running, or just done
+  for (const j of heard.values()) upsert(j) // newer than the answer, maybe: it was on its way
   if (!models.value.includes(form.clip_name))
     form.clip_name = models.value.find((n) => /qwen3vl_4b/i.test(n)) ?? models.value.find((n) => /qwen3vl/i.test(n)) ?? models.value[0] ?? ''
+}
+// what the dataset page already asked shows at once; then asked again, for what changed since
+onMounted(async () => {
+  const kept = keptCaptionInfo(props.dataset)
+  if (kept) await kept.then(apply, () => {})
+  apply(await (kept ? refreshCaptionInfo(props.dataset) : captionInfo(props.dataset)))
 })
 
 // ---- what a run would do -------------------------------------------------------------------
@@ -381,11 +388,14 @@ function upsert(j: CaptionJob) {
   const i = jobs.value.findIndex((x) => x.job_id === j.job_id)
   jobs.value = i < 0 ? [j, ...jobs.value] : jobs.value.map((x, n) => (n === i ? { ...x, ...j } : x))
 }
+// each job's latest event heard here, laid over what the server answers (apply)
+const heard = new Map<string, CaptionJob>()
 let off = () => {}
 onMounted(() => {
   off = onComfyMessage((m) => {
     if (m.type !== EVENTS.caption || m.data.dataset !== props.dataset) return
     const j = m.data as unknown as CaptionJob
+    heard.set(j.job_id, j)
     const before = jobs.value.find((x) => x.job_id === j.job_id)?.done ?? 0
     upsert(j)
     if (!j.preview && (j.done !== before || ['done', 'stopped', 'error'].includes(j.status))) emit('changed', j.set_name)
