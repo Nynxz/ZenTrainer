@@ -293,7 +293,28 @@ const gist = (t: string) => {
   return o ? `${String(o.short_description ?? '')} {…}` : t
 }
 
-const validSet = computed(() => form.set === 'default' || /^[a-z0-9][a-z0-9_-]{0,23}$/.test(form.set))
+const SET_RE = /^[a-z0-9][a-z0-9_-]{0,23}$/
+const validSet = computed(() => form.set === 'default' || SET_RE.test(form.set))
+// Into set: the dataset's sets, then new ones (made with +, or the one a style suggests) until
+// a job writes into them
+const made = ref<string[]>([])
+const setChips = computed(() => {
+  const out = props.sets.map((s) => ({ name: s, fresh: false }))
+  for (const s of [...made.value, form.set]) if (s && !out.some((c) => c.name === s)) out.push({ name: s, fresh: true })
+  return out
+})
+async function newSet() {
+  const name = await askText({
+    title: 'New caption set',
+    message: 'Another caption per picture, e.g. tags, nl or short: a run picks which set it trains on. It’s made when this job writes into it.',
+    ok: 'Use it',
+    input: { placeholder: 'tags', check: (v) => (SET_RE.test(v.toLowerCase()) ? null : 'Lowercase letters, digits, - and _ (24 at most)') },
+  })
+  if (!name) return
+  const s = name.toLowerCase()
+  if (!made.value.includes(s)) made.value = [...made.value, s]
+  form.set = s
+}
 
 // ---- jobs ------------------------------------------------------------------------------------
 const active = computed(() => jobs.value.find((j) => !j.preview && ['queued', 'running'].includes(j.status)) ?? null)
@@ -515,13 +536,22 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
     </div>
 
     <div class="row">
-      <label class="f set"><span class="eyebrow">Into set</span>
-        <ZenInput v-model="form.set" size="sm" :class="{ bad: !validSet }" placeholder="a set, or a new name" />
-        <!-- every set the dataset has, whatever's typed (a datalist only suggests what starts with it) -->
-        <span v-if="sets.length" class="set-picks">
-          <button v-for="s in sets" :key="s" type="button" class="set-pick" :class="{ on: s === form.set }" :title="`Caption into “${s}”`" @click.prevent="form.set = s">{{ s }}</button>
+      <div class="f set"><span class="eyebrow">Into set</span>
+        <span class="set-picks">
+          <button
+            v-for="c in setChips"
+            :key="c.name"
+            type="button"
+            class="set-pick"
+            :class="{ on: c.name === form.set, fresh: c.fresh }"
+            :title="c.fresh ? `A new set: “${c.name}” is made when this job writes into it` : `Caption into “${c.name}”`"
+            @click.prevent="form.set = c.name"
+          >
+            {{ c.name }}<span v-if="c.fresh" class="new"> · new</span>
+          </button>
+          <button type="button" class="set-pick add" title="A new caption set" @click.prevent="newSet"><i class="mdi mdi-plus" /></button>
         </span>
-      </label>
+      </div>
       <div class="f"><span class="eyebrow">Images</span>
         <div class="seg">
           <button :class="{ on: form.mode === 'missing' }" title="Only images with no caption in this set" @click="form.mode = 'missing'">Missing {{ counts.missing }}</button>
@@ -1076,7 +1106,6 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 6px;
 }
 .set-pick {
   font: inherit;
@@ -1095,5 +1124,15 @@ const thumb = (path: string) => thumbUrl(props.dataset, path, 256)
 .set-pick.on {
   color: var(--zen-accent);
   border-color: var(--zen-accent);
+}
+/* not made yet: the job makes it */
+.set-pick.fresh {
+  border-style: dashed;
+}
+.set-pick .new {
+  opacity: 0.7;
+}
+.set-pick.add {
+  padding: 0 5px;
 }
 </style>
