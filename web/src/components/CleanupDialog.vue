@@ -144,7 +144,7 @@ async function go() {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: min(48vh, 420px);
+  max-height: min(calc(48vh / var(--zen-page-zoom)), 420px);
   overflow: auto;
   border: 1px solid var(--zen-border);
   border-radius: var(--r-md);

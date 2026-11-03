@@ -361,7 +361,7 @@ async function tryIt() {
 }
 .hero-compare {
   width: 100%;
-  max-height: 70vh;
+  max-height: calc(70vh / var(--zen-page-zoom));
   border-radius: var(--r-lg, 12px);
   overflow: hidden;
 }
@@ -554,7 +554,7 @@ async function tryIt() {
   background: var(--zen-surface-2);
   border-radius: var(--r-lg, 12px);
   overflow: hidden;
-  max-height: 60vh;
+  max-height: calc(60vh / var(--zen-page-zoom));
 }
 .stage.live {
   width: 100%;
@@ -582,7 +582,7 @@ async function tryIt() {
 .stage img,
 .stage video {
   max-width: 100%;
-  max-height: 60vh;
+  max-height: calc(60vh / var(--zen-page-zoom));
   object-fit: contain;
   display: block;
 }

@@ -11,6 +11,7 @@ import { gb, memLatest, samples, startSystemSync } from '@/stores/system'
 import LoadedModels from './LoadedModels.vue'
 import MemChart, { type Marker } from './MemChart.vue'
 import ScrollArea from './ScrollArea.vue'
+import { zoomOf } from '@/lib/zoom'
 
 // ---- tabs (remembered per viewer) --------------------------------------------------------------
 const TAB_KEY = 'zentrainer.logs.tab'
@@ -110,7 +111,8 @@ function onDragDown(e: PointerEvent) {
 function onDragMove(e: PointerEvent) {
   if (!dragStart) return
   const max = Math.max(DRAWER_MIN_H, (root.value?.parentElement?.clientHeight ?? 800) * 0.85)
-  height.value = Math.round(Math.min(max, Math.max(DRAWER_MIN_H, startH + dragStart - e.clientY)))
+  const moved = (dragStart - e.clientY) / zoomOf(root.value) // screen px to the page's
+  height.value = Math.round(Math.min(max, Math.max(DRAWER_MIN_H, startH + moved)))
 }
 function onDragUp() {
   if (!dragStart) return

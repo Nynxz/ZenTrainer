@@ -13,6 +13,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EngineError, engine, thumbUrl, viewUrl, type DatasetItem } from '@/api/engine'
 import { remembered } from '@/lib/remembered'
+import { zoomOf } from '@/lib/zoom'
 
 const props = defineProps<{ name: string }>()
 const route = useRoute()
@@ -221,7 +222,8 @@ watch([grow, feather, show, highVis], render)
 // ---- input ---------------------------------------------------------------------------------
 const toImage = (e: PointerEvent) => {
   const r = view.value!.getBoundingClientRect()
-  return { x: (e.clientX - r.left - fit.value.x) / fit.value.s, y: (e.clientY - r.top - fit.value.y) / fit.value.s }
+  const z = zoomOf(view.value) // fit is in the page's px, the pointer on screen
+  return { x: ((e.clientX - r.left) / z - fit.value.x) / fit.value.s, y: ((e.clientY - r.top) / z - fit.value.y) / fit.value.s }
 }
 let painting = false
 let last: { x: number; y: number } | null = null
@@ -794,7 +796,7 @@ watch(path, load)
    a bound): the side panels scroll in their columns */
 .mask-page {
   box-sizing: border-box;
-  height: 100dvh;
+  height: calc(100dvh / var(--zen-page-zoom));
   padding-bottom: 16px;
   display: flex;
   flex-direction: column;
@@ -1080,7 +1082,7 @@ watch(path, load)
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
-  max-height: 56vh;
+  max-height: calc(56vh / var(--zen-page-zoom));
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -1118,7 +1120,7 @@ watch(path, load)
     grid-template-rows: none;
   }
   .stage {
-    height: 62vh;
+    height: calc(62vh / var(--zen-page-zoom));
   }
 }
 </style>

@@ -182,7 +182,7 @@ const toggleSet = (st: string) => (openSets.has(st) ? openSets.delete(st) : open
   font-size: 13px;
   line-height: 1.6;
   min-height: 5em;
-  max-height: 55vh;
+  max-height: calc(55vh / var(--zen-page-zoom));
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--zen-text) 25%, transparent) transparent;

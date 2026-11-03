@@ -21,7 +21,7 @@ function details(id: string | null) {
 </script>
 
 <template>
-  <ZenModal v-model:open="open" width="1080px" height="min(720px, 88vh)">
+  <ZenModal v-model:open="open" width="1080px" height="min(720px, calc(88vh / var(--zen-page-zoom)))">
     <template #header>
       <div class="md-head">
         <div class="view-switch text tabs" role="tablist" aria-label="View">

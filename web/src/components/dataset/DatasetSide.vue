@@ -9,6 +9,7 @@ import { activeCaptions } from '@/stores/captions'
 import CaptionPanel from '@/components/CaptionPanel.vue'
 import DatasetStats from '@/components/DatasetStats.vue'
 import { useDatasetContext } from './context'
+import { zoomOf } from '@/lib/zoom'
 
 const props = defineProps<{ name: string; drawer: boolean }>()
 const { fit, showMasks, maskHighVis, view, items, sets, activeSet, controlSets, activeControl, selected, load, review, counts, imageFlags, statsPanel, faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, flash } =
@@ -22,14 +23,14 @@ const sideTop = ref(58)
 const PIN = 66 // the sticky toolbar (10px down, 46px tall) + a 10px gap
 function placeSide() {
   const h = sideEl.value?.offsetHeight ?? 0
-  sideTop.value = Math.min(PIN, window.innerHeight - h - 12)
+  sideTop.value = Math.min(PIN, window.innerHeight / zoomOf() - h - 12)
 }
 // as a drawer (a narrow window) it opens under the toolbar, where it sits beside the pictures in a
 // wide one, overlaid instead: following the toolbar as the page scrolls (it sticks at the top)
 const drawerTop = ref(66)
 function placeDrawer() {
   const bar = document.querySelector('.page-toolbar')
-  drawerTop.value = Math.max(12, Math.round((bar?.getBoundingClientRect().bottom ?? 56) + 10))
+  drawerTop.value = Math.max(12, Math.round((bar ? bar.getBoundingClientRect().bottom / zoomOf() : 56) + 10))
 }
 watch(
   () => props.drawer,
@@ -311,7 +312,7 @@ function onCaptioned(set: string) {
   right: 12px;
   bottom: 12px;
   z-index: 40;
-  width: min(340px, calc(100vw - 24px));
+  width: min(340px, calc(100vw / var(--zen-page-zoom) - 24px));
   overflow-y: auto;
   scrollbar-width: thin;
   overscroll-behavior: contain;

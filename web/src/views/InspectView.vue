@@ -777,7 +777,7 @@ watch(
   overflow: hidden;
 }
 .list {
-  max-height: 68vh;
+  max-height: calc(68vh / var(--zen-page-zoom));
   overflow: auto;
 }
 .row {
@@ -963,7 +963,7 @@ watch(
 .meta {
   display: flex;
   flex-direction: column;
-  max-height: 68vh;
+  max-height: calc(68vh / var(--zen-page-zoom));
   overflow: auto;
   border: 1px solid var(--zen-border);
   border-radius: var(--r-md);
