@@ -96,7 +96,7 @@ async function undoBulk() {
 }
 
 // ---- edit inputs: control sets, named layers of input pictures beside the dataset -----------
-const inputsOpen = ref(true)
+const inputsOpen = remembered('zentrainer.datasetSide.inputs', true)
 const inputCount = (set: string) => items.value.filter((it) => it.control_sets?.[set]?.length).length
 const SET_RE = /^[a-z0-9][a-z0-9_-]{0,23}$/
 async function askSetName(title: string, message: string, ok: string, now = ''): Promise<string | null> {
@@ -151,8 +151,10 @@ const settingsOpen = remembered('zentrainer.datasetSide.settings', false)
 // ---- auto-caption: CaptionPanel runs it as a job -----------------------------------------
 // open while this dataset has a caption job going, so coming back to the page shows it
 const capRunning = computed(() => activeCaptions.value.some((j) => j.dataset === props.name))
-// captions: auto-caption and bulk edit, one section (open while a caption job runs here)
-const capOpen = ref(capRunning.value)
+// captions: auto-caption and bulk edit, one section, folded or not as last left (and opened while a
+// caption job runs here)
+const capOpen = remembered('zentrainer.datasetSide.captions', false)
+if (capRunning.value) capOpen.value = true
 // what the caption panel shows, asked now: it opens with it instead of waiting on the server
 watch(() => props.name, (n) => void captionInfo(n).catch(() => {}), { immediate: true })
 const capTab = ref<'auto' | 'bulk'>((() => {
@@ -341,6 +343,7 @@ function onCaptioned(set: string) {
 .cap-tabs {
   display: flex;
   gap: 4px;
+  margin-top: 10px;
 }
 .cap-tabs button {
   flex: 1;
