@@ -5,6 +5,8 @@ and Manager show.
 
 ## Unreleased
 
+- The log says once that the text encoder and the VAE are loaded while a run prepares its dataset,
+  not once for every caption and picture.
 - **See a job go through the pictures.** While auto-captioning runs (a try-on too), every picture
   it has still to do shows a spinner, brighter on the one it's on.
 - **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a

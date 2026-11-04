@@ -39,6 +39,22 @@ from .objective import Objective, is_flow, sample_percents, scheduler_sigmas, si
 _DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 
 
+@contextlib.contextmanager
+def _quiet_reloads():
+    """While the run encodes its dataset or text. ComfyUI logs a dynamic model's "prepared for
+    dynamic VRAM loading" at every load, and an unchanged repeat only at DEBUG while a tqdm bar is
+    up (as its sampler's is): one that draws nowhere keeps the text encoder's and VAE's line to
+    once, not once a caption or picture, with nothing new in the console or the app's log."""
+    import tqdm
+
+    with open(os.devnull, "w") as nowhere:
+        bar = tqdm.tqdm(total=1, file=nowhere, leave=False)
+        try:
+            yield
+        finally:
+            bar.close()
+
+
 def _has_soundtracks(root, look: int = 6) -> bool:
     """Whether the dataset's clips carry audio (the first few looked at)."""
     from .data import video
@@ -472,9 +488,10 @@ class Trainer:
         self.h3 = is_h3(patcher.model)
         if s.dataset.video_keyframes and not self.h3:
             raise ValueError("keyframes (image-to-video training) are for MiniMax H3's fl2va model")
-        self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root, cache,
-                                  encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
-                                  audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
+        with _quiet_reloads():
+            self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root,
+                                      cache, encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
+                                      audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
         if s.slider.kind == "pairs":
             self._keep_pairs(self.dataset)
         if self._classes() and any(sm.has_cond if isinstance(sm, data.DiskSample) else sm.cond is not None
@@ -486,10 +503,11 @@ class Trainer:
         if s.validation.every and s.validation.dataset:
             from dataclasses import replace
 
-            self.val_dataset = data.build(
-                self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
-                self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
-                h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
+            with _quiet_reloads():
+                self.val_dataset = data.build(
+                    self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
+                    self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
+                    h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
             if not self.val_dataset.samples:
                 raise ValueError(f"the validation dataset {s.validation.dataset} has no pictures")
             logging.info("[ZenTrainer] validation on %s: %d pictures held out", s.validation.dataset,
@@ -566,10 +584,11 @@ class Trainer:
         self._stages = []
         for st in s.dataset.stages:
             res = int(st["resolution"])
-            ds = data.build(self._data_spec(replace(s.dataset, resolution=res, stages=[])), _Lazy(lambda: self.models.clip),
-                            self.models.vae, root, cache, encoder_id, audio_vae=self.models.audio_vae, h3=self.h3,
-                            preserve=self._classes(),
-                            progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
+            with _quiet_reloads():
+                ds = data.build(self._data_spec(replace(s.dataset, resolution=res, stages=[])), _Lazy(lambda: self.models.clip),
+                                self.models.vae, root, cache, encoder_id, audio_vae=self.models.audio_vae, h3=self.h3,
+                                preserve=self._classes(),
+                                progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
             if s.slider.kind == "pairs":
                 self._keep_pairs(ds)
             self._stages.append((float(st["until"]), res, ds, data.Batches(ds, st.get("batch_size") or s.optim.batch_size, s.seed + res)))
@@ -761,7 +780,7 @@ class Trainer:
         todo = list(dict.fromkeys(todo))
         self.models = text
         try:
-            with torch.no_grad():
+            with torch.no_grad(), _quiet_reloads():
                 for n, c in enumerate(todo):
                     clip = self.models.clip
                     texts.put(c, data._to_cpu(clip.encode_from_tokens_scheduled(clip.tokenize(c))))
