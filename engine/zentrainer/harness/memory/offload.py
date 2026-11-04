@@ -196,6 +196,25 @@ def pin_offloaded(model) -> tuple[int, int]:
     return done, need
 
 
+def pin_state(model) -> tuple[int, int]:
+    """(bytes of weights offloaded to RAM, bytes of them not pinned): unpinned ones copy to the GPU
+    synchronously and the system can swap them out."""
+    import torch
+
+    offloaded = loose = 0
+    for m in model.modules():
+        for name in ("weight", "bias"):
+            t = getattr(m, name, None)
+            if not isinstance(t, torch.Tensor) or t.device.type != "cpu":
+                continue
+            inner = getattr(t, "_qdata", None)
+            data = inner if isinstance(inner, torch.Tensor) else t
+            offloaded += data.nbytes
+            if _unpinned(t) is not None:
+                loose += data.nbytes
+    return offloaded, loose
+
+
 def _cpu_weights(model):
     """(module, attribute, tensor holding the bytes) for every CPU weight and bias not pinned."""
     out = []
