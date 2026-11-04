@@ -625,13 +625,13 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             logging.warning("[ZenTrainer] dataset cache %s couldn't be read (%s); rebuilding it", key, e)
             shutil.rmtree(path, ignore_errors=True)
         else:
-            logging.info("[ZenTrainer] reusing the cached dataset: %d pictures at %d px and their captions (cache %s)",
-                         len(items), spec.resolution, key)
+            logging.info("[ZenTrainer] reusing the cached dataset: %s and their captions (cache %s)",
+                         _media(items, spec), key)
             os.utime(path / "dataset.pt")  # recently used: kept by prune_caches
             return _expand_repeats(ds, items)
 
     started = time.monotonic()
-    logging.info("[ZenTrainer] encoding %d pictures at %d px…", len(items), spec.resolution)
+    logging.info("[ZenTrainer] encoding %s…", _media(items, spec))
     sizes = bucket_sizes(spec.resolution, spec.bucket_step) if spec.buckets else [(spec.resolution, spec.resolution)]
     captions = sorted({t for v in variants + classes for t in v} | {""})
     cap_index = {c: i for i, c in enumerate(captions)}
@@ -787,10 +787,19 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
                                                  "captions": [texts.key(c) for c in captions]}))
     prune_caches(cache_dir, spec.folder)
     used = sum(c is not None for c in conditionings)
-    logging.info("[ZenTrainer] encoded %d pictures at %d px in %.0f s; captions: %s", len(items), spec.resolution,
-                 time.monotonic() - started,
-                 f"{fresh} encoded, {used - fresh} reused from the cache" if fresh else f"all {used} reused from the cache")
+    paired = len(grounded) + len(h3_jobs)  # captions encoded with their pictures: never cached
+    logging.info("[ZenTrainer] encoded %s in %.0f s; captions: %s%s", _media(items, spec), time.monotonic() - started,
+                 f"{fresh} encoded, {used - fresh} reused from the cache" if fresh else f"all {used} reused from the cache",
+                 f"; {paired} encoded with their pictures" if paired else "")
     return _expand_repeats(ds, items)
+
+
+def _media(items: list[Item], spec: DatasetSpec) -> str:
+    """'20 pictures at 1024 px', '6 clips at 512 px', or both, for the log."""
+    clips = sum(is_video(it.path) for it in items)
+    parts = [f"{n} {word}{'s' if n != 1 else ''} at {res} px"
+             for n, word, res in ((len(items) - clips, "picture", spec.resolution), (clips, "clip", spec.video_resolution)) if n]
+    return " and ".join(parts) or "0 pictures"
 
 
 # Each caption or mask edit makes a new cache (the key covers them); the older ones are kept for a

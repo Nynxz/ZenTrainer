@@ -16,7 +16,7 @@ def quiet_reloads():
     import tqdm
 
     with open(os.devnull, "w") as nowhere:
-        bar = tqdm.tqdm(total=1, file=nowhere, leave=False)
+        bar = tqdm.tqdm(total=1, file=nowhere, leave=False, disable=False)  # registered even under TQDM_DISABLE
         try:
             yield
         finally:
