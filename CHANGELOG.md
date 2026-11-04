@@ -5,6 +5,8 @@ and Manager show.
 
 ## Unreleased
 
+- **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
+  first accent between Hacker's greens and Ghost Circuit's cyan.
 - **See a job go through the pictures.** While auto-captioning runs (a try-on too), every picture
   it has still to do shows a spinner, brighter on the one it's on.
 - **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a
