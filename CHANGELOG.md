@@ -7,6 +7,9 @@ and Manager show.
 
 - **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
   first accent between Hacker's greens and Ghost Circuit's cyan.
+- The log says once that the text encoder and the VAE are loaded while a run prepares its dataset
+  or renders samples, not once for every caption and picture. It says when encoding starts and
+  how long it took, and how much it reused from the cache instead.
 - **See a job go through the pictures.** While auto-captioning runs (a try-on too), every picture
   it has still to do shows a spinner, brighter on the one it's on.
 - **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a
