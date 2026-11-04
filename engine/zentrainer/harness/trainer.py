@@ -784,13 +784,14 @@ class Trainer:
                 mm.cleanup_models_gc()
                 mm.soft_empty_cache()
             self.models = None
+        prompts = prompts and bool(s.samples.prompts)  # with none, only the negative: not worth a mention
         done = " and ".join(x for x in (f"{len(todo)} captions" if todo else "", "the sample prompts" if prompts else "") if x)
         if done:
             logging.info("[ZenTrainer] encoded %s in %.0f s%s", done, time.monotonic() - started,
                          "; text encoder released" if loaded else "")
         else:
             logging.info("[ZenTrainer] reusing cached encodings: %d captions%s", len(captions),
-                         " and the sample prompts" if self._samples is not None else "")
+                         " and the sample prompts" if self._samples is not None and s.samples.prompts else "")
 
     def _drop_text_encoder(self) -> None:
         """Captions are encoded into the dataset cache and the sample prompts at on_start: past
