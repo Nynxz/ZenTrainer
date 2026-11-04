@@ -25,6 +25,7 @@ import os
 import random
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -624,10 +625,13 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
             logging.warning("[ZenTrainer] dataset cache %s couldn't be read (%s); rebuilding it", key, e)
             shutil.rmtree(path, ignore_errors=True)
         else:
-            logging.info("[ZenTrainer] dataset cache hit %s (%d images)", key, len(items))
+            logging.info("[ZenTrainer] reusing the cached dataset: %d pictures at %d px and their captions (cache %s)",
+                         len(items), spec.resolution, key)
             os.utime(path / "dataset.pt")  # recently used: kept by prune_caches
             return _expand_repeats(ds, items)
 
+    started = time.monotonic()
+    logging.info("[ZenTrainer] encoding %d pictures at %d px…", len(items), spec.resolution)
     sizes = bucket_sizes(spec.resolution, spec.bucket_step) if spec.buckets else [(spec.resolution, spec.resolution)]
     captions = sorted({t for v in variants + classes for t in v} | {""})
     cap_index = {c: i for i, c in enumerate(captions)}
@@ -730,6 +734,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
     if disk:
         needed = {""} | {captions[v] for sm in samples if not sm.has_cond for v in sm.variants} | {t for c in classes for t in c}
     conditionings = []
+    fresh = 0
     for n, c in enumerate(captions):
         if needed is not None and c not in needed:
             conditionings.append(None)
@@ -738,6 +743,7 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
         if cond is None:
             cond = _to_cpu(clip.encode_from_tokens_scheduled(clip.tokenize(c)))
             texts.put(c, cond)
+            fresh += 1
         conditionings.append(cond)
         if progress:
             progress(len(items) + n + 1, len(items) + len(captions), "encoding captions")
@@ -780,6 +786,10 @@ def _build(spec, clip, vae, root, cache_dir, encoder_id, progress, audio_vae=Non
     (path / CACHE_SOURCE).write_text(json.dumps({"folder": spec.folder, "text": texts.dir.name,
                                                  "captions": [texts.key(c) for c in captions]}))
     prune_caches(cache_dir, spec.folder)
+    used = sum(c is not None for c in conditionings)
+    logging.info("[ZenTrainer] encoded %d pictures at %d px in %.0f s; captions: %s", len(items), spec.resolution,
+                 time.monotonic() - started,
+                 f"{fresh} encoded, {used - fresh} reused from the cache" if fresh else f"all {used} reused from the cache")
     return _expand_repeats(ds, items)
 
 
