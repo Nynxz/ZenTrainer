@@ -28,6 +28,7 @@ from ..spec import TrainSpec, slugify
 from . import control as control_mod
 from . import data, models, optim
 from .callbacks import Callback, Checkpoints, Keep, Metrics, Samples, Validation, write_metadata
+from .quiet import quiet_reloads
 from . import compat
 from .data.streams import Streams
 from .denoiser import Denoiser
@@ -472,9 +473,10 @@ class Trainer:
         self.h3 = is_h3(patcher.model)
         if s.dataset.video_keyframes and not self.h3:
             raise ValueError("keyframes (image-to-video training) are for MiniMax H3's fl2va model")
-        self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root, cache,
-                                  encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
-                                  audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
+        with quiet_reloads():
+            self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root,
+                                      cache, encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
+                                      audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
         if s.slider.kind == "pairs":
             self._keep_pairs(self.dataset)
         if self._classes() and any(sm.has_cond if isinstance(sm, data.DiskSample) else sm.cond is not None
@@ -486,10 +488,11 @@ class Trainer:
         if s.validation.every and s.validation.dataset:
             from dataclasses import replace
 
-            self.val_dataset = data.build(
-                self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
-                self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
-                h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
+            with quiet_reloads():
+                self.val_dataset = data.build(
+                    self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
+                    self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
+                    h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
             if not self.val_dataset.samples:
                 raise ValueError(f"the validation dataset {s.validation.dataset} has no pictures")
             logging.info("[ZenTrainer] validation on %s: %d pictures held out", s.validation.dataset,
@@ -566,10 +569,11 @@ class Trainer:
         self._stages = []
         for st in s.dataset.stages:
             res = int(st["resolution"])
-            ds = data.build(self._data_spec(replace(s.dataset, resolution=res, stages=[])), _Lazy(lambda: self.models.clip),
-                            self.models.vae, root, cache, encoder_id, audio_vae=self.models.audio_vae, h3=self.h3,
-                            preserve=self._classes(),
-                            progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
+            with quiet_reloads():
+                ds = data.build(self._data_spec(replace(s.dataset, resolution=res, stages=[])), _Lazy(lambda: self.models.clip),
+                                self.models.vae, root, cache, encoder_id, audio_vae=self.models.audio_vae, h3=self.h3,
+                                preserve=self._classes(),
+                                progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
             if s.slider.kind == "pairs":
                 self._keep_pairs(ds)
             self._stages.append((float(st["until"]), res, ds, data.Batches(ds, st.get("batch_size") or s.optim.batch_size, s.seed + res)))
@@ -752,29 +756,42 @@ class Trainer:
         if text is None:
             return
         texts = data.TextCache(self.cache_dir, self.encoder_id)
-        todo = [c for c in data.caption_texts(d, root, self._classes()) if not texts.has(c)]
+        captions = data.caption_texts(d, root, self._classes())
         if s.validation.every and s.validation.dataset:
-            todo += [c for c in data.caption_texts(dataclasses.replace(d, folder=s.validation.dataset, stages=[]),
-                                                    paths.find_dataset(s.validation.dataset)) if not texts.has(c)]
+            captions += data.caption_texts(dataclasses.replace(d, folder=s.validation.dataset, stages=[]),
+                                           paths.find_dataset(s.validation.dataset))
         if s.slider.kind == "text":
-            todo += [t for t in self._slider_prompts().values() if not texts.has(t)]
-        todo = list(dict.fromkeys(todo))
+            captions += list(self._slider_prompts().values())
+        captions = list(dict.fromkeys(captions))
+        todo = [c for c in captions if not texts.has(c)]
+        if todo:
+            reused = f" ({len(captions) - len(todo)} reused from the cache)" if len(todo) < len(captions) else ""
+            logging.info("[ZenTrainer] encoding %d captions%s…", len(todo), reused)
+        started, prompts = time.monotonic(), False
         self.models = text
         try:
-            with torch.no_grad():
+            with torch.no_grad(), quiet_reloads():
                 for n, c in enumerate(todo):
                     clip = self.models.clip
                     texts.put(c, data._to_cpu(clip.encode_from_tokens_scheduled(clip.tokenize(c))))
                     self._status("loading", message=f"encoding captions ({n + 1}/{len(todo)})")
                 if self._samples is not None:  # on_start encodes them even unscheduled: cached for it
-                    self._samples.encode_prompts(self)
+                    prompts = self._samples.encode_prompts(self)
         finally:
-            if self.models._clip is not None:
+            loaded = self.models._clip is not None
+            if loaded:
                 self.models.release_clip()
                 mm.cleanup_models_gc()
                 mm.soft_empty_cache()
-                logging.info("[ZenTrainer] text encoded before the model loads (%d captions); text encoder released", len(todo))
             self.models = None
+        prompts = prompts and bool(s.samples.prompts)  # with none, only the negative: not worth a mention
+        done = " and ".join(x for x in (f"{len(todo)} captions" if todo else "", "the sample prompts" if prompts else "") if x)
+        if done:
+            logging.info("[ZenTrainer] encoded %s in %.0f s%s", done, time.monotonic() - started,
+                         "; text encoder released" if loaded else "")
+        else:
+            logging.info("[ZenTrainer] reusing cached encodings: %d captions%s", len(captions),
+                         " and the sample prompts" if self._samples is not None and s.samples.prompts else "")
 
     def _drop_text_encoder(self) -> None:
         """Captions are encoded into the dataset cache and the sample prompts at on_start: past

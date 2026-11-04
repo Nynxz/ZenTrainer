@@ -5,6 +5,11 @@ and Manager show.
 
 ## Unreleased
 
+- **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
+  first accent between Hacker's greens and Ghost Circuit's cyan.
+- The log says once that the text encoder and the VAE are loaded while a run prepares its dataset
+  or renders samples, not once for every caption and picture. It says when encoding starts and
+  how long it took, and how much it reused from the cache instead.
 - An offloaded run checks its weights are still pinned after every sample pass, pins any that
   aren't, and says when some can't be (they copy to the GPU slower and can be swapped out), with
   what to do. A separate sampling model leaves RAM between sample passes when the run's

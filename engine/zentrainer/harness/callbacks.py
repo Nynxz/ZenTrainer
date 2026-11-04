@@ -22,6 +22,7 @@ from .. import events, paths
 from . import optim
 from .data import checked_encoding, finite
 from .data.streams import first_stream
+from .quiet import quiet_reloads
 
 # a slider's samples: each prompt at these strengths, one strip (spec.slider; harness/slider.py)
 SLIDER_SWEEP = (-1.0, -0.5, 0.0, 0.5, 1.0)
@@ -172,10 +173,12 @@ class Samples(Callback):
         if self._liker:
             self._liker.submit(row)
 
-    def encode_prompts(self, t) -> None:
-        """The sample prompts' encodings, into their cache (Trainer._text_first, before the model loads)."""
+    def encode_prompts(self, t) -> bool:
+        """The sample prompts' encodings, into their cache (Trainer._text_first, before the model loads).
+        True when they were encoded, False when the cache had them."""
         with torch.no_grad():
             self._encode(t, t.spec.samples)
+        return not self._from_cache
 
     def on_start(self, t):
         s = t.spec.samples
@@ -397,10 +400,12 @@ class Samples(Callback):
                 negs = cached.get("negatives") or [None] * len(prompts)
                 out = [(c, n if n is not None else cached["negative"]) for c, n in zip(cached["prompts"], negs)]
                 if finite(out):
+                    self._from_cache = True
                     return out
                 logging.warning("[ZenTrainer] the sample prompts' cached encodings hold NaN/inf; encoding them again")
             except Exception:
                 pass
+        self._from_cache = False
         clip = t.models.clip
         neg = checked_encoding(clip.encode_from_tokens_scheduled(clip.tokenize(negative)), negative)
         conds = []
@@ -546,7 +551,7 @@ class Samples(Callback):
         t.network.assist = False  # samples show the LoRA on the real model, not the training adapter
         t.network.turbo = s.turbo_strength  # a try's own, or the run's (changeable while it trains)
         try:
-            with torch.no_grad():
+            with torch.no_grad(), quiet_reloads():
                 model = self._sampling_model(t)
                 guided = self._guided_options(model, s)
                 plain_options = model.model_options
