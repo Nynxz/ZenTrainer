@@ -1063,10 +1063,24 @@ class Trainer:
             return
         from .memory.offload import pin_offloaded
 
-        n, size = pin_offloaded(self.models.patcher.model.diffusion_model)
+        from .memory.offload import pin_state
+
+        dm = self.models.patcher.model.diffusion_model
+        n, size = pin_offloaded(dm)
         if n:
             logging.info("[ZenTrainer] pinned copies of %d offloaded weights (%.1f GB): they copy to the GPU without "
                          "blocking, under the previous layer's compute", n, size / 1024 ** 3)
+        # checked after every load, samples included: ComfyUI takes pins back for other models or
+        # under RAM pressure, and what isn't pinned is slow to copy and can be swapped out
+        offloaded, loose = pin_state(dm)
+        gb = 1024 ** 3
+        if loose and loose != getattr(self, "_loose", 0):
+            logging.warning("[ZenTrainer] %.1f of the %.1f GB of offloaded weights aren't pinned: they copy to the GPU "
+                            "slower and the system can swap them out. Free some RAM, or train a smaller build of the "
+                            "model (an int8 one) so less is offloaded", loose / gb, offloaded / gb)
+        elif offloaded and not loose and getattr(self, "_loose", None) != 0:
+            logging.info("[ZenTrainer] all %.1f GB of offloaded weights are pinned", offloaded / gb)
+        self._loose = loose
 
     def _card(self) -> tuple[int, int]:
         """(the card's VRAM, what the CUDA context, the desktop and other processes hold of it): the

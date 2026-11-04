@@ -10,6 +10,10 @@ and Manager show.
 - The log says once that the text encoder and the VAE are loaded while a run prepares its dataset
   or renders samples, not once for every caption and picture. It says when encoding starts and
   how long it took, and how much it reused from the cache instead.
+- An offloaded run checks its weights are still pinned after every sample pass, pins any that
+  aren't, and says when some can't be (they copy to the GPU slower and can be swapped out), with
+  what to do. A separate sampling model leaves RAM between sample passes when the run's
+  offloaded weights need it.
 - **See a job go through the pictures.** While auto-captioning runs (a try-on too), every picture
   it has still to do shows a spinner, brighter on the one it's on.
 - **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a

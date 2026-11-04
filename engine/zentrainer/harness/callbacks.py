@@ -335,6 +335,29 @@ class Samples(Callback):
             patched, _ = comfy.sd.load_lora_for_models(patched, None, self._base_sd, t.spec.network.base_strength, 0)
         return patched
 
+    def _let_sampler_go(self, t) -> None:
+        """The alternate sampling model (samples.model_name) leaves RAM between sample passes when
+        training needs it: an offloaded run pins its weights there, and reading the sampling model
+        again next pass costs a disk read where holding it could leave them unpinned or swapped out.
+        Kept while RAM has room for it beside what training still has to pin."""
+        if self._alt is None:
+            return
+        import comfy.model_management as mm
+
+        from .memory.offload import PIN_RAM_SPARE, pin_state
+
+        size = self._alt.model_size()
+        to_pin = pin_state(t.models.patcher.model.diffusion_model)[1] if t.spec.memory.offloading else 0
+        if mm.get_free_memory(torch.device("cpu")) - to_pin > size + PIN_RAM_SPARE:
+            return
+        self._alt = None
+        mm.cleanup_models_gc()
+        if not getattr(self, "_let_go_said", False):
+            self._let_go_said = True
+            logging.info("[ZenTrainer] the sampling model %s (%.1f GB) leaves RAM between sample passes, for the "
+                         "training model's offloaded weights: each pass loads it again", t.spec.samples.model_name,
+                         size / 1024 ** 3)
+
     def _guided_options(self, model, s) -> dict | None:
         """The sampling model's options with skip-layer guidance added, or None for none.
         Runs ComfyUI's own SkipLayerGuidanceDiT(Simple) on a stand-in that only collects
@@ -445,6 +468,7 @@ class Samples(Callback):
                 tries = more() if more else []
         finally:
             self.items, self.prompts, self._conds = saved
+            self._let_sampler_go(t)  # before training repins its weights, so they have the RAM
             t.exit_inference()  # back to training once, after the whole batch
             mm_empty()
         return rows
@@ -622,6 +646,8 @@ class Samples(Callback):
             if guided is not None:
                 model.model_options = plain_options
             if not stay:
+                model = m = None  # the sampling model's patched copy (and a slider sweep's last): let go with it
+                self._let_sampler_go(t)  # before training repins its weights, so they have the RAM
                 t.exit_inference()
                 mm.soft_empty_cache()
             t.emit(events.SAMPLE_PROGRESS, {"run_id": t.run_id, "step": t.step, "phase": "done", "count": count})
