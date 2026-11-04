@@ -641,7 +641,7 @@ class Samples(Callback):
             if guided is not None:
                 model.model_options = plain_options
             if not stay:
-                model = None  # the sampling model's patched copy: let go with it
+                model = m = None  # the sampling model's patched copy (and a slider sweep's last): let go with it
                 self._let_sampler_go(t)  # before training repins its weights, so they have the RAM
                 t.exit_inference()
                 mm.soft_empty_cache()
