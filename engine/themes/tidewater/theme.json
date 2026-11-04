@@ -60,7 +60,7 @@
       "--accent-foreground": "#0e2626",
       "--destructive": "#d73337",
       "--destructive-foreground": "#fcfcfc",
-      "--warning": "#bb731b",
+      "--warning": "#a05f16",
       "--success": "#14874e",
       "--info": "#0078aa",
       "--border": "#d1dedd",
