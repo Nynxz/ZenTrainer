@@ -10,6 +10,8 @@ import CaptionRing from '@/components/CaptionRing.vue'
 import StarButton from '@/components/StarButton.vue'
 import StickyBar from '@/components/StickyBar.vue'
 import TemplateCard from '@/components/TemplateCard.vue'
+import { askText, tellError } from '@/lib/ask'
+import { handoff, useFileDrop } from '@/lib/drop'
 import { isDatasetStarred } from '@/stores/favorites'
 import { datasetsSeen } from '@/stores/lists'
 
@@ -52,9 +54,30 @@ async function create() {
     await engine.createDataset(name)
     router.push(`/datasets/${encodeURIComponent(name)}`)
   } catch (e) {
-    error.value = String((e as Error).message ?? e)
+    tellError(e)
   }
 }
+// Drop a folder on this page for a dataset of it, named after the folder unless renamed first;
+// loose files ask for a name. The files go in on the dataset's page, which opens on them
+const NAME = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$/ // the engine's rule (datasets/folders.py)
+const dragging = useFileDrop(async ({ files, folder }) => {
+  if (!files.length) return
+  const name = await askText({
+    title: 'New dataset',
+    message: `${files.length} file${files.length === 1 ? '' : 's'} to add`,
+    ok: 'Create',
+    input: { value: folder ?? '', placeholder: 'dataset name', check: (s) => (NAME.test(s) ? null : 'Letters, digits, spaces, - _ and . (starting with a letter or digit)') },
+  })
+  if (!name) return
+  try {
+    await engine.createDataset(name)
+  } catch (e) {
+    return tellError(e)
+  }
+  handoff.name = name
+  handoff.files = files
+  router.push(`/datasets/${encodeURIComponent(name)}`)
+})
 
 // the pentagon's five axes, averaged: one sortable number (the pentagon's tooltip has each score)
 function overall(d: DatasetInfo): number | null {
@@ -165,7 +188,7 @@ const ago = (t?: number) => {
     </div>
     <div v-if="error" class="card muted">Can't reach the engine: {{ error }}</div>
     <ZenEmpty v-else-if="datasets && !datasets.length" title="No datasets yet" icon="mdi mdi-image-multiple-outline">
-      Put a folder of images and captions in ComfyUI's input directory.
+      Drop a folder of images and captions here, or put one in ComfyUI's input directory.
     </ZenEmpty>
     <template v-else-if="datasets">
       <StickyBar>
@@ -253,6 +276,8 @@ const ago = (t?: number) => {
         <div v-if="!shown.length" class="muted small empty">No dataset matches “{{ query }}”.</div>
       </div>
     </template>
+
+    <div v-if="dragging" class="drop-cover"><i class="mdi mdi-tray-arrow-down" /> Drop to make a new dataset</div>
   </div>
 </template>
 

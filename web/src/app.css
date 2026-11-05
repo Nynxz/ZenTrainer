@@ -318,6 +318,27 @@ button {
   }
 }
 
+/* a page that takes dropped files (a dataset's pictures, the Datasets list): over everything
+   while files are dragged across it, saying what a drop does */
+.drop-cover {
+  position: fixed;
+  inset: 16px;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 600;
+  border: 2px dashed var(--zen-accent);
+  border-radius: var(--r-xl);
+  background: color-mix(in srgb, var(--zen-bg) 75%, transparent);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+.drop-cover i {
+  font-size: 40px;
+  color: var(--zen-accent);
+}
+
 /* a dialog or the lightbox open: the page behind it stays put (its own lists still scroll) */
 body:has(.zen-modal, .zlb) .shell > .main > .scroll-area.content > .viewport {
   overflow-y: hidden;
