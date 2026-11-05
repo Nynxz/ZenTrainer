@@ -134,6 +134,7 @@ async function send(files: File[]) {
   if (!files.length) return flash('Nothing to add in that drop')
   uploading.value = true
   const saved: string[] = []
+  const existing: string[] = []
   const errors: string[] = []
   let stopped: string | null = null
   let refreshed = Date.now()
@@ -144,6 +145,7 @@ async function send(files: File[]) {
       for (let bytes = files[i]!.size; j < files.length && bytes + files[j]!.size <= BATCH; j++) bytes += files[j]!.size
       const r = await engine.upload(props.name, files.slice(i, j))
       saved.push(...r.saved)
+      existing.push(...r.existing)
       errors.push(...r.errors)
       i = j
       if (i < files.length && Date.now() - refreshed > 4000) {
@@ -158,8 +160,11 @@ async function send(files: File[]) {
   }
   bust.value = Date.now()
   await load() // clears `error`: what was skipped, and why, goes up after it
-  const n = `${saved.length} file${saved.length === 1 ? '' : 's'}`
-  flash(stopped ? `${n} added, then the upload stopped` : `${n} added` + (errors.length ? `, ${errors.length} skipped` : ''))
+  const count = (k: number) => `${k} file${k === 1 ? '' : 's'}`
+  let said = saved.length || !existing.length ? `${count(saved.length)} added` : `${count(existing.length)} already there`
+  if (saved.length && existing.length) said += `, ${existing.length} already there`
+  if (errors.length) said += `, ${errors.length} skipped`
+  flash(stopped ? `${count(saved.length)} added, then the upload stopped` : said)
   if (stopped) errors.push(stopped)
   if (errors.length) error.value = errors.join('\n')
 }

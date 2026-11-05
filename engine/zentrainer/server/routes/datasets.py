@@ -451,7 +451,7 @@ def register(server) -> None:
     @routes.post("/zentrainer/api/datasets/{name}/upload")
     async def upload(request):
         name = request.match_info["name"]
-        saved, errors = [], []
+        saved, existing, errors = [], [], []  # existing: the dataset had that file, byte for byte
         reader = await request.multipart()
         async for part in reader:
             if part.filename:
@@ -460,7 +460,8 @@ def register(server) -> None:
                     errors.append(_too_big(part.filename))
                     continue
                 try:
-                    saved.append(await asyncio.to_thread(datasets.save_upload, name, part.filename, bytes(data)))
+                    rel, new = await asyncio.to_thread(datasets.save_upload, name, part.filename, bytes(data))
+                    (saved if new else existing).append(rel)
                 except (datasets.DatasetError, FileNotFoundError) as e:
                     errors.append(str(e))
-        return web.json_response({"saved": saved, "errors": errors})
+        return web.json_response({"saved": saved, "existing": existing, "errors": errors})

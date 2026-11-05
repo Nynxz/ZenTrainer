@@ -440,10 +440,11 @@ def create(name: str) -> None:
     d.mkdir()
 
 
-def save_upload(name: str, filename: str, data: bytes) -> str:
+def save_upload(name: str, filename: str, data: bytes) -> tuple[str, bool]:
     """An image, a caption file, or a mask (`<stem>-masklabel.png` / `<stem>.mask.png`,
-    stored as `_masks/<stem>.png`), written into the dataset folder. Never over an existing
-    file: the same bytes again are skipped, different ones get `name (2).ext`."""
+    stored as `_masks/<stem>.png`), written into the dataset folder: its path there, and whether
+    it's new. Never over an existing file: the same bytes again aren't written (not new),
+    different ones get `name (2).ext`."""
     base = Path(filename).name
     p = Path(base)
     if p.suffix.lower() not in MEDIA_EXTS | {".txt"} or base.startswith("."):
@@ -457,10 +458,10 @@ def save_upload(name: str, filename: str, data: bytes) -> str:
         target = _inside(d, base)
     if target.exists():
         if target.is_file() and target.stat().st_size == len(data) and target.read_bytes() == data:
-            return str(target.relative_to(d))  # already there
+            return str(target.relative_to(d)), False  # already there
         target = safeio.free_name(target)
     safeio.write_bytes(target, data)
-    return str(target.relative_to(d))
+    return str(target.relative_to(d)), True
 
 
 def save_mask(name: str, rel: str, data_url: str) -> dict:
