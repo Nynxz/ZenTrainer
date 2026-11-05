@@ -300,7 +300,8 @@ export const datasetsApi = {
     call<{ job: CaptionJob; restored?: number }>(`/caption/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
   deleteItem: (name: string, path: string) =>
     call<{ ok: true }>(`${dsPath(name)}/item?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
-  async upload(name: string, files: File[]): Promise<{ saved: string[]; errors: string[] }> {
+  /** saved: new in the dataset; existing: it had that file already, byte for byte (not written again) */
+  async upload(name: string, files: File[]): Promise<{ saved: string[]; existing: string[]; errors: string[] }> {
     const form = new FormData()
     for (const f of files) form.append('file', f, f.name)
     const res = await fetch(`/zentrainer/api${dsPath(name)}/upload`, { method: 'POST', body: form })

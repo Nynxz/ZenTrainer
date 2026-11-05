@@ -328,7 +328,7 @@ def test_dataset_editing_stays_inside_the_folder(tmp_path, monkeypatch):
             datasets.folder(bad)
     buf = __import__("io").BytesIO()
     Image.new("RGB", (16, 8)).save(buf, "PNG")
-    assert datasets.save_upload("cats", "../../evil/a.png", buf.getvalue()) == "a.png"
+    assert datasets.save_upload("cats", "../../evil/a.png", buf.getvalue()) == ("a.png", True)
     with pytest.raises(datasets.DatasetError):
         datasets.save_upload("cats", "run.sh", b"#!")
     datasets.set_caption("cats", "a.png", "a cat")
@@ -338,7 +338,7 @@ def test_dataset_editing_stays_inside_the_folder(tmp_path, monkeypatch):
     assert rows[0]["caption"] == "zt_cat, a cat" and rows[0]["width"] == 16
     with pytest.raises(datasets.DatasetError):
         datasets.set_caption("cats", "../../x.png", "nope")
-    assert datasets.save_upload("cats", "a-masklabel.png", buf.getvalue()) == "_masks/a.png"
+    assert datasets.save_upload("cats", "a-masklabel.png", buf.getvalue()) == ("_masks/a.png", True)
     assert datasets.items("cats")["items"][0]["mask"] == "_masks/a.png"
     thumb = datasets.thumbnail("cats", "a.png", 64, tmp_path / "thumbs")
     assert thumb.is_file() and datasets.thumbnail("cats", "a.png", 64, tmp_path / "thumbs") == thumb  # cached

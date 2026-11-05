@@ -16,6 +16,7 @@ import DatasetPairs from '@/components/dataset/DatasetPairs.vue'
 import DatasetSide from '@/components/dataset/DatasetSide.vue'
 import DatasetTable from '@/components/dataset/DatasetTable.vue'
 import { askText } from '@/lib/ask'
+import { handoff, useFileDrop } from '@/lib/drop'
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
@@ -118,65 +119,61 @@ function openMasks() {
 }
 
 // ---- upload -------------------------------------------------------------------------------
-const dragging = ref(false)
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-async function upload(files: File[]) {
-  if (!files.length) return
+const dragging = useFileDrop(({ files }) => upload(files))
+// A drop or pick goes up in requests of about 48 MB (a tunnel or proxy on the way won't take a
+// gigabyte in one; what's landed stays when one fails), the toast counting them in and the
+// pictures showing as they come. Drops take turns: a second during the first waits for it
+const BATCH = 48 * 1024 ** 2
+let turn = Promise.resolve()
+function upload(files: File[]) {
+  turn = turn.then(() => send(files))
+}
+async function send(files: File[]) {
+  if (!files.length) return flash('Nothing to add in that drop')
   uploading.value = true
+  const saved: string[] = []
+  const existing: string[] = []
+  const errors: string[] = []
+  let stopped: string | null = null
+  let refreshed = Date.now()
   try {
-    const r = await engine.upload(props.name, files)
-    flash(`${r.saved.length} file${r.saved.length === 1 ? '' : 's'} added` + (r.errors.length ? `, ${r.errors.length} skipped` : ''))
-    if (r.errors.length) error.value = r.errors.join('\n')
-    bust.value = Date.now()
-    await load()
+    for (let i = 0; i < files.length; ) {
+      notice.value = `Adding files… ${i.toLocaleString()} of ${files.length.toLocaleString()}`
+      let j = i + 1
+      for (let bytes = files[i]!.size; j < files.length && bytes + files[j]!.size <= BATCH; j++) bytes += files[j]!.size
+      const r = await engine.upload(props.name, files.slice(i, j))
+      saved.push(...r.saved)
+      existing.push(...r.existing)
+      errors.push(...r.errors)
+      i = j
+      if (i < files.length && Date.now() - refreshed > 4000) {
+        refreshed = bust.value = Date.now()
+        await load()
+      }
+    }
+  } catch (e) {
+    stopped = String((e as Error).message ?? e)
   } finally {
     uploading.value = false
   }
-}
-let depth = 0
-// a picture dragged from this page (a card, the lightbox) carries itself as a file too: only files
-// from outside are added
-let inner = false
-const onDragStart = () => (inner = true)
-const onDragEnd = () => (inner = false)
-const onEnter = (e: DragEvent) => {
-  if (!inner && e.dataTransfer?.types.includes('Files')) {
-    depth++
-    dragging.value = true
-  }
-}
-const onLeave = () => {
-  if (--depth <= 0) {
-    depth = 0
-    dragging.value = false
-  }
-}
-const onOver = (e: DragEvent) => e.preventDefault()
-const onDrop = (e: DragEvent) => {
-  e.preventDefault()
-  depth = 0
-  dragging.value = false
-  if (!inner) upload([...(e.dataTransfer?.files ?? [])])
+  bust.value = Date.now()
+  await load() // clears `error`: what was skipped, and why, goes up after it
+  const count = (k: number) => `${k} file${k === 1 ? '' : 's'}`
+  let said = saved.length || !existing.length ? `${count(saved.length)} added` : `${count(existing.length)} already there`
+  if (saved.length && existing.length) said += `, ${existing.length} already there`
+  if (errors.length) said += `, ${errors.length} skipped`
+  flash(stopped ? `${count(saved.length)} added, then the upload stopped` : said)
+  if (stopped) errors.push(stopped)
+  if (errors.length) error.value = errors.join('\n')
 }
 onMounted(() => {
-  addEventListener('dragenter', onEnter)
-  addEventListener('dragleave', onLeave)
-  addEventListener('dragover', onOver)
-  addEventListener('drop', onDrop)
-  addEventListener('dragstart', onDragStart)
-  addEventListener('dragend', onDragEnd)
   addEventListener('keydown', onEsc)
+  // dropped on the Datasets page, which made this dataset for them
+  if (handoff.name === props.name && handoff.files.length) upload(handoff.files.splice(0))
 })
-onUnmounted(() => {
-  removeEventListener('dragenter', onEnter)
-  removeEventListener('dragleave', onLeave)
-  removeEventListener('dragover', onOver)
-  removeEventListener('drop', onDrop)
-  removeEventListener('dragstart', onDragStart)
-  removeEventListener('dragend', onDragEnd)
-  removeEventListener('keydown', onEsc)
-})
+onUnmounted(() => removeEventListener('keydown', onEsc))
 </script>
 
 <template>
@@ -233,8 +230,6 @@ onUnmounted(() => {
       <button class="chip-btn" @click="reviewing = null"><i class="mdi mdi-close" /> Show all</button>
     </div>
 
-    <div v-if="notice" class="notice">{{ notice }}</div>
-
     <ZenEmpty v-if="!loading && !items.length" title="Empty dataset" icon="mdi mdi-image-plus-outline">
       Drop images, videos, same-name .txt captions and masks (<span class="mono">name-masklabel.png</span>) anywhere on this page.
     </ZenEmpty>
@@ -248,22 +243,27 @@ onUnmounted(() => {
       <DatasetSide v-if="panelShown" :name="name" :drawer="narrow" />
     </div>
 
-    <!-- selecting doesn't move anything: the actions float over the bottom of the page -->
-    <Transition name="selbar">
-      <div v-if="selected.size || boxing" class="sel-bar zen-surface">
-        <b>{{ selected.size }}<span class="lbl"> selected</span></b>
-        <button class="chip-btn" :title="allShownSelected ? 'Deselect the shown images' : 'Select every shown image'" @click="toggleAll">
-          <i :class="allShownSelected ? 'mdi mdi-checkbox-marked' : 'mdi mdi-checkbox-multiple-blank-outline'" /><span class="lbl">{{ allShownSelected ? 'Deselect shown' : 'Select shown' }}</span>
-        </button>
-        <span class="sel-sep" />
-        <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /><span class="lbl">Mute</span></button>
-        <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /><span class="lbl">Unmute</span></button>
-        <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /><span class="lbl">Masks</span></button>
-        <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /><span class="lbl">Delete</span></button>
-        <span class="sel-sep" />
-        <button class="chip-btn" title="Clear the selection (Esc)" @click="selected.clear()"><i class="mdi mdi-close" /></button>
-      </div>
-    </Transition>
+    <!-- a message and the selection's actions float over the bottom of the page: neither moves anything -->
+    <div class="float">
+      <Transition name="float">
+        <div v-if="notice" class="notice zen-surface"><i v-if="uploading" class="mdi mdi-loading mdi-spin" />{{ notice }}</div>
+      </Transition>
+      <Transition name="float">
+        <div v-if="selected.size || boxing" class="sel-bar zen-surface">
+          <b>{{ selected.size }}<span class="lbl"> selected</span></b>
+          <button class="chip-btn" :title="allShownSelected ? 'Deselect the shown images' : 'Select every shown image'" @click="toggleAll">
+            <i :class="allShownSelected ? 'mdi mdi-checkbox-marked' : 'mdi mdi-checkbox-multiple-blank-outline'" /><span class="lbl">{{ allShownSelected ? 'Deselect shown' : 'Select shown' }}</span>
+          </button>
+          <span class="sel-sep" />
+          <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /><span class="lbl">Mute</span></button>
+          <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /><span class="lbl">Unmute</span></button>
+          <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /><span class="lbl">Masks</span></button>
+          <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /><span class="lbl">Delete</span></button>
+          <span class="sel-sep" />
+          <button class="chip-btn" title="Clear the selection (Esc)" @click="selected.clear()"><i class="mdi mdi-close" /></button>
+        </div>
+      </Transition>
+    </div>
 
     <ZenContextMenu ref="menu" :items="menuItems" />
 
@@ -273,7 +273,7 @@ onUnmounted(() => {
       </template>
     </ZenLightbox>
 
-    <div v-if="dragging" class="dropzone"><i class="mdi mdi-tray-arrow-down" /> Drop to add to {{ name }}</div>
+    <div v-if="dragging" class="drop-cover"><i class="mdi mdi-tray-arrow-down" /> Drop to add to {{ name }}</div>
   </div>
 </template>
 
@@ -338,31 +338,6 @@ onUnmounted(() => {
 .reviewing > :nth-child(2) {
   flex: 1;
 }
-.notice {
-  align-self: flex-start;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--zen-ok) 18%, transparent);
-}
-.dropzone {
-  position: fixed;
-  inset: 16px;
-  z-index: 60;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  font-weight: 600;
-  border: 2px dashed var(--zen-accent);
-  border-radius: var(--r-xl);
-  background: color-mix(in srgb, var(--zen-bg) 75%, transparent);
-  backdrop-filter: blur(4px);
-  pointer-events: none;
-}
-.dropzone i {
-  font-size: 40px;
-  color: var(--zen-accent);
-}
 /* ---- page layout: a slim header, one fixed toolbar, the pictures and a side panel ---- */
 /* everything gives way before anything is cut off: the side panel's button is always there */
 .page-toolbar .zoom {
@@ -425,14 +400,34 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
 }
-/* the selection's actions float over the page bottom: selecting moves nothing. Its look (border,
-   corners, background, shadow) is the theme's floating surface, as the right-click menu's is */
-.sel-bar {
+/* a message (files added, captions changed) and the selection's actions float over the page
+   bottom, the message above the bar: neither moves anything, and one coming or going doesn't move
+   the other. Their look (border, corners, background, shadow) is the theme's floating surface, as
+   the right-click menu's is */
+.float {
   position: fixed;
-  left: 50%;
+  left: 0;
+  right: 0;
   bottom: 18px;
-  transform: translateX(-50%);
   z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.float > * {
+  pointer-events: auto;
+}
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw / var(--zen-page-zoom) - 32px);
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.sel-bar {
   display: flex;
   align-items: center;
   /* too many for the window (a phone, a large Text size): a second row, not buttons off screen */
@@ -457,14 +452,14 @@ onUnmounted(() => {
   height: 18px;
   background: var(--zen-border);
 }
-.selbar-enter-active,
-.selbar-leave-active {
+.float-enter-active,
+.float-leave-active {
   transition: opacity var(--zen-dur-fast), transform var(--zen-dur-fast);
 }
-.selbar-enter-from,
-.selbar-leave-to {
+.float-enter-from,
+.float-leave-to {
   opacity: 0;
-  transform: translate(-50%, 8px);
+  transform: translateY(8px);
 }
 @media (max-width: 900px) {
   .page-toolbar .zoom,

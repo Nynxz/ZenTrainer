@@ -24,12 +24,12 @@ def ds(tmp_path, monkeypatch):
 
 
 def test_an_upload_never_replaces_a_different_file(ds):
-    assert datasets.save_upload("cats", "IMG_0001.png", _png("red")) == "IMG_0001.png"
+    assert datasets.save_upload("cats", "IMG_0001.png", _png("red")) == ("IMG_0001.png", True)
     datasets.set_caption("cats", "IMG_0001.png", "the first cat")
-    # the same file again is a no-op; another camera's IMG_0001 gets its own name
-    assert datasets.save_upload("cats", "IMG_0001.png", _png("red")) == "IMG_0001.png"
-    assert datasets.save_upload("cats", "IMG_0001.png", _png("blue")) == "IMG_0001 (2).png"
-    assert datasets.save_upload("cats", "IMG_0001.txt", b"a dropped caption") == "IMG_0001 (2).txt"
+    # the same file again is a no-op (and said to be: not new); another camera's IMG_0001 gets its own name
+    assert datasets.save_upload("cats", "IMG_0001.png", _png("red")) == ("IMG_0001.png", False)
+    assert datasets.save_upload("cats", "IMG_0001.png", _png("blue")) == ("IMG_0001 (2).png", True)
+    assert datasets.save_upload("cats", "IMG_0001.txt", b"a dropped caption") == ("IMG_0001 (2).txt", True)
     assert (ds / "IMG_0001.txt").read_text().strip() == "the first cat"
     with Image.open(ds / "IMG_0001.png") as im:
         assert im.getpixel((0, 0)) == (255, 0, 0)

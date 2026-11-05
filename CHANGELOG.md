@@ -5,6 +5,19 @@ and Manager show.
 
 ## Unreleased
 
+- **Drop a folder to make a dataset.** On the Datasets page, a dropped folder becomes a dataset
+  named after it (rename it first if you like); on a dataset's page, a dropped folder's pictures,
+  captions and masks go in, subfolders and all. A folder used to land as one empty file and be
+  refused.
+- **Big drops go in as you watch.** Files go up in parts, a count floating over the page while they
+  do and the pictures appearing as they land, instead of nothing happening for minutes; what's
+  landed stays if the connection drops. Drops onto a dataset that stopped working until the page
+  was reopened (after dragging one of its own pictures) work again, the reasons for skipped files
+  show instead of vanishing, and a file the dataset already has says "already there" instead of
+  counting as added.
+- **Messages float over the page.** "12 files added", "3 captions updated" and the like float over
+  the bottom of a dataset page, above the selection's actions, instead of pushing the pictures down
+  for a moment.
 - **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
   first accent between Hacker's greens and Ghost Circuit's cyan.
 - The log says once that the text encoder and the VAE are loaded while a run prepares its dataset
