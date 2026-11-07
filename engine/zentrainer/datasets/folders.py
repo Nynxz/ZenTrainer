@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .. import safeio
 from ..harness.data import video
-from ..harness.data import (CONTROL_EXTS, CONTROLS_DIR, IMAGE_EXTS, MASK_SUFFIXES, MEDIA_EXTS, SET_NAME, caption_path,
-                            caption_sets, find_control_sets, find_mask, glob_escape, scan)
+from ..harness.data import (CONTROL_EXTS, CONTROLS_DIR, IMAGE_EXTS, MASK_SUFFIXES, MEDIA_EXTS, MUTES_FILE, SET_NAME,
+                            caption_path, caption_sets, find_control_sets, find_mask, folder_trigger, glob_escape,
+                            scan, top_folder)
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,99}$")
 
@@ -29,7 +30,8 @@ def root() -> Path:
 
 
 def folder(name: str, must_exist: bool = True) -> Path:
-    if not _NAME.match(name or "") or name.startswith((".", "_")):
+    # Windows drops a trailing dot or space, so such a name would be another folder's
+    if not _NAME.match(name or "") or name.startswith((".", "_")) or (os.name == "nt" and name != name.rstrip(". ")):
         raise DatasetError(f"bad dataset name {name!r}")
     d = (root() / name).resolve()
     if d.parent != root():
@@ -79,9 +81,15 @@ def summary() -> list[dict]:
 
 def _summary(d: Path, r: Path) -> dict | None:
     items = scan(d, warn=False)
-    if not items:
+    # an empty folder is a dataset only if ZenTrainer made it: the input folder has others (3d, ...)
+    if not items and not (d / MUTES_FILE).is_file():
         return None
     stats = [i.path.stat() for i in items if i.path.exists()]
+    groups: dict[str, list] = {}
+    for i in items:
+        groups.setdefault(top_folder(i.path, d), []).append(i)
+    # the cover takes a picture from each folder in turn, so a collection shows its classes
+    cover = [g[n] for n in range(max(map(len, groups.values()), default=0)) for g in groups.values() if n < len(g)]
     return {
         "folder": d.name,
         "images": len(items),
@@ -90,13 +98,18 @@ def _summary(d: Path, r: Path) -> dict | None:
         "control_sets": control_counts(items),
         "health": _health(d.name),
         "bytes": sum(st.st_size for st in stats),
-        "modified": max((st.st_mtime for st in stats), default=0),
+        "modified": max((st.st_mtime for st in stats), default=d.stat().st_mtime),  # empty: when it was made
         "videos": sum(1 for i in items if video.is_video(i.path)),
         "steps_per_epoch": sum(i.repeats for i in items),
         "captioned": sum(1 for i in items if i.caption),
         "sets": sorted({s for i in items for s in i.captions} | {"default"}, key=lambda s: (s != "default", s)),
         "thumbs": [{"subfolder": str(i.path.parent.relative_to(r)), "filename": i.path.name,
-                    "path": str(i.path.relative_to(d))} for i in items[:8]],
+                    "path": str(i.path.relative_to(d))} for i in cover[:8]],
+        # its subfolders ("" the dataset folder's own pictures), each with the trigger its name gives
+        # (dataset.folder_triggers) and its first picture; [] with none
+        "folders": [{"name": name, "trigger": folder_trigger(g[0].path, d), "images": len(g),
+                     "path": str(g[0].path.relative_to(d))}
+                    for name, g in sorted(groups.items())] if any(groups) else [],
     }
 
 
@@ -434,27 +447,150 @@ def rename_control_set(name: str, old: str, new: str) -> int:
 
 
 def create(name: str) -> None:
+    """A new dataset folder, with its .zentrainer.json so it's listed before anything is in it. An
+    empty folder of that name without one (made before datasets were marked) is taken over."""
     d = folder(name, must_exist=False)
-    if d.exists():
+    if d.exists() and (not d.is_dir() or (d / MUTES_FILE).exists() or any(d.iterdir())):
         raise DatasetError(f"{name!r} already exists")
-    d.mkdir()
+    d.mkdir(exist_ok=True)
+    safeio.write_json(d / MUTES_FILE, {})
 
 
-def save_upload(name: str, filename: str, data: bytes) -> str:
+def _listed(d: Path, items: list | None = None) -> None:
+    """Refuses a folder the dataset list leaves out (the input folder's others: 3d, ...): neither
+    made by ZenTrainer nor holding pictures."""
+    if not (d / MUTES_FILE).is_file() and not (scan(d, warn=False) if items is None else items):
+        raise FileNotFoundError(d.name)
+
+
+def _is_link(p: Path) -> bool:
+    """Whether p is a link (a symlink, or a junction on Windows) rather than a folder of its own."""
+    return os.path.normcase(p.resolve()) != os.path.normcase(p)
+
+
+def _remove(p: Path) -> None:
+    """Deletes a folder and everything in it, or only the link when it's one. A read-only file is
+    made writable first (Windows won't delete one); a file that still won't go (open in another
+    program, say) is a DatasetError naming it."""
+    import shutil
+    import stat
+    import sys
+
+    def retry(func, path, _exc):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
+    try:
+        if _is_link(p):
+            p.unlink()
+        elif sys.version_info >= (3, 12):
+            shutil.rmtree(p, onexc=retry)
+        else:
+            shutil.rmtree(p, onerror=retry)
+    except OSError as e:
+        where = Path(e.filename) if e.filename else p
+        try:
+            where = where.relative_to(root())
+        except ValueError:
+            pass
+        raise DatasetError(f"couldn't delete {where}: {e.strerror or e}") from e
+
+
+def delete_dataset(name: str) -> int:
+    """A dataset folder and everything in it, with its settings and health history. A dataset
+    that's a link (to another dataset, say) is unlinked, never followed. Returns the pictures it
+    held."""
+    folder(name)
+    raw = root() / name  # folder() resolves: a link's own path, not where it points
+    items = scan(raw, warn=False)
+    _listed(raw, items)
+    n = len(items)
+    _remove(raw)
+    try:  # its settings and health history: the dataset is gone either way
+        f = _settings_file()
+        kept = safeio.read_json(f, {})
+        if isinstance(kept, dict) and kept.pop(name, None) is not None:
+            safeio.write_json(f, kept)
+        from .stats import forget
+
+        forget(name)
+    except (OSError, ImportError, AttributeError):  # outside ComfyUI (tests, tools), or no usable user folder
+        pass
+    return n
+
+
+def _unmute_folder(d: Path, rel: Path) -> None:
+    """Forgets the mutes of a deleted folder's pictures, so pictures added there later start unmuted."""
+    from ..harness.data import muted as _muted
+
+    mutes = _muted(d)
+    kept = {s: {p for p in v if PurePosixPath(p.replace("\\", "/")).parts[:len(rel.parts)] != rel.parts}
+            for s, v in mutes.items()}
+    if kept == mutes:
+        return
+    f = d / MUTES_FILE
+    data = safeio.read_json(f, {})
+    data = data if isinstance(data, dict) else {}
+    data["muted"] = {s: sorted(v) for s, v in kept.items() if v}
+    safeio.write_json(f, data)
+
+
+def delete_folder(name: str, sub: str) -> int:
+    """A subfolder of a dataset and everything in it: pictures, captions, masks, inputs and mutes.
+    A folder that's a link (a junction to another dataset, say) is unlinked, never followed.
+    Returns the pictures it held."""
+    d = folder(name)
+    _listed(d)
+    rel = Path(sub)
+    # no name or a drive/root ("C:", "\" on Windows) would be the dataset itself
+    if not rel.name or rel.anchor or any(x in (".", "..") or x.startswith((".", "_")) for x in rel.parts):
+        raise DatasetError(f"{sub!r} isn't a folder of pictures in this dataset")
+    parent = _inside(d, str(rel.parent)) if len(rel.parts) > 1 else d
+    p = parent / rel.name
+    if not p.is_dir():
+        raise DatasetError(f"{sub!r}: no such folder in this dataset")
+    n = len(scan(p, warn=False))
+    if not (d / MUTES_FILE).is_file():  # marked, so it stays listed (and deletable) once its last folder goes
+        try:
+            safeio.write_json(d / MUTES_FILE, {})
+        except OSError as e:
+            raise DatasetError(f"couldn't write {MUTES_FILE} in {name}: {e.strerror or e}") from e
+    _remove(p)  # a link: only it goes, what it points at stays
+    try:  # the folder is gone either way
+        _unmute_folder(d, rel)
+    except OSError:
+        pass
+    return n
+
+
+def save_upload(name: str, filename: str, data: bytes, into: str = "") -> str:
     """An image, a caption file, or a mask (`<stem>-masklabel.png` / `<stem>.mask.png`,
-    stored as `_masks/<stem>.png`), written into the dataset folder. Never over an existing
-    file: the same bytes again are skipped, different ones get `name (2).ext`."""
+    stored as `_masks/<stem>.png`), written into the dataset folder, or into its subfolder
+    `into` (an added folder; made if new). Never over an existing file: the same bytes again
+    are skipped, different ones get `name (2).ext`."""
     base = Path(filename).name
     p = Path(base)
     if p.suffix.lower() not in MEDIA_EXTS | {".txt"} or base.startswith("."):
         raise DatasetError(f"{base!r}: only images, videos, masks and .txt captions")
     d = folder(name)
+    parts = Path(into).parts
+    # training skips "." and "_" folders, so pictures put there would never train
+    if any(x in (".", "..") or x.startswith((".", "_")) for x in parts) or Path(into).is_absolute():
+        raise DatasetError(f"{into!r}: a subfolder name can't start with . or _")
+    sub = _inside(d, into) if parts else d
+    try:  # a file where a folder of the path should be, on any OS
+        sub.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise DatasetError(f"{into!r}: can't make that folder here ({e.strerror or e})") from e
     if p.suffix.lower() in IMAGE_EXTS and p.stem.endswith(MASK_SUFFIXES):
         stem = next(p.stem[: -len(x)] for x in MASK_SUFFIXES if p.stem.endswith(x))
-        (d / "_masks").mkdir(exist_ok=True)
-        target = _inside(d, f"_masks/{stem}{p.suffix.lower()}")
+        try:
+            (sub / "_masks").mkdir(exist_ok=True)
+        except OSError as e:  # a file where the folder should be, say
+            raise DatasetError(f"{into + '/' if into else ''}_masks: can't make that folder here ({e.strerror or e})") from e
+        target = _inside(d, str(sub.relative_to(d) / "_masks" / f"{stem}{p.suffix.lower()}"))
     else:
-        target = _inside(d, base)
+        target = _inside(d, str(sub.relative_to(d) / base))
     if target.exists():
         if target.is_file() and target.stat().st_size == len(data) and target.read_bytes() == data:
             return str(target.relative_to(d))  # already there

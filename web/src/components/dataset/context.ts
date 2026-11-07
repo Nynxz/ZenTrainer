@@ -10,7 +10,7 @@ import { EVENTS, engine, thumbUrl, viewUrl, type CaptionJob, type DatasetFaces, 
 import type DatasetStats from '@/components/DatasetStats.vue'
 import { remembered } from '@/lib/remembered'
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
-import { ask } from '@/lib/ask'
+import { ask, tellError } from '@/lib/ask'
 import { asFarAlong } from '@/lib/jobs'
 
 export const isVideoPath = (p: string) => /\.(mp4|webm|mov|mkv)$/i.test(p)
@@ -18,6 +18,12 @@ export const aspect = (it: DatasetItem) => (it.width && it.height ? `${it.width}
 export const isSimplePair = (it: DatasetItem, inputs: string[]) => inputs.length === 1 && it.kind !== 'video' && !isVideoPath(inputs[0]!)
 export const secs = (d?: number | null) => (d == null ? '' : d < 60 ? `${d.toFixed(1)}s` : `${Math.floor(d / 60)}:${String(Math.round(d % 60)).padStart(2, '0')}`)
 export const pct = (v?: number) => (v == null ? '' : `${Math.round(v * 100)}%`)
+// the subfolder a picture is in, under the dataset ('' for the dataset folder itself): with Trigger per
+// folder, its class. The server writes paths with the system's separator.
+export const folderOf = (it: DatasetItem) => {
+  const parts = it.path.split(/[\\/]/)
+  return parts.length > 1 ? parts[0]! : ''
+}
 export const kb = (b: number) => (b > 1024 ** 2 ? `${(b / 1024 ** 2).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`)
 // a card's file details, behind its ⓘ instead of a line under every caption
 export const fileInfo = (it: DatasetItem) =>
@@ -117,6 +123,21 @@ export function useDataset(name: () => string) {
   type Filter = 'all' | 'uncaptioned' | 'masked' | 'unmasked' | 'pairs' | 'faces' | 'images' | 'muted'
   const filter = ref<Filter>('all')
   const query = ref('')
+  // one subfolder's pictures ('' the dataset folder's own), or null for all of them
+  const folder = ref<string | null>(null)
+  // each subfolder and how many pictures it holds, in name order; [] when there are none
+  const folders = computed(() => {
+    const n = new Map<string, number>()
+    for (const it of items.value) n.set(folderOf(it), (n.get(folderOf(it)) ?? 0) + 1)
+    return [...n.keys()].some(Boolean) ? [...n].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => ({ name, count })) : []
+  })
+  // pictures gone from the dataset leave the selection, and a folder left with none (deleted, or its
+  // last one deleted) stops filtering: nothing would show
+  watch(items, () => {
+    const have = new Set(items.value.map((it) => it.path))
+    for (const p of selected) if (!have.has(p)) selected.delete(p)
+    if (folder.value !== null && !items.value.some((it) => folderOf(it) === folder.value)) folder.value = null
+  })
   const sortKey = ref<'name' | 'size' | 'res' | 'caption'>('name')
   const sortDir = ref<1 | -1>(1)
   const selected = reactive(new Set<string>())
@@ -326,6 +347,7 @@ export function useDataset(name: () => string) {
     const rows = items.value.filter(
       (it) =>
         (!only || only.has(it.path)) &&
+        (folder.value === null || folderOf(it) === folder.value) &&
         (f === 'all' ||
           (f === 'uncaptioned' && !cap(it)) ||
           (f === 'masked' && it.mask) ||
@@ -344,13 +366,22 @@ export function useDataset(name: () => string) {
           : sortKey.value === 'caption'
             ? cap(it).length
             : it.path.toLowerCase()
-    return [...rows].sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * sortDir.value)
+    const cmp = (x: string | number, y: string | number) => (x > y ? 1 : x < y ? -1 : 0)
+    // name order keeps a folder together: the dataset folder's own pictures, then each subfolder's
+    // ("Cats" and "cats" are two folders on Linux: case breaks a tie, never splits one)
+    const order = (a: DatasetItem, b: DatasetItem) => {
+      if (sortKey.value !== 'name') return cmp(key(a), key(b))
+      const fa = folderOf(a)
+      const fb = folderOf(b)
+      return cmp(+!!fa, +!!fb) || cmp(fa.toLowerCase(), fb.toLowerCase()) || cmp(fa, fb) || cmp(key(a), key(b))
+    }
+    return [...rows].sort((a, b) => order(a, b) * sortDir.value)
   })
   // a big dataset renders a page at a time (thousands of cards stall the browser): more as the
   // end scrolls near (MoreRows); a new filter, search or sort starts from the top
   const PAGE = 300
   const limit = ref(PAGE)
-  watch([filter, query, sortKey, sortDir, reviewing, items], () => (limit.value = PAGE))
+  watch([filter, folder, query, sortKey, sortDir, reviewing, items], () => (limit.value = PAGE))
   const visible = computed(() => shown.value.slice(0, limit.value))
   const more = () => {
     if (limit.value < shown.value.length) limit.value += PAGE
@@ -440,6 +471,20 @@ export function useDataset(name: () => string) {
       saving[key] = false
     }
   }
+  // a subfolder and every picture in it, in one go
+  async function deleteFolder(sub: string) {
+    const n = items.value.filter((it) => folderOf(it) === sub).length
+    const what = `${n} picture${n === 1 ? '' : 's'}`
+    if (!(await ask({ title: `Delete the folder “${sub}”?`, message: `Everything in it goes, including its ${what}. This can’t be undone.`, ok: 'Delete', danger: true }))) return
+    try {
+      await engine.deleteFolder(name(), sub)
+    } catch (e) {
+      await load() // a delete that failed partway has still removed some: show what's left
+      return tellError(e, 'Couldn’t delete it')
+    }
+    flash(`“${sub}” deleted, with its ${what}`)
+    await load()
+  }
   async function removeMany(paths: string[]) {
     if (!paths.length || !(await ask({ title: `Delete ${paths.length === 1 ? 'this picture' : `${paths.length} pictures`}?`, message: 'With their captions and masks. This can’t be undone.', ok: 'Delete', danger: true }))) return
     for (const p of paths) await engine.deleteItem(name(), p)
@@ -479,11 +524,11 @@ export function useDataset(name: () => string) {
   return {
     view, zoom, fit, showMasks, maskHighVis, sideOpen,
     items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load, maskThumb, working,
-    filter, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
+    filter, folder, folders, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
     isMuted, setMuted, imageFlags, statsPanel,
     faces, facesBusy, facesStatus, facesShort, captionSubject, facesSetting, toggleFaces, faceOf, faceIssue, faceNote,
     shown, visible, more, sortBy, toggleSelect, onItemClick, menu, menuItems, onItemMenu, allShownSelected, toggleAll,
-    flash, save, removeMany,
+    flash, save, removeMany, deleteFolder,
     layout, ctrlView, full, thumb, thumbSize, lightbox, lbItems,
   }
 }

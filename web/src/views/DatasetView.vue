@@ -22,7 +22,7 @@ const router = useRouter()
 
 const ds = useDataset(() => props.name)
 provide(DATASET, ds)
-const { view, zoom, fit, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, query, selected, boxing, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
+const { view, zoom, fit, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, folder, folders, query, selected, boxing, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
 
 // In a narrow window the panel would land under every picture, out of reach: there it's a drawer
 // over the right edge instead, opened by the same button, closed on its own (not remembered)
@@ -96,6 +96,16 @@ const filterItems = computed(() => [
   { value: 'faces', label: `Face issues · ${faces.value?.items ? counts.value.faceIssues : '–'}` },
   ...(controlSets.value.length ? [{ value: 'pairs', label: `With a “${activeControl.value}” input · ${counts.value.pairs}` }] : []),
 ])
+// the folder menu: every subfolder, and the dataset folder's own pictures where it has any
+// '/' (all of them) and '.' (the dataset folder's own) are values no folder can be named
+const folderItems = computed(() => [
+  { value: '/', label: `All folders · ${items.value.length}` },
+  ...folders.value.map((f) => ({ value: f.name || '.', label: `${f.name || 'Top level'} · ${f.count}` })),
+])
+const folderPick = computed({
+  get: () => (folder.value === null ? '/' : folder.value || '.'),
+  set: (v: string) => (folder.value = v === '/' ? null : v === '.' ? '' : v),
+})
 function onEsc(e: KeyboardEvent) {
   // Escape in a dialog or menu (a ZenKit layer) is that one's: cancelling "Delete these?" keeps them selected
   if ((e.target as HTMLElement).closest?.('[data-zen-layer]')) return
@@ -121,19 +131,107 @@ function openMasks() {
 const dragging = ref(false)
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-async function upload(files: File[]) {
+const folderInput = ref<HTMLInputElement | null>(null)
+// `folders[i]` is the subfolder files[i] goes into ('' or none: the dataset itself); one request a folder
+// `note`: what was left out before the upload, said with its errors
+async function upload(files: File[], folders: string[] = [], note = '') {
   if (!files.length) return
   uploading.value = true
-  try {
-    const r = await engine.upload(props.name, files)
-    flash(`${r.saved.length} file${r.saved.length === 1 ? '' : 's'} added` + (r.errors.length ? `, ${r.errors.length} skipped` : ''))
-    if (r.errors.length) error.value = r.errors.join('\n')
-    bust.value = Date.now()
-    await load()
-  } finally {
-    uploading.value = false
+  error.value = null
+  notice.value = `Adding ${files.length} file${files.length === 1 ? '' : 's'}…`
+  const groups = new Map<string, File[]>()
+  for (const [i, f] of files.entries()) {
+    const into = folders[i] ?? ''
+    let group = groups.get(into)
+    if (!group) groups.set(into, (group = []))
+    group.push(f)
   }
+  const r = { saved: [] as string[], errors: [] as string[] }
+  let failed = ''
+  try {
+    for (const [into, group] of groups) {
+      const part = await engine.upload(props.name, group, into)
+      r.saved.push(...part.saved)
+      r.errors.push(...part.errors)
+    }
+  } catch (e) {
+    failed = (e as Error).message // the folders before it are in: the reload below shows them
+  }
+  const n = r.saved.length
+  const added = `${n} file${n === 1 ? '' : 's'} added`
+  if (failed) notice.value = null
+  else {
+    const into = [...groups.keys()].filter(Boolean)
+    flash(added + (into.length ? ` into ${into.join(', ')}` : '') + (r.errors.length ? `, ${r.errors.length} skipped` : ''))
+  }
+  bust.value = Date.now()
+  await load() // clears the error when it loads: this upload's own go in after
+  const report = [...(failed ? [`Adding the files failed${n ? ` after ${added}` : ''}: ${failed}`] : []), ...r.errors, ...(note ? [note] : [])]
+  if (report.length) error.value = report.join('\n')
+  uploading.value = false
 }
+// what the server takes: pictures, videos and .txt captions (the engine's IMAGE_EXTS and VIDEO_EXTS)
+const TAKES = /\.(png|jpe?g|webp|bmp|mp4|webm|mov|mkv|avi|m4v|txt)$/i
+// a folder (picked, or dropped) comes in as a subfolder of the same name, its own subfolders kept:
+// each a class with Trigger per folder. `picked` is each file with its path from the folder's name
+// ("tus18/a.png"). Masks (_masks/<name>) go in as <name>-masklabel beside their pictures. Edit inputs
+// (_controls/<set>/) are left out and counted: Edit inputs adds them. Anything else in a "." or "_"
+// folder is left out, as training skips it.
+function addFolder(picked: [File, string][]) {
+  const files: File[] = []
+  const folders: string[] = []
+  let inputs = 0
+  let hidden = 0
+  for (const [f, rel] of picked) {
+    if (f.name.startsWith('.')) continue
+    const dirs = rel.split('/').slice(0, -1)
+    if (dirs.includes('_controls')) {
+      inputs++
+      continue
+    }
+    if (!TAKES.test(f.name)) continue
+    let file = f
+    if (dirs[dirs.length - 1] === '_masks' && !f.name.endsWith('.txt')) {
+      dirs.pop()
+      const dot = f.name.lastIndexOf('.')
+      file = new File([f], `${f.name.slice(0, dot)}-masklabel${f.name.slice(dot)}`, { type: f.type })
+    }
+    if (dirs.some((d) => d.startsWith('.') || d.startsWith('_'))) {
+      hidden++
+      continue
+    }
+    files.push(file)
+    folders.push(dirs.join('/'))
+  }
+  const note = inputs ? `${inputs} edit input${inputs === 1 ? '' : 's'} left out: add them in Edit inputs` : ''
+  if (!files.length) {
+    const name = picked[0]?.[1].split('/')[0]
+    error.value = [
+      hidden && !inputs
+        ? `Nothing to add from “${name}”: folders starting with . or _ don't train`
+        : `Nothing to add${name ? ` from “${name}”` : ''}: no pictures, videos or .txt captions in it`,
+      ...(note ? [note] : []),
+    ].join('\n')
+    return
+  }
+  return upload(files, folders, note)
+}
+// every file under some dropped entries, each with its path from the dropped folder's name
+async function walk(entries: FileSystemEntry[]): Promise<[File, string][]> {
+  const out: [File, string][] = []
+  for (const entry of entries) {
+    if (entry.isFile) {
+      const file = await new Promise<File>((ok, bad) => (entry as FileSystemFileEntry).file(ok, bad))
+      out.push([file, entry.fullPath.replace(/^\//, '')])
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader()
+      // a folder's entries come a batch at a time, until an empty one
+      for (let batch = await read(reader); batch.length; batch = await read(reader)) out.push(...(await walk(batch)))
+    }
+  }
+  return out
+}
+const read = (reader: FileSystemDirectoryReader) => new Promise<FileSystemEntry[]>((ok, bad) => reader.readEntries(ok, bad))
 let depth = 0
 // a picture dragged from this page (a card, the lightbox) carries itself as a file too: only files
 // from outside are added
@@ -157,7 +255,11 @@ const onDrop = (e: DragEvent) => {
   e.preventDefault()
   depth = 0
   dragging.value = false
-  if (!inner) upload([...(e.dataTransfer?.files ?? [])])
+  if (inner) return
+  // read before anything is awaited: a drop's items are gone once the event is over
+  const entries = [...(e.dataTransfer?.items ?? [])].map((item) => item.webkitGetAsEntry?.()).filter((x): x is FileSystemEntry => !!x)
+  if (entries.some((x) => x.isDirectory)) walk(entries).then(addFolder, (err: Error) => (error.value = `Reading the dropped folder failed: ${err.message}`))
+  else upload([...(e.dataTransfer?.files ?? [])])
 }
 onMounted(() => {
   addEventListener('dragenter', onEnter)
@@ -192,8 +294,10 @@ onUnmounted(() => {
       </div>
       <ZenButton size="sm" icon="mdi mdi-vector-selection" :disabled="!maskStart" title="Paint or find (SAM3) where each picture trains; ←/→ moves between pictures" @click="openMasks">Mask editor</ZenButton>
       <ZenButton size="sm" icon="mdi mdi-upload" :disabled="uploading" @click="fileInput?.click()">Add files</ZenButton>
+      <ZenButton size="sm" icon="mdi mdi-folder-upload-outline" :disabled="uploading" title="Copy a folder in as a subfolder of the same name, its pictures, captions and masks with it: with Trigger per folder, its name is its trigger word" @click="folderInput?.click()">Add folder</ZenButton>
       <ZenButton size="sm" variant="primary" icon="mdi mdi-play" @click="router.push({ path: '/runs/new', query: { dataset: name } })">Train on this</ZenButton>
       <input ref="fileInput" type="file" multiple accept="image/*,video/*,.txt" hidden @change="upload([...(($event.target as HTMLInputElement).files ?? [])])" />
+      <input ref="folderInput" type="file" webkitdirectory hidden @change="addFolder([...(($event.target as HTMLInputElement).files ?? [])].map((f) => [f, f.webkitRelativePath])); ($event.target as HTMLInputElement).value = ''" />
     </div>
 
     <div v-if="error" class="card err mono">{{ error }}</div>
@@ -218,6 +322,10 @@ onUnmounted(() => {
         <i class="mdi mdi-filter-variant" />
         <ZenCombo v-model="filter" :items="filterItems" :sorted="false" :searchable="false" size="sm" />
       </div>
+      <div v-if="folders.length" class="tb-field" title="Show one folder's pictures: with Trigger per folder, each folder trains its own trigger word, its name">
+        <i class="mdi mdi-folder-outline" />
+        <ZenCombo v-model="folderPick" :items="folderItems" :sorted="false" :searchable="false" size="sm" />
+      </div>
       <div class="search"><ZenInput v-model="query" placeholder="Search captions or names" size="sm" /></div>
       <button class="icon-btn" :class="{ on: panelShown }" :title="panelShown ? 'Hide the side panel' : 'Show the side panel: health, faces, auto-caption, bulk edit, display'" @click="toggleSide">
         <i class="mdi mdi-dock-right" />
@@ -236,7 +344,7 @@ onUnmounted(() => {
     <div v-if="notice" class="notice">{{ notice }}</div>
 
     <ZenEmpty v-if="!loading && !items.length" title="Empty dataset" icon="mdi mdi-image-plus-outline">
-      Drop images, videos, same-name .txt captions and masks (<span class="mono">name-masklabel.png</span>) anywhere on this page.
+      Drop images, videos, same-name .txt captions and masks (<span class="mono">name-masklabel.png</span>) anywhere on this page, or whole folders: each comes in as a folder of its own.
     </ZenEmpty>
 
     <DatasetGrid v-else-if="layout === 'grid'" />

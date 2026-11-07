@@ -12,7 +12,7 @@ import aiohttp
 from aiohttp import web
 
 from ...datasets import folders as datasets
-from .common import UPLOAD_MAX, _bad, _ds, _loopback, read_upload
+from .common import UPLOAD_MAX, _bad, _ds, _loopback, dataset_in_use, read_upload
 
 
 def register(server) -> None:
@@ -30,6 +30,22 @@ def register(server) -> None:
     @routes.get("/zentrainer/api/datasets/{name}")
     async def get_dataset(request):
         return await _ds(lambda: datasets.items(request.match_info["name"]))
+
+    @routes.delete("/zentrainer/api/datasets/{name}")
+    async def delete_dataset(request):
+        """The dataset and everything in it; refused while a run or caption job has it."""
+        name = request.match_info["name"]
+        if busy := await asyncio.to_thread(dataset_in_use, name):
+            return _bad(f"{name} can't be deleted now: {busy}", 409)
+        return await _ds(lambda: {"pictures": datasets.delete_dataset(name)})
+
+    @routes.delete("/zentrainer/api/datasets/{name}/folder")
+    async def delete_dataset_folder(request):
+        """One of its subfolders (?path=) and everything in it; refused while a run or caption job has it."""
+        name, sub = request.match_info["name"], request.query.get("path", "")
+        if busy := await asyncio.to_thread(dataset_in_use, name):
+            return _bad(f"{sub} can't be deleted now: {busy}", 409)
+        return await _ds(lambda: {"pictures": datasets.delete_folder(name, sub)})
 
     @routes.get("/zentrainer/api/datasets/{name}/thumb")
     async def thumb(request):
@@ -450,7 +466,8 @@ def register(server) -> None:
 
     @routes.post("/zentrainer/api/datasets/{name}/upload")
     async def upload(request):
-        name = request.match_info["name"]
+        """Files into the dataset, or with ?folder= into that subfolder of it (an added folder)."""
+        name, into = request.match_info["name"], request.query.get("folder", "")
         saved, errors = [], []
         reader = await request.multipart()
         async for part in reader:
@@ -460,7 +477,9 @@ def register(server) -> None:
                     errors.append(_too_big(part.filename))
                     continue
                 try:
-                    saved.append(await asyncio.to_thread(datasets.save_upload, name, part.filename, bytes(data)))
+                    saved.append(await asyncio.to_thread(datasets.save_upload, name, part.filename, bytes(data), into))
                 except (datasets.DatasetError, FileNotFoundError) as e:
                     errors.append(str(e))
+                except OSError as e:  # the disk said no (full, say): that file, not the rest of the batch
+                    errors.append(f"{part.filename}: {e.strerror or e}")
         return web.json_response({"saved": saved, "errors": errors})

@@ -10,7 +10,9 @@ import { useRunFormContext } from './form'
 
 const router = useRouter()
 const saveOpen = ref(false) // where you'd think of it: as you start a run
-const { spec, modelMissing, dataset, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
+const { spec, modelMissing, dataset, folderWords, pruneFolderTriggers, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
+// Trigger per folder on a dataset with folders: each folder's word
+const perFolder = computed(() => (spec.dataset.folder_triggers ? folderWords.value.map((f) => f.word) : []))
 const submitting = ref(false)
 
 /** a run with no sample prompts gets plain ones as it starts, when they'd show anything: not a
@@ -22,16 +24,22 @@ const warnings = computed(() => {
   const slider = !!spec.slider?.kind
   if (spec.slider?.kind === 'text' && !(spec.slider.positive.trim() && spec.slider.negative.trim())) w.push('A slider needs both ends: Positive and Negative.')
   if (spec.slider?.kind === 'pairs' && !spec.slider.pair_set) w.push("An image slider needs its pairs: pick the other end's picture set.")
-  if (!slider && !spec.dataset.trigger) w.push('No trigger word: the likeness has nothing specific to attach to.')
-  if (!slider && !spec.dataset.trigger && spec.objective.preserve?.trim()) w.push('Preserve classes swaps the trigger for a class word: it needs a trigger word to swap.')
+  if (!slider && !spec.dataset.trigger && !perFolder.value.length) w.push('No trigger word: the likeness has nothing specific to attach to.')
+  if (!slider && !spec.dataset.trigger && !perFolder.value.length && spec.objective.preserve?.trim()) w.push('Preserve classes swaps the trigger for a class word: it needs a trigger word to swap.')
+  if (!slider && perFolder.value.length && spec.samples.prompts.length && !spec.samples.prompts.map(promptText).some((p) => perFolder.value.some((word) => p.includes(word))))
+    w.push("Sample prompts don't name any folder's trigger word: the samples won't show what each folder learned.")
   const masked = dataset.value?.masked ?? 0
   if (masked && !spec.dataset.masked_loss)
     w.push(`${masked} picture${masked === 1 ? ' has a mask' : 's have masks'}, but Masked training is off: the parts the masks leave out train too.`)
-  if (!spec.samples.prompts.length && getsDefaults()) w.push('No sample prompts: two plain ones with the trigger will be used, so the run has previews.')
+  if (!spec.samples.prompts.length && getsDefaults())
+    w.push(perFolder.value.length
+      ? `No sample prompts: a portrait of ${perFolder.value.length > 4 ? 'the first four folders' : 'each folder'}, by its trigger word, will be used, so the run has previews.`
+      : 'No sample prompts: two plain ones with the trigger will be used, so the run has previews.')
   else if (!spec.samples.prompts.length) w.push('No sample prompts: you will only see the loss curves.')
   else if (!spec.samples.every) w.push('Samples are off (Every 0): only Sample now renders them, so checkpoints get no samples or likeness. Set Every to the save interval.')
   else if (spec.output.save_every && spec.output.save_every % spec.samples.every && !spec.output.keep.startsWith('likeness')) w.push(`Samples every ${spec.samples.every} don't land on the saves every ${spec.output.save_every}: checkpoints get no samples or likeness to compare.`)
-  else if (!slider && spec.dataset.trigger && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
+  // with a word per folder, the one trigger only trains pictures loose in the dataset folder (a '' folder)
+  else if (!slider && spec.dataset.trigger && !(perFolder.value.length && !dataset.value?.folders?.some((f) => !f.name)) && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
     w.push("Sample prompts don't use [trigger].")
   if (Array.isArray(spec.network.targets) && !spec.network.targets.length) w.push('Layers is Custom with no patterns: no layer would get an adapter.')
   const keep = spec.output.save_every ? spec.output.keep.replace('_new_best', '') : 'all'
@@ -65,6 +73,7 @@ async function saveEdit() {
   submitting.value = true
   error.value = null
   try {
+    pruneFolderTriggers()
     await engine.editRun(editing.value, spec)
     if (resuming.value) await engine.resume(editing.value)
     router.push(retrying.value || resuming.value ? `/runs/${editing.value}` : '/jobs')
@@ -79,13 +88,18 @@ async function saveEdit() {
  *  the trigger. Nothing from the dataset: its captions would go into every LoRA's metadata with the spec */
 const DEFAULT_PROMPTS = ['[trigger], a close up portrait photo, soft window light', '[trigger] outdoors on a sunny day, candid photo']
 function defaultPrompts() {
-  if (!spec.samples.prompts.length && getsDefaults()) spec.samples.prompts = [...DEFAULT_PROMPTS]
+  if (spec.samples.prompts.length || !getsDefaults()) return
+  // a word per folder: a portrait of each of the first four, so every class shows how it's coming along
+  spec.samples.prompts = perFolder.value.length
+    ? perFolder.value.slice(0, 4).map((word) => DEFAULT_PROMPTS[0]!.replace('[trigger]', word))
+    : [...DEFAULT_PROMPTS]
 }
 
 async function start(position: 'next' | 'end' = 'next') {
   submitting.value = true
   error.value = null
   try {
+    pruneFolderTriggers()
     defaultPrompts()
     const run = await engine.start(spec, position)
     router.push(`/runs/${run.run_id}`)
@@ -107,6 +121,7 @@ async function start(position: 'next' | 'end' = 'next') {
   <dt>Captions</dt><dd>{{ spec.dataset.caption_mix.length ? spec.dataset.caption_mix.join(' + ') : spec.dataset.caption_set }}</dd>
   <template v-if="spec.slider?.kind === 'text'"><dt>Slider</dt><dd class="ellipsis" :title="`${spec.slider.negative} ⟷ ${spec.slider.positive}`">{{ spec.slider.negative || '…' }} ⟷ {{ spec.slider.positive || '…' }}</dd></template>
   <template v-else-if="spec.slider?.kind === 'pairs'"><dt>Slider</dt><dd>image pairs<span v-if="spec.slider.pair_set" class="muted"> · {{ spec.slider.pair_set }}</span></dd></template>
+  <template v-else-if="perFolder.length"><dt>Triggers</dt><dd class="ellipsis" :title="perFolder.join(', ')">{{ perFolder.length }} per folder · {{ perFolder.join(', ') }}</dd></template>
   <template v-else><dt>Trigger</dt><dd>{{ spec.dataset.trigger || '–' }}</dd></template>
   <dt>Steps</dt><dd class="mono">{{ spec.optim.steps }}<span v-if="epochs != null" class="muted"> · {{ epochs.toFixed(1) }} ep</span></dd>
   <dt>Optimizer</dt><dd>{{ opt?.label ?? spec.optim.optimizer }} <span class="mono muted">{{ spec.optim.learning_rate }}</span></dd>

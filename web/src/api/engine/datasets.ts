@@ -96,6 +96,8 @@ export interface DatasetInfo {
   captioned: number
   sets: string[]
   thumbs: { subfolder: string; filename: string; path?: string }[]
+  /** its subfolders ('' its own pictures), each with the trigger its name gives and its first picture; [] with none */
+  folders?: { name: string; trigger: string; images: number; path: string }[]
 }
 
 /** a curated captioning LoRA (engine captioner.TE_LORA_CATALOG) */
@@ -300,10 +302,17 @@ export const datasetsApi = {
     call<{ job: CaptionJob; restored?: number }>(`/caption/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
   deleteItem: (name: string, path: string) =>
     call<{ ok: true }>(`${dsPath(name)}/item?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
-  async upload(name: string, files: File[]): Promise<{ saved: string[]; errors: string[] }> {
+  /** the dataset and everything in it: how many pictures went */
+  deleteDataset: (name: string) => call<{ pictures: number }>(dsPath(name), { method: 'DELETE' }),
+  /** one of its subfolders and everything in it: how many pictures went */
+  deleteFolder: (name: string, path: string) =>
+    call<{ pictures: number }>(`${dsPath(name)}/folder?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  /** files into the dataset, or into its subfolder `into` (made if new) */
+  async upload(name: string, files: File[], into = ''): Promise<{ saved: string[]; errors: string[] }> {
     const form = new FormData()
     for (const f of files) form.append('file', f, f.name)
-    const res = await fetch(`/zentrainer/api${dsPath(name)}/upload`, { method: 'POST', body: form })
+    const query = into ? `?folder=${encodeURIComponent(into)}` : ''
+    const res = await fetch(`/zentrainer/api${dsPath(name)}/upload${query}`, { method: 'POST', body: form })
     if (!res.ok) throw new EngineError(res.statusText, res.status, null)
     return res.json()
   },

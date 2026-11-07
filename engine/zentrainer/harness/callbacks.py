@@ -922,14 +922,17 @@ def _preview_url(previewer, x0) -> str | None:
         return None
 
 
-def write_metadata(spec_dict: dict, step: int) -> dict[str, str]:
+def write_metadata(spec_dict: dict, step: int, triggers: list[str] | None = None) -> dict[str, str]:
     """A LoRA file's metadata: its run's settings, as the share export has them (sharing.export):
     without what only means something on this machine (the dataset folder, which can be a person's
     name, the folders LoRAs go in, a LoRA to continue from, edit samples' pictures). A shared LoRA
-    carries how it was trained, not where."""
+    carries how it was trained, not where. `triggers`: a run with a trigger per folder trains words
+    its settings don't spell out (folder names), so they're written out for whatever loads it."""
     from .. import sharing
 
     meta = {"zentrainer.spec": json.dumps(sharing.export(spec_dict)["spec"]), "zentrainer.step": str(step)}
+    if triggers:
+        meta["modelspec.trigger_phrase"] = ", ".join(triggers)
     net = spec_dict.get("network") or {}
     if net.get("base_lora"):  # trained on top of it: it belongs beside this LoRA wherever it's used
         meta["zentrainer.base_lora"] = net["base_lora"]

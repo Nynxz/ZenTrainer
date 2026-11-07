@@ -7,7 +7,7 @@ import { thumbUrl, type DatasetInfo, type TrainSpec } from '@/api/engine'
 import DatasetPicker from './DatasetPicker.vue'
 import { items, useRunFormContext } from './form'
 
-const { spec, choices, datasets, dataset, pairCount, stage0, resuming, controlCounts, chosenInputs, toggleInput, channelModel } = useRunFormContext()
+const { spec, choices, datasets, dataset, folderWords, pairCount, stage0, resuming, controlCounts, chosenInputs, toggleInput, channelModel } = useRunFormContext()
 
 const NK2E_TEMPLATE =
   'Make the following edit to the reference image, changing only what is requested and keeping everything else identical: {}'
@@ -42,9 +42,17 @@ const maskHint = computed(() => {
 })
 // the dataset's name as a trigger word, one click away: lower case, spaces and dashes as _
 const nameTrigger = computed(() => (spec.dataset.folder || '').toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, ''))
-const firstThumb = (d: DatasetInfo) => {
-  const t = d.thumbs[0]
-  return t ? thumbUrl(d.folder, [...t.subfolder.split('/').slice(1), t.filename].join('/'), 256) : ''
+// the dataset's cover: up to four pictures, from as many of its folders
+const cover = (d: DatasetInfo) =>
+  d.thumbs.slice(0, d.thumbs.length >= 4 ? 4 : 1).map((t) => thumbUrl(d.folder, t.path ?? [...t.subfolder.split('/').slice(1), t.filename].join('/'), 256))
+// pictures outside the subfolders, which keep the one trigger word
+const loose = computed(() => dataset.value?.folders?.find((f) => !f.name)?.images ?? 0)
+// a folder's own word, or none: then its name's
+function setWord(name: string, value: string) {
+  const words = { ...(spec.dataset.folder_trigger_words ?? {}) }
+  if (value.trim()) words[name] = value.trim()
+  else delete words[name]
+  spec.dataset.folder_trigger_words = words
 }
 const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   ['uniform', 'Spread'],
@@ -58,7 +66,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   <h2><span class="num">2</span> Dataset</h2>
   <ZenField label="Folder" stack>
     <button type="button" class="ds-field" :class="{ empty: !dataset }" @click="pickerOpen = true">
-      <span class="ds-thumb" :class="{ blank: !dataset }"><img v-if="dataset && firstThumb(dataset)" :src="firstThumb(dataset)" alt="" /><i v-else :class="dataset ? 'mdi mdi-image-multiple-outline' : 'mdi mdi-plus'" /></span>
+      <span class="ds-thumb" :class="{ blank: !dataset, mosaic: dataset && cover(dataset).length > 1 }"><template v-if="dataset && cover(dataset).length"><img v-for="src in cover(dataset)" :key="src" :src="src" alt="" /></template><i v-else :class="dataset ? 'mdi mdi-image-multiple-outline' : 'mdi mdi-plus'" /></span>
       <span class="ds-text">
         <b>{{ dataset?.folder ?? (spec.dataset.folder || 'Choose a dataset') }}</b>
         <span v-if="dataset" class="muted small">{{ dataset.images }} pictures · {{ dataset.captioned }} captioned</span>
@@ -68,6 +76,19 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
     </button>
   </ZenField>
   <DatasetPicker v-model:open="pickerOpen" :datasets="datasets" :current="spec.dataset.folder" @pick="spec.dataset.folder = $event" />
+  <ZenField v-if="folderWords.length" label="Trigger per folder" stack tip="Each folder trains under a trigger word of its own: its name, or the word typed beside it. A number in front of a name sets repeats and stays out of the word (3_vegeta trains vegeta)">
+    <div class="fold-block">
+    <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.folder_triggers" @update:model-value="spec.dataset.folder_triggers = $event" /><span class="sw-state">{{ spec.dataset.folder_triggers ? `On: each of the ${folderWords.length} folders trains as the word in its box, or as its folder's name when the box is empty` : 'Off: every picture uses the one trigger word' }}</span></div>
+    <div class="folds" :class="{ off: !spec.dataset.folder_triggers }">
+      <div v-for="f in folderWords" :key="f.name" class="fold">
+        <img :src="thumbUrl(spec.dataset.folder, f.path, 128)" alt="" loading="lazy" />
+        <span class="fold-text"><b :title="f.name">{{ f.name }}</b><span class="muted small">{{ f.images }} picture{{ f.images === 1 ? '' : 's' }}</span></span>
+        <ZenInput :model-value="spec.dataset.folder_trigger_words?.[f.name] ?? ''" :placeholder="f.trigger === f.name ? 'uses folder name' : `uses “${f.trigger}”`" :disabled="!spec.dataset.folder_triggers" size="sm" :title="`Its trigger word. Empty: “${f.trigger}”, the folder's name`" @update:model-value="setWord(f.name, String($event))" />
+      </div>
+    </div>
+    <span v-if="loose && spec.dataset.folder_triggers" class="muted small">{{ loose }} picture{{ loose === 1 ? '' : 's' }} outside the folders use the trigger word below</span>
+    </div>
+  </ZenField>
   <div class="grid-2">
     <ZenField label="Captions" stack :hint="spec.dataset.caption_mix.length > 1 ? 'Each step picks one of these sets at random' : 'Which caption set to train on; click more to mix them'">
       <div class="chips">
@@ -97,7 +118,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
         <i class="mdi mdi-tag-outline" /> <span class="ellipsis">Use “{{ nameTrigger }}”</span>
       </button>
     </div>
-    <ZenField label="Add if missing" stack tip="Puts the trigger word at the start of any caption that doesn't have it, so every picture teaches it. Only while training: your caption files stay as they are"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
+    <ZenField label="Add if missing" stack tip="Puts the trigger word at the start of any caption that doesn't have it, so every picture teaches it. Only while training: your caption files stay as they are"><div class="sw-row"><ZenSwitch v-model="spec.dataset.trigger_prepend" :disabled="!spec.dataset.trigger && !spec.dataset.folder_triggers" /><span class="sw-state">{{ spec.dataset.trigger_prepend ? 'On' : 'Off' }}</span></div></ZenField>
     <ZenField label="Resolution" stack tip="Most models are made for about 1024. Lower has fewer pixels a step (256: a sixteenth), which on big models trains much faster and suits quick tests and coarse styles; on small models the saving is smaller. A LoRA trained low looks soft at full size">
       <div class="chips">
         <button v-for="r in [256, 512, 768, 1024, 1280]" :key="r" class="chip-btn" :class="{ on: spec.dataset.resolution === r }" @click="spec.dataset.resolution = r">
@@ -324,6 +345,63 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+/* four pictures, from as many folders: big enough to tell them apart */
+.ds-thumb.mosaic {
+  width: 64px;
+  height: 64px;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+}
+.fold-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.folds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+}
+.folds.off {
+  opacity: 0.6;
+}
+.fold {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md);
+  background: var(--zen-surface);
+}
+.fold img {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: var(--r-md);
+  object-fit: cover;
+}
+.fold-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 80px;
+  flex: none;
+}
+.fold-text b {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fold > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+.fold :deep(input) {
+  min-width: 0;
 }
 .ds-text {
   display: flex;

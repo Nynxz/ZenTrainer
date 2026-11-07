@@ -295,11 +295,29 @@ export function useRunForm() {
   )
 
   const dataset = computed(() => datasets.value.find((d) => d.folder === spec.dataset.folder))
+  // the dataset's subfolders, each with the word it trains under with Trigger per folder: its own
+  // (folder_trigger_words), else the one its name gives
+  const folderWords = computed(() =>
+    (dataset.value?.folders ?? []).filter((f) => f.name).map((f) => ({ ...f, word: spec.dataset.folder_trigger_words?.[f.name] || f.trigger })),
+  )
+  // Trigger per folder belongs to its dataset: keep only the words for folders this one has, and
+  // turn it off on one with no folders (its switch isn't shown there to turn off)
+  function pruneFolderTriggers() {
+    const d = dataset.value
+    if (!d || resuming.value) return // the list isn't in yet, or a resume keeps its settings
+    const names = new Set((d.folders ?? []).map((f) => f.name).filter(Boolean))
+    if (!names.size) spec.dataset.folder_triggers = false
+    const words = spec.dataset.folder_trigger_words ?? {}
+    if (Object.keys(words).some((k) => !names.has(k)))
+      spec.dataset.folder_trigger_words = Object.fromEntries(Object.entries(words).filter(([k]) => names.has(k)))
+  }
   // a mask says "only this part": picking a dataset that has some turns Masked training on
   watch(
     () => spec.dataset.folder,
     (folder, was) => {
-      if (was !== undefined && folder !== was) spec.dataset.masked_loss = (dataset.value?.masked ?? 0) > 0
+      if (was === undefined || folder === was) return
+      spec.dataset.masked_loss = (dataset.value?.masked ?? 0) > 0
+      pruneFolderTriggers()
     },
   )
   const opt = computed(() => optimizers.value.find((o) => o.id === spec.optim.optimizer))
@@ -356,7 +374,7 @@ export function useRunForm() {
     datasets, optimizers, trainAttention, runPresets, promptSets, pairCount, pairItems,
     controlCounts, chosenInputs, runInputs, toggleInput, channelModel,
     editing, retrying, resuming, resumeStep, error,
-    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, opt, epochs, modelLabel, noise, preserveOn,
+    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, folderWords, pruneFolderTriggers, opt, epochs, modelLabel, noise, preserveOn,
   }
 }
 

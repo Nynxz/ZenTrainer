@@ -59,6 +59,10 @@ export interface TrainSpec {
     caption_mix: string[]
     trigger: string
     trigger_prepend: boolean
+    /** each top-level subfolder trains under its own trigger: its name */
+    folder_triggers?: boolean
+    /** with folder_triggers: a word in place of a folder's name, by folder */
+    folder_trigger_words?: Record<string, string>
   }
   network: {
     algorithm: string
