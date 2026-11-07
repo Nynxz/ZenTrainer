@@ -5,6 +5,11 @@ and Manager show.
 
 ## Unreleased
 
+- **A load no longer runs out of VRAM with most of the card free.** On Windows ZenTrainer caps the
+  allocator at the card bar what other models and programs hold, so a step can't spill into slow
+  system RAM. That cap was measured while the run was still preparing, before it had freed the card
+  of the other models: what they released stayed above the cap, and the model's own load could stop
+  a few MB short with the card nearly empty. It is measured again just before each load.
 - **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
   first accent between Hacker's greens and Ghost Circuit's cyan.
 - The log says once that the text encoder and the VAE are loaded while a run prepares its dataset
