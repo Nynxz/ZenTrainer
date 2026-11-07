@@ -849,6 +849,7 @@ class Trainer:
         import comfy.model_management as mm
 
         patcher = self.models.patcher
+        ours = [lm for lm in mm.current_loaded_models if lm.model is patcher]
         if self.spec.memory.offloading:
             from .memory.offload import watch_pins
 
@@ -864,19 +865,27 @@ class Trainer:
             # everything else out, then as much of the model as fits beside training stays in
             # VRAM; only the rest streams. (Asking for "all the memory" here, as before, left a
             # weight budget of nothing: every layer crossed PCIe twice a step.)
-            ours = [lm for lm in mm.current_loaded_models if lm.model is patcher]
             mm.free_memory(1e30, self.device, keep_loaded=ours)
             # back from samples, the cache is in the sampler's fragments: weights loaded between
             # them left too little room for the step that fit before (Krea 2 int8: out of VRAM on
             # the first step after every sample pass, until the retries ran out)
             torch.cuda.empty_cache()
             logging.info("[ZenTrainer] keeping %.1f GB of VRAM free for training beside the model", self.headroom / 1024 ** 3)
+            if torch.cuda.is_available():
+                # measured after the others left: setup() measured the card as it found it, and what
+                # free_memory gave back is above that cap, so the load runs out a few MB short with
+                # the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free)
+                self._card()
             mm.load_models_gpu([patcher], memory_required=self.headroom, force_full_load=False)
             self._fit_weights()
             self._pin_offloaded()
             if not getattr(self, "_first_resident", None):
                 self._first_resident = patcher.loaded_size()  # the safe estimate's load, to return to
         else:
+            mm.free_memory(1e30, self.device, keep_loaded=ours)  # out first: the cap below is measured after
+            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                self._card()  # the same, on the card as this load finds it
             mm.load_models_gpu([patcher], memory_required=1e20, force_full_load=True)
         patcher.model.requires_grad_(False)
         patcher.model.train()

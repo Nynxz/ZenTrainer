@@ -1399,6 +1399,59 @@ def test_windows_caps_the_allocator_at_the_card(monkeypatch):
     assert capped[-1] == (1.0, t.device)  # a run's end, however it ends, lifts the cap to the card
 
 
+@pytest.mark.parametrize("offloading", [True, False])
+def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, offloading):
+    # setup() caps the allocator on the card as it finds it, before enter_training has freed it of
+    # the other models: what they give back sits above that cap, and the load then runs out a few
+    # MB short with the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free). The cap is
+    # measured again just before the load, after the free.
+    import sys
+
+    from zentrainer.harness import trainer as tr
+    from zentrainer.harness.memory import offload
+
+    gb = 1024 ** 3
+    order = []
+    card = {"free": 4 * gb}  # an 11 GB model is on the card when setup() measures
+
+    def free_memory(need, device, keep_loaded=None):
+        order.append("free")
+        card["free"] = 15 * gb  # what it unloaded left the card
+
+    mm = types.SimpleNamespace(current_loaded_models=[], free_memory=free_memory,
+                               load_models_gpu=lambda models, **kw: order.append("load"))
+    monkeypatch.setitem(sys.modules, "comfy", types.ModuleType("comfy"))
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+    monkeypatch.setattr(tr, "_comfy_compiler", lambda on: None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 0)
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction",
+                        lambda f, d=None: order.append(("cap", round(f, 4))))
+    monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (card["free"], 16 * gb))
+    monkeypatch.setattr(tr.os, "name", "nt")
+    monkeypatch.setattr(offload, "watch_pins", lambda on: None)
+    monkeypatch.setattr(offload, "own_ram", lambda model: (0, 0))
+    monkeypatch.setattr(offload, "overlap", lambda on: None)
+    monkeypatch.setattr(offload, "guard_backward", lambda on: None)
+
+    patcher = types.SimpleNamespace(
+        model=types.SimpleNamespace(requires_grad_=lambda v: None, train=lambda: None, diffusion_model=None),
+        pre_run=lambda: None, loaded_size=lambda: 0)
+    t = object.__new__(tr.Trainer)
+    t.device = torch.device("cuda", 0)
+    t.models = types.SimpleNamespace(patcher=patcher)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=offloading, vram_headroom=2.0))
+    t.network = types.SimpleNamespace(inject=lambda p: None)
+    t._fit_weights = lambda: None
+    t._pin_offloaded = lambda: None
+    t._recompile_if_moved = lambda why: None
+
+    t.enter_training()
+
+    assert order == ["free", ("cap", 0.9375), "load"]  # 16 GB less the 1 GB the desktop holds
+
+
 def test_preserve_needs_a_trigger():
     TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "trigger": "jane"}, "objective": {"preserve": "woman, man"}})
     with pytest.raises(SpecError, match="set dataset.trigger"):
