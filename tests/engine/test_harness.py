@@ -314,6 +314,196 @@ def test_targets_match_by_structure_across_families():
     assert matches("diffusion_model.blocks.7.attn.wq", [r"\.wq$"]) and not matches("x.attn.wk", [r"\.wq$"])
 
 
+def test_a_new_dataset_is_listed_while_empty(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from zentrainer.datasets import folders as datasets
+
+    monkeypatch.setattr(datasets, "root", lambda: tmp_path.resolve())
+    (tmp_path / "3d").mkdir()  # ComfyUI's own input folders: not datasets
+    (tmp_path / "old").mkdir()  # an empty dataset made before datasets were marked
+    datasets.create("chars")
+    listed = {s["folder"]: s for s in datasets.summary()}
+    assert set(listed) == {"chars"} and listed["chars"]["images"] == 0
+    with pytest.raises(datasets.DatasetError, match="already exists"):
+        datasets.create("chars")
+    datasets.create("old")  # its name was stuck: taken over, and listed from now on
+    assert {s["folder"] for s in datasets.summary()} == {"chars", "old"}
+    (tmp_path / "pics").mkdir()
+    Image.new("RGB", (8, 8)).save(tmp_path / "pics" / "a.png")
+    with pytest.raises(datasets.DatasetError, match="already exists"):  # a folder of pictures is one already
+        datasets.create("pics")
+    (tmp_path / "3d" / "model.obj").write_text("v 0 0 0")  # other files: never taken over
+    with pytest.raises(datasets.DatasetError, match="already exists"):
+        datasets.create("3d")
+    assert (tmp_path / "3d" / "model.obj").is_file() and "3d" not in {s["folder"] for s in datasets.summary()}
+
+
+def test_a_dataset_or_one_of_its_folders_is_deleted_with_everything_in_it(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    import os
+    import stat
+    import subprocess
+    import sys
+
+    from PIL import Image
+
+    from zentrainer.datasets import folders as datasets
+
+    monkeypatch.setattr(datasets, "root", lambda: tmp_path.resolve())
+    # ZenTrainer's own settings and health history, here: never a real install's, whatever is importable
+    user = tmp_path / "_user" / "zentrainer"
+    fp = types.ModuleType("folder_paths")
+    fp.get_user_directory = lambda: str(tmp_path / "_user")
+    monkeypatch.setitem(sys.modules, "folder_paths", fp)
+    for rel in ("chars/vegeta/a.png", "chars/vegeta/b.png", "chars/chichi/a.png", "other/kept/a.png", "ro/pics/a.png"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8)).save(tmp_path / rel)
+        (tmp_path / rel).with_suffix(".txt").write_text("a caption")
+    (tmp_path / "chars/vegeta/_masks").mkdir()
+    Image.new("L", (8, 8)).save(tmp_path / "chars/vegeta/_masks/a.png")
+
+    (tmp_path / "3d/models").mkdir(parents=True)  # an input folder the dataset list leaves out: not deleted
+    (tmp_path / "3d/models/model.obj").write_text("v 0 0 0")
+    with pytest.raises(FileNotFoundError):
+        datasets.delete_dataset("3d")
+    with pytest.raises(FileNotFoundError):
+        datasets.delete_folder("3d", "models")
+    assert (tmp_path / "3d/models/model.obj").is_file()
+
+    for bad in ("", "..", "chichi/..", "_masks", "nope", "C:", "\\", "/"):  # a drive or root would be the dataset
+        with pytest.raises(datasets.DatasetError):
+            datasets.delete_folder("chars", bad)
+    assert (tmp_path / "chars/vegeta/a.png").is_file()
+
+    # its mutes go with it, so pictures added there later start unmuted; another folder's stay
+    from zentrainer.harness.data import muted
+
+    datasets.set_muted("chars", "default", ["vegeta/a.png", "chichi/a.png"], True)
+    assert datasets.delete_folder("chars", "vegeta") == 2
+    assert not (tmp_path / "chars/vegeta").exists() and (tmp_path / "chars/chichi/a.txt").is_file()
+    assert muted(tmp_path / "chars") == {"default": {"chichi/a.png"}}
+
+    # a folder that's a link to another dataset's: the link goes, what it points at stays
+    link, target = tmp_path / "chars/linked", tmp_path / "other/kept"
+
+    def make_link(link, target):
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    make_link(link, target)
+    assert datasets.delete_folder("chars", "linked") == 1
+    assert not os.path.lexists(link) and (target / "a.png").is_file() and (target / "a.txt").is_file()
+
+    make_link(link, target)  # and a whole dataset holding one: the pictures it points at stay too
+    (user / "dataset_stats").mkdir(parents=True, exist_ok=True)
+    (user / "dataset_settings.json").write_text(json.dumps({"chars": {"faces": True}, "other": {"faces": True}}))
+    history = user / "dataset_stats" / f"{hashlib.sha1(b'chars').hexdigest()[:16]}.jsonl"
+    history.write_text("{}\n")
+    # the count is what training reads: Windows walks into a junction, elsewhere a symlinked folder isn't walked
+    assert datasets.delete_dataset("chars") == (2 if os.name == "nt" else 1)
+    assert not (tmp_path / "chars").exists() and (target / "a.png").is_file() and (target / "a.txt").is_file()
+    assert json.loads((user / "dataset_settings.json").read_text()) == {"other": {"faces": True}} and not history.exists()
+
+    # a read-only file goes too (Windows won't delete one as it is); the dataset stays listed, and
+    # deletable, once its last folder goes
+    os.chmod(tmp_path / "ro/pics/a.png", stat.S_IREAD)
+    assert datasets.delete_folder("ro", "pics") == 1
+    assert not (tmp_path / "ro/pics").exists() and "ro" in {s["folder"] for s in datasets.summary()}
+    assert datasets.delete_dataset("ro") == 0 and not (tmp_path / "ro").exists()
+    if os.name == "nt":  # Windows drops a trailing dot: "other." would name other's folder
+        with pytest.raises(datasets.DatasetError):
+            datasets.delete_dataset("other.")
+
+    # a dataset that's itself a link to another: only the link goes
+    alias = tmp_path / "alias"
+    make_link(alias, tmp_path / "other")
+    assert datasets.delete_dataset("alias") == 1
+    assert not os.path.lexists(alias) and (target / "a.png").is_file() and (target / "a.txt").is_file()
+
+
+def test_a_dataset_a_run_or_caption_job_has_is_not_deleted(tmp_path, monkeypatch):
+    import os
+    import subprocess
+
+    from zentrainer import state
+    from zentrainer.datasets import captioner
+    from zentrainer.datasets import folders as datasets
+    from zentrainer.server.routes.common import dataset_in_use
+
+    monkeypatch.setattr(datasets, "root", lambda: tmp_path.resolve())
+    for name in ("chars", "old", "x", "held-out", "captioning", "free", "goku"):
+        (tmp_path / name).mkdir()
+    alias = tmp_path / "goku-all"  # a link to goku: a run on it has goku's pictures in hand
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(tmp_path / "goku")], check=True, capture_output=True)
+    else:
+        alias.symlink_to(tmp_path / "goku", target_is_directory=True)
+    runs = {"r1": ({"run_id": "r1", "name": "chars-lora", "status": "training"}, {"dataset": {"folder": "chars"}}),
+            "r2": ({"run_id": "r2", "name": "old", "status": "done"}, {"dataset": {"folder": "old"}}),
+            "r3": ({"run_id": "r3", "name": "held", "status": "queued"},
+                   {"dataset": {"folder": "x"}, "validation": {"dataset": "held-out"}}),
+            "r4": ({"run_id": "r4", "name": "goku-lora", "status": "training"}, {"dataset": {"folder": "goku-all"}})}
+    store = types.SimpleNamespace(list=lambda: [m for m, _ in runs.values()], spec=lambda rid: runs[rid][1])
+    monkeypatch.setattr(state, "store", lambda: store)
+    monkeypatch.setattr(captioner, "active", lambda: [{"dataset": "captioning"}])
+    assert "chars-lora is training" in dataset_in_use("chars")
+    assert "held is queued" in dataset_in_use("held-out")  # its validation pictures
+    assert "caption job" in dataset_in_use("captioning")
+    assert "goku-lora is training" in dataset_in_use("goku")  # by the folder a name finds, not the name
+    assert dataset_in_use("old") is None and dataset_in_use("free") is None  # a finished run, nothing
+    if os.name == "nt":  # another spelling of the same folder
+        assert "chars-lora is training" in dataset_in_use("CHARS")
+
+
+def test_a_collection_lists_its_folders(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from zentrainer.datasets import folders as datasets
+
+    monkeypatch.setattr(datasets, "root", lambda: tmp_path.resolve())
+    # its folders, each with the trigger its name gives, and a cover from each in turn
+    for rel in ("chars/3_vegeta/a.png", "chars/3_vegeta/b.png", "chars/3_vegeta/c.png", "chars/chichi/a.png",
+                "chars/loose.png", "pics/a.png"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8)).save(tmp_path / rel)
+    listed = {s["folder"]: s for s in datasets.summary()}
+    assert [(f["name"], f["trigger"], f["images"]) for f in listed["chars"]["folders"]] == [
+        ("", "", 1), ("3_vegeta", "vegeta", 3), ("chichi", "chichi", 1)]
+    assert {Path(t["path"]).parts[0] for t in listed["chars"]["thumbs"][:3]} == {"loose.png", "3_vegeta", "chichi"}
+    assert listed["pics"]["folders"] == []  # no subfolders
+
+
+def test_an_added_folder_lands_as_a_subfolder(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from zentrainer.datasets import folders as datasets
+
+    monkeypatch.setattr(datasets, "root", lambda: tmp_path.resolve())
+    datasets.create("chars")
+    buf = __import__("io").BytesIO()
+    Image.new("RGB", (16, 8)).save(buf, "PNG")
+    png = buf.getvalue()
+    assert Path(datasets.save_upload("chars", "a.png", png, "vegeta")) == Path("vegeta/a.png")
+    assert Path(datasets.save_upload("chars", "a.txt", b"[trigger] mid-air", "vegeta")) == Path("vegeta/a.txt")
+    assert Path(datasets.save_upload("chars", "a-masklabel.png", png, "vegeta")) == Path("vegeta/_masks/a.png")
+    assert Path(datasets.save_upload("chars", "b.png", png, "vegeta/closeups")) == Path("vegeta/closeups/b.png")
+    # outside, a folder training skips, or a file already there
+    for bad in ("../evil", "_masks", ".hidden", "vegeta/_x", "vegeta/..", "vegeta/a.png", "vegeta/a.png/x"):
+        with pytest.raises(datasets.DatasetError):
+            datasets.save_upload("chars", "c.png", png, bad)
+    (tmp_path / "chars/blocked").mkdir()
+    (tmp_path / "chars/blocked/_masks").write_text("a file where the masks folder goes")
+    with pytest.raises(datasets.DatasetError, match="_masks"):
+        datasets.save_upload("chars", "a-masklabel.png", png, "blocked")
+    items = {Path(i["path"]): i for i in datasets.items("chars")["items"]}
+    assert items[Path("vegeta/a.png")]["caption"] == "[trigger] mid-air" and items[Path("vegeta/a.png")]["mask"]
+    assert Path("vegeta/closeups/b.png") in items
+
+
 def test_dataset_editing_stays_inside_the_folder(tmp_path, monkeypatch):
     from PIL import Image
 
@@ -594,6 +784,56 @@ def test_trigger_word_like_ai_toolkit():
     assert apply_trigger("a woman smiling", "ohwx", False) == "a woman smiling"
     assert apply_trigger("", "ohwx", True) == "ohwx"
     assert apply_trigger("[trigger], a cat", "", True) == "a cat"  # no trigger set: placeholder removed
+
+
+def test_folder_triggers_give_each_class_its_own_word(tmp_path):
+    from PIL import Image
+
+    for rel, caption in (("a.png", "[trigger] at home"), ("3_vegeta/b.png", "[trigger] mid-air"),
+                         ("3_vegeta/close/e.png", "[trigger] grinning"),
+                         ("chichi/c.png", "a woman with a bun"), ("chichi/closeups/d.png", "[trigger], close up")):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8)).save(tmp_path / rel)
+        (tmp_path / rel).with_suffix(".txt").write_text(caption)
+
+    def captions(**dataset):
+        spec = TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "trigger": "tus", **dataset}}).dataset
+        items, variants, classes = data._captions(spec, tmp_path, ("person",))
+        return {i.path.name: (i.trigger, v[0], c[0], i.repeats) for i, v, c in zip(items, variants, classes)}
+
+    got = captions(folder_triggers=True)
+    assert got["a.png"] == ("tus", "tus at home", "person at home", 1)  # the dataset folder itself: dataset.trigger
+    assert got["b.png"] == ("vegeta", "vegeta mid-air", "person mid-air", 3)  # "3_" repeats, and isn't the word
+    assert got["e.png"] == ("vegeta", "vegeta grinning", "person grinning", 3)  # its subfolders repeat with it
+    assert got["c.png"][:2] == ("chichi", "chichi, a woman with a bun")  # prepended like any trigger
+    assert got["d.png"][:2] == ("chichi", "chichi, close up")  # nested folders belong to their top-level class
+    named = captions(folder_triggers=True, folder_trigger_words={"chichi": "tuschichi"})  # a word of its own
+    assert named["c.png"][:2] == ("tuschichi", "tuschichi, a woman with a bun") and named["b.png"][0] == "vegeta"
+    with pytest.raises(SpecError, match="folder_trigger_words"):
+        captions(folder_triggers=True, folder_trigger_words={"chichi": " "})
+    off = captions()  # off: one word for every picture, as before
+    assert {c[1] for c in off.values()} == {"tus at home", "tus mid-air", "tus grinning", "tus, a woman with a bun",
+                                            "tus, close up"}
+    with pytest.raises(ValueError, match="preserve"):  # a.png, in the dataset folder itself, has no trigger to swap
+        data._captions(TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "folder_triggers": True}}).dataset,
+                       tmp_path, ("person",))
+
+    items, _, _ = data._captions(TrainSpec.from_dict(
+        {**_spec(), "dataset": {"folder": "x", "folder_triggers": True}}).dataset, tmp_path)
+    ds = data._expand_repeats(data.Dataset([data.Sample(torch.zeros(4, 8, 8), 0)] * len(items), [None], [""], 0,
+                                           owners=list(range(len(items)))), items)
+    assert sorted(ds.triggers) == sorted(i.trigger for i in items)  # what objective.preserve swaps, per sample
+    TrainSpec.from_dict({**_spec(), "dataset": {"folder": "x", "folder_triggers": True}, "objective": {"preserve": "person"}})
+
+    from zentrainer.harness.callbacks import write_metadata
+
+    # the LoRA names its words: they're folder names its settings don't carry
+    assert write_metadata({"network": {}}, 10, ["chichi", "vegeta"])["modelspec.trigger_phrase"] == "chichi, vegeta"
+    assert "modelspec.trigger_phrase" not in write_metadata({"network": {}}, 10)
+    # the words typed per folder are keyed by local folder names (a person's name, say): left at home
+    kept = __import__("json").loads(write_metadata(
+        {"network": {}, "dataset": {"folder": "x", "folder_trigger_words": {"Jane Smith": "jnsm"}}}, 10)["zentrainer.spec"])
+    assert "folder_trigger_words" not in kept["dataset"] and "folder" not in kept["dataset"]
 
 
 def test_optimizer_catalog_builds_what_is_available():

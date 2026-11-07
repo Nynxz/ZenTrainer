@@ -138,7 +138,7 @@ const link = (d: DatasetInfo) => `/datasets/${encodeURIComponent(d.folder)}`
 const thumb = (d: DatasetInfo, t: DatasetInfo['thumbs'][number], size = 256) =>
   thumbUrl(d.folder, t.path ?? t.subfolder.split('/').slice(1).concat(t.filename).join('/'), size)
 const pics = (d: DatasetInfo) => d.thumbs.slice(0, 4)
-const fmtBytes = (b?: number) => (b == null ? '' : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`)
+const fmtBytes = (b?: number) => (!b ? '' : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`)
 const ago = (t?: number) => {
   if (!t) return ''
   const s = Date.now() / 1000 - t

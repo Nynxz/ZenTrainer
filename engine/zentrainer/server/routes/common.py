@@ -199,6 +199,39 @@ async def _dequeue(server, run_id: str) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def dataset_in_use(name: str) -> str | None:
+    """What has a dataset in hand right now, a run queued or training on it or a caption job
+    writing it, said as why it can't be deleted; None when nothing does. Names count by the folder
+    they find: a link to it, another spelling of it or a folder in it is it."""
+    from ...datasets import captioner
+    from ...runs.disk import ACTIVE
+
+    def real(p) -> str:
+        return os.path.normcase(os.path.realpath(p))
+
+    try:
+        target = real(datasets.folder(name))
+    except (datasets.DatasetError, FileNotFoundError):
+        return None  # no such dataset: the delete says so itself
+
+    def uses(v) -> bool:
+        if not v:
+            return False
+        used = real(datasets.root() / str(v))
+        return v == name or used == target or used.startswith(target + os.sep)
+
+    store = state.store()
+    for meta in store.list():
+        if meta.get("status") not in ACTIVE:
+            continue
+        spec = store.spec(meta["run_id"])
+        if uses((spec.get("dataset") or {}).get("folder")) or uses((spec.get("validation") or {}).get("dataset")):
+            return f"{meta.get('name') or meta['run_id']} is {meta['status']} on it: delete it once that run is done or stopped"
+    if any(uses(job.get("dataset")) for job in captioner.active()):
+        return "a caption job is writing its captions: delete it once that job is done"
+    return None
+
+
 async def _ds(fn) -> web.Response:
     """Run a dataset operation off the event loop, mapping its errors to HTTP."""
     try:

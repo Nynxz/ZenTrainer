@@ -2,12 +2,17 @@
 // The dataset as a grid of uniform cards (zoomable): the picture with its badges (mask, video,
 // repeats, image and face issues, no caption), mute and select on hover, the caption below.
 import { ZenTip } from '@nynxz/zenkit-ui'
-import { onMounted, onUnmounted, ref } from 'vue'
-import { fileInfo, pct, secs, useDatasetContext } from './context'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { fileInfo, folderOf, pct, secs, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
 import { zoomOf } from '@/lib/zoom'
 
-const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, maskThumb, working, thumbSize, boxing, maskHighVis } = useDatasetContext()
+const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, maskThumb, working, thumbSize, boxing, maskHighVis, folder, folders, sortKey, deleteFolder } = useDatasetContext()
+
+// a subfolder's name above its pictures, while they're together: one folder shown, or name order
+const grouped = computed(() => folders.value.length > 0 && (folder.value !== null || sortKey.value === 'name'))
+const headAt = (i: number) => grouped.value && (i === 0 || folderOf(visible.value[i]!) !== folderOf(visible.value[i - 1]!))
+const countOf = (name: string) => folders.value.find((f) => f.name === name)?.count ?? 0
 
 // drag to select a box of cards (mouse and pen; touch scrolls), starting on a card or in the empty
 // space around them: the page's margins, gaps and below the last row. A plain drag starts a new
@@ -136,9 +141,13 @@ onUnmounted(() => {
     @click.capture="onClickCapture"
   >
     <div v-if="box" class="marquee" :style="{ left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` }" />
+    <template v-for="(it, i) in visible" :key="it.path">
+    <div v-if="headAt(i)" class="folder-head">
+      <i class="mdi mdi-folder-outline" /> <span>{{ folderOf(it) || 'Top level' }}</span>
+      <span class="folder-count">{{ countOf(folderOf(it)) }} picture{{ countOf(folderOf(it)) === 1 ? '' : 's' }}</span>
+      <button v-if="folderOf(it)" type="button" class="folder-del" :title="`Delete “${folderOf(it)}” and its pictures`" @click="deleteFolder(folderOf(it))"><i class="mdi mdi-delete-outline" /></button>
+    </div>
     <article
-      v-for="(it, i) in visible"
-      :key="it.path"
       :data-path="it.path"
       class="card-item"
       :class="{ sel: selected.has(it.path), muted: isMuted(it) }"
@@ -190,6 +199,7 @@ onUnmounted(() => {
         <span class="cap-text" :class="{ empty: !cap(it) }">{{ cap(it) || 'No caption' }}</span>
       </button>
     </article>
+    </template>
     <MoreRows v-if="visible.length < shown.length" @more="more" />
   </div>
 </template>
@@ -203,6 +213,36 @@ onUnmounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(var(--card), 1fr));
   gap: 12px;
   align-items: start;
+}
+/* a subfolder's name across the whole row, above its pictures */
+.folder-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 2px 2px;
+  border-bottom: 1px solid var(--zen-border);
+  color: var(--zen-text);
+  font-weight: 600;
+}
+.folder-count {
+  font-weight: 400;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+.folder-del {
+  margin-left: auto;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--zen-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.folder-del:hover {
+  color: var(--zen-danger);
+  background: color-mix(in srgb, var(--zen-danger) 12%, transparent);
 }
 .grid.boxing {
   user-select: none;
