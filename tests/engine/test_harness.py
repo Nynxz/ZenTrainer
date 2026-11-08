@@ -1402,10 +1402,12 @@ def test_windows_caps_the_allocator_at_the_card(monkeypatch):
 
 @pytest.mark.parametrize("offloading", [True, False])
 def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, offloading):
-    # setup() caps the allocator on the card as it finds it, before enter_training has freed it of
-    # the other models: what they give back sits above that cap, and the load then runs out a few
-    # MB short with the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free). The cap is
-    # measured again just before the load, after the free.
+    """The cap is measured again just before a load, after the other models are freed.
+
+    setup() caps the allocator on the card as it finds it, before enter_training has freed it of the
+    other models: what they give back sits above that cap, and the load then runs out a few MB short
+    with the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free). With the whole model loading,
+    ComfyUI's own leftovers go first, before the measurement; with offloading they stay."""
     import sys
 
     from zentrainer.harness import trainer as tr
