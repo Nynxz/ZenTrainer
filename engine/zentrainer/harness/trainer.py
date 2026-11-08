@@ -83,17 +83,22 @@ def _ours_outside_torch(device=None) -> int:
         import comfy_aimdo.model_vbar as vbar
 
         ours = max(ours, int(vbar.vbars_analyze(index)))
-    except Exception:  # noqa: BLE001 - a build without aimdo (or before init) just has none
+    except (ImportError, AttributeError, RuntimeError):  # no aimdo in this build, or not initialised yet
         pass
     try:
         import comfy_aimdo.control as aimdo
 
-        # aimdo's platform counter can include what torch allocated through its allocator hooks:
-        # those bytes are already in memory_reserved(), and counting them here would take them off
-        # the card's free VRAM twice, leaving a cap loose enough to spill into shared memory.
+        if aimdo.lib is None:
+            raise RuntimeError("comfy-aimdo is not initialised")
+        device_id = torch.cuda.current_device() if index is None else index
+        # this device only: control.get_total_vram_usage() sums every initialised device, so on a
+        # multi-GPU box another card's aimdo usage would count as ours and loosen this cap.
+        # Its counter can also include what torch allocated through aimdo's hooks, which
+        # memory_reserved() already reports: that would take those bytes off free VRAM twice.
         counted_twice = torch.cuda.memory_reserved(device)
-        ours = max(ours, int(aimdo.get_total_vram_usage()) - counted_twice)
-    except Exception:  # noqa: BLE001
+        staged = int(aimdo.lib.get_total_vram_usage(aimdo.get_devctx(device_id))) - counted_twice
+        ours = max(ours, staged)
+    except (ImportError, AttributeError, RuntimeError):
         pass
     return max(0, ours)
 
