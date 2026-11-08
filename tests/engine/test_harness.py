@@ -1419,7 +1419,9 @@ def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, of
         card["free"] = 15 * gb  # what it unloaded left the card
 
     mm = types.SimpleNamespace(current_loaded_models=[], free_memory=free_memory,
-                               load_models_gpu=lambda models, **kw: order.append("load"))
+                               load_models_gpu=lambda models, **kw: order.append("load"),
+                               unload_all_models=lambda: order.append("unload"),
+                               cleanup_models_gc=lambda: order.append("gc"))
     monkeypatch.setitem(sys.modules, "comfy", types.ModuleType("comfy"))
     monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
     monkeypatch.setattr(tr, "_comfy_compiler", lambda on: None)
@@ -1449,7 +1451,11 @@ def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, of
 
     t.enter_training()
 
-    assert order == ["free", ("cap", 0.9375), "load"]  # 16 GB less the 1 GB the desktop holds
+    # with the whole model loading, ComfyUI's own leftover models go first (their VRAM is not the
+    # desktop's, and counting it capped this process below the model's own size); with offloading the
+    # model in place is kept and only the others are freed
+    first = [] if offloading else ["unload", "gc"]
+    assert order == first + ["free", ("cap", 0.9375), "load"]  # 16 GB less the 1 GB the desktop holds
 
 
 def test_preserve_needs_a_trigger():
