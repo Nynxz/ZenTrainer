@@ -88,7 +88,11 @@ def _ours_outside_torch(device=None) -> int:
     try:
         import comfy_aimdo.control as aimdo
 
-        ours = max(ours, int(aimdo.get_total_vram_usage()))
+        # aimdo's platform counter can include what torch allocated through its allocator hooks:
+        # those bytes are already in memory_reserved(), and counting them here would take them off
+        # the card's free VRAM twice, leaving a cap loose enough to spill into shared memory.
+        counted_twice = torch.cuda.memory_reserved(device)
+        ours = max(ours, int(aimdo.get_total_vram_usage()) - counted_twice)
     except Exception:  # noqa: BLE001
         pass
     return max(0, ours)
@@ -1121,12 +1125,8 @@ class Trainer:
         if os.name == "nt" and self.device.type == "cuda":
             allowed = total - others
             gb = 1024 ** 3
-            model = 0
-            if getattr(self, "models", None) is not None:
-                try:
-                    model = self.models.patcher.model_size()
-                except Exception:  # noqa: BLE001 - the log line must never be what fails a run
-                    model = 0
+            size_of = getattr(getattr(self, "models", None) and self.models.patcher, "model_size", None)
+            model = int(size_of()) if callable(size_of) else 0
             if model and allowed < model + 256 * 1024 ** 2:
                 # The measurement says we may not even hold the weights. Either something else really
                 # owns the card, or what looks foreign is our own staging that this API can't report:
