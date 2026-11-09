@@ -5,6 +5,18 @@ and Manager show.
 
 ## Unreleased
 
+- **A load no longer runs out of VRAM with most of the card free.** On Windows ZenTrainer caps the
+  allocator at the card bar what other models and programs hold, so a step can't spill into slow
+  system RAM. That cap was measured while the run was still preparing, before it had freed the card
+  of the other models: what they released stayed above the cap, and the model's own load could stop
+  a few MB short with the card nearly empty. It is measured again just before each load.
+- **The cap no longer counts ZenTrainer's own staged weights as another program's.** ComfyUI stages
+  model weights outside torch's allocator (fast_disk, comfy-aimdo), so the card's used memory minus
+  torch's share still held gigabytes of this process's own text encoder; the cap came out below the
+  diffusion model itself (4.61 GB allowed for a 5.04 GB model) and its load died with ~4 GB free on
+  the card. The measurement now subtracts what the process holds outside torch, and if the allowance
+  still can't hold a model that loads whole the cap is skipped and logged rather than failing the load
+  for the wrong reason. The log line now names each part: free, ours in torch, ours staged, held elsewhere.
 - **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
   first accent between Hacker's greens and Ghost Circuit's cyan.
 - The log says once that the text encoder and the VAE are loaded while a run prepares its dataset

@@ -1,6 +1,7 @@
 """Pure tests: specs, run store, objective, schedules, data bucketing, control.
 No ComfyUI needed."""
 
+import logging
 import math
 import re
 import types
@@ -1379,6 +1380,8 @@ def test_windows_caps_the_allocator_at_the_card(monkeypatch):
     gb = 1024 ** 3
     t = object.__new__(tr.Trainer)
     t.device = torch.device("cuda", 0)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=False))
+    t.models = types.SimpleNamespace(patcher=types.SimpleNamespace(model_size=lambda: 8 * gb))
     capped = []
     monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (6 * gb, 24 * gb))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 16 * gb)
@@ -1397,6 +1400,123 @@ def test_windows_caps_the_allocator_at_the_card(monkeypatch):
     t.device = torch.device("cuda", 0)
     t._release()
     assert capped[-1] == (1.0, t.device)  # a run's end, however it ends, lifts the cap to the card
+
+
+@pytest.mark.parametrize("offloading", [True, False])
+def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, offloading):
+    """The cap is measured again just before a load, after the other models are freed.
+
+    setup() caps the allocator on the card as it finds it, before enter_training has freed it of the
+    other models: what they give back sits above that cap, and the load then runs out a few MB short
+    with the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free)."""
+    import sys
+
+    from zentrainer.harness import trainer as tr
+    from zentrainer.harness.memory import offload
+
+    gb = 1024 ** 3
+    order = []
+    card = {"free": 4 * gb}  # an 11 GB model is on the card when setup() measures
+
+    def free_memory(need, device, keep_loaded=None):
+        """What free_memory gives back: the other models' VRAM leaves the card."""
+        order.append("free")
+        card["free"] = 15 * gb  # what it unloaded left the card
+
+    mm = types.SimpleNamespace(current_loaded_models=[], free_memory=free_memory,
+                               load_models_gpu=lambda models, **kw: order.append("load"))
+    monkeypatch.setitem(sys.modules, "comfy", types.ModuleType("comfy"))
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+    monkeypatch.setattr(tr, "_comfy_compiler", lambda on: None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 0)
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction",
+                        lambda f, d=None: order.append(("cap", round(f, 4))))
+    monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (card["free"], 16 * gb))
+    monkeypatch.setattr(tr.os, "name", "nt")
+    monkeypatch.setattr(offload, "watch_pins", lambda on: None)
+    monkeypatch.setattr(offload, "own_ram", lambda model: (0, 0))
+    monkeypatch.setattr(offload, "overlap", lambda on: None)
+    monkeypatch.setattr(offload, "guard_backward", lambda on: None)
+
+    patcher = types.SimpleNamespace(
+        model=types.SimpleNamespace(requires_grad_=lambda v: None, train=lambda: None, diffusion_model=None),
+        pre_run=lambda: None, loaded_size=lambda: 0, model_size=lambda: 8 * gb)
+    t = object.__new__(tr.Trainer)
+    t.device = torch.device("cuda", 0)
+    t.models = types.SimpleNamespace(patcher=patcher)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=offloading, vram_headroom=2.0))
+    t.network = types.SimpleNamespace(inject=lambda p: None)
+    t._fit_weights = lambda: None
+    t._pin_offloaded = lambda: None
+    t._recompile_if_moved = lambda why: None
+
+    t.enter_training()
+
+    assert order == ["free", ("cap", 0.9375), "load"]  # 16 GB less the 1 GB the desktop holds
+
+
+def test_the_cap_leaves_our_own_staged_vram_out_of_others(monkeypatch):
+    """Weights this process staged outside torch's allocator are ours, not another program's.
+
+    With 5 GB staged (ComfyUI's fast_disk pool) and 1 GB in torch, the cap must cover those plus
+    what is free: charging all 12 GB of used VRAM to "others" is what capped a 5.04 GB model at
+    4.61 GB and failed its load on a card with 4 GB free (2026-11-08)."""
+    gb = 1024 ** 3
+    from zentrainer.harness import trainer as tr
+
+    caps = []
+    monkeypatch.setattr(tr.os, "name", "nt")
+    monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (4 * gb, 16 * gb))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 1 * gb)
+    monkeypatch.setattr(tr, "_ours_outside_torch", lambda device=None: 5 * gb)
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction",
+                        lambda f, d=None: caps.append(round(f, 4)))
+    t = object.__new__(tr.Trainer)
+    t.device = torch.device("cuda", 0)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=False))
+    t.models = types.SimpleNamespace(patcher=types.SimpleNamespace(model_size=lambda: 5 * gb))
+
+    total, others = t._card()
+
+    assert total == 16 * gb
+    assert others == 6 * gb  # 12 GB used, 6 of it ours (1 in torch + 5 staged)
+    assert caps == [0.625]  # this process may use the other 10 GB
+
+
+def test_the_cap_is_skipped_when_it_cannot_hold_the_model(monkeypatch, caplog):
+    """A measurement that would forbid the model's own weights is not trusted: the load runs
+    uncapped, and says so, instead of failing a few MB short for the wrong reason."""
+    gb = 1024 ** 3
+    from zentrainer.harness import trainer as tr
+
+    caps = []
+    monkeypatch.setattr(tr.os, "name", "nt")
+    monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (6 * gb, 16 * gb))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 0)
+    monkeypatch.setattr(tr, "_ours_outside_torch", lambda device=None: 0)
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction",
+                        lambda f, d=None: caps.append(round(f, 4)))
+    t = object.__new__(tr.Trainer)
+    t.device = torch.device("cuda", 0)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=False))
+    t.models = types.SimpleNamespace(patcher=types.SimpleNamespace(model_size=lambda: 12 * gb))
+
+    with caplog.at_level(logging.WARNING):
+        t._card()
+
+    assert caps == [1.0]  # the 6 GB allowed would not hold 12 GB of weights: no cap at all
+    assert "not capping this load" in caplog.text
+    caps.clear()
+    caplog.clear()
+    t.spec.memory.offloading = True  # offloaded, it isn't meant to fit: the cap stays, or a step would spill
+
+    with caplog.at_level(logging.WARNING):
+        t._card()
+
+    assert caps == [0.375]
+    assert "not capping this load" not in caplog.text
 
 
 def test_preserve_needs_a_trigger():

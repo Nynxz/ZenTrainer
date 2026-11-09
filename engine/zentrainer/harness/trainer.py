@@ -70,6 +70,39 @@ def _release_frames(e: BaseException) -> None:
         e = e.__cause__ or e.__context__
 
 
+def _ours_outside_torch(device=None) -> int:
+    """VRAM this process holds that torch's allocator does not count: ComfyUI stages model weights
+    ("Model storage policy: fast_disk", comfy-aimdo) into its own VBAR/buffer pool, outside
+    `torch.cuda.memory_reserved()`. A measurement that only subtracts torch's share reads our own
+    staged text encoder (9.3 GB here) as "the desktop and other programs", and caps the process below
+    what the model needs — the load then dies a few hundred MB short with the card nearly idle.
+    ComfyUI itself adds these back when it asks for free memory (`model_patcher.py`)."""
+    index = getattr(device, "index", None)
+    ours = 0
+    try:
+        import comfy_aimdo.model_vbar as vbar
+
+        ours = max(ours, int(vbar.vbars_analyze(index)))
+    except (ImportError, AttributeError, RuntimeError):  # no aimdo in this build, or not initialised yet
+        pass
+    try:
+        import comfy_aimdo.control as aimdo
+
+        if aimdo.lib is None:
+            raise RuntimeError("comfy-aimdo is not initialised")
+        device_id = torch.cuda.current_device() if index is None else index
+        # this device only: control.get_total_vram_usage() sums every initialised device, so on a
+        # multi-GPU box another card's aimdo usage would count as ours and loosen this cap.
+        # Its counter can also include what torch allocated through aimdo's hooks, which
+        # memory_reserved() already reports: that would take those bytes off free VRAM twice.
+        counted_twice = torch.cuda.memory_reserved(device)
+        staged = int(aimdo.lib.get_total_vram_usage(aimdo.get_devctx(device_id))) - counted_twice
+        ours = max(ours, staged)
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+    return max(0, ours)
+
+
 def _oom_advice(spec: TrainSpec, step: int) -> str:
     m, d, o = spec.memory, spec.dataset, spec.optim
     tips = []
@@ -849,6 +882,7 @@ class Trainer:
         import comfy.model_management as mm
 
         patcher = self.models.patcher
+        ours = [lm for lm in mm.current_loaded_models if lm.model is patcher]
         if self.spec.memory.offloading:
             from .memory.offload import watch_pins
 
@@ -864,19 +898,27 @@ class Trainer:
             # everything else out, then as much of the model as fits beside training stays in
             # VRAM; only the rest streams. (Asking for "all the memory" here, as before, left a
             # weight budget of nothing: every layer crossed PCIe twice a step.)
-            ours = [lm for lm in mm.current_loaded_models if lm.model is patcher]
             mm.free_memory(1e30, self.device, keep_loaded=ours)
             # back from samples, the cache is in the sampler's fragments: weights loaded between
             # them left too little room for the step that fit before (Krea 2 int8: out of VRAM on
             # the first step after every sample pass, until the retries ran out)
             torch.cuda.empty_cache()
             logging.info("[ZenTrainer] keeping %.1f GB of VRAM free for training beside the model", self.headroom / 1024 ** 3)
+            if torch.cuda.is_available():
+                # measured after the others left: setup() measured the card as it found it, and what
+                # free_memory gave back is above that cap, so the load runs out a few MB short with
+                # the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free)
+                self._card()
             mm.load_models_gpu([patcher], memory_required=self.headroom, force_full_load=False)
             self._fit_weights()
             self._pin_offloaded()
             if not getattr(self, "_first_resident", None):
                 self._first_resident = patcher.loaded_size()  # the safe estimate's load, to return to
         else:
+            mm.free_memory(1e30, self.device, keep_loaded=ours)  # out first: the cap below is measured after
+            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                self._card()  # the same, on the card as this load finds it
             mm.load_models_gpu([patcher], memory_required=1e20, force_full_load=True)
         patcher.model.requires_grad_(False)
         patcher.model.train()
@@ -1077,10 +1119,29 @@ class Trainer:
         (PyTorch keeps a cap once set). Linux drivers have no such fallback: a step there runs out
         by itself."""
         free, total = vram.mem_get_info()
-        others = max(0, total - free - torch.cuda.memory_reserved())
+        reserved = torch.cuda.memory_reserved()
+        our_own = _ours_outside_torch(self.device)  # staged weights: VRAM on the card, not in torch's allocator
+        others = max(0, total - free - reserved - our_own)
         if os.name == "nt" and self.device.type == "cuda":
-            torch.cuda.set_per_process_memory_fraction((total - others) / total, self.device)
+            allowed = total - others
+            gb = 1024 ** 3
+            model = self.models.patcher.model_size()
+            # with weights offloaded the model isn't meant to fit: the cap is what makes a step run out
+            if not self.spec.memory.offloading and allowed < model + 256 * 1024 ** 2:
+                # The measurement says we may not even hold the weights. Either something else really
+                # owns the card, or what looks foreign is our own staging that this API can't report:
+                # capping then fails the load for the wrong reason, so let the allocator decide and say
+                # so (an actual shortage still raises OutOfMemoryError, a few lines later).
+                allowed = total
+                logging.warning("[ZenTrainer] the VRAM measurement allows %.2f GB but the model alone is %.2f GB "
+                                "(%.2f free right now, %.2f ours in torch, %.2f ours elsewhere): not capping this "
+                                "load — if the card really is short it will run out of VRAM instead",
+                                (total - others) / gb, model / gb, free / gb, reserved / gb, our_own / gb)
+            torch.cuda.set_per_process_memory_fraction(allowed / total, self.device)
             self._capped = True
+            logging.info("[ZenTrainer] VRAM cap: %.2f GB of %.2f free right now, %.2f ours in torch, %.2f ours "
+                         "staged elsewhere, %.2f held by others -> this process may use %.2f GB",
+                         free / gb, total / gb, reserved / gb, our_own / gb, others / gb, allowed / gb)
         return total, others
 
     def _tighten(self) -> None:
