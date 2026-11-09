@@ -447,8 +447,10 @@ def snapshot(name: str, set_name: str = "default") -> dict:
 
 
 def forget(name: str) -> None:
-    """A deleted dataset's history and looks, so a new one of that name starts without them."""
-    for f in _store_dir().glob(f"{_key(name)}.*"):
+    """A deleted dataset's history, looks and face embeddings, so a new one of that name starts
+    without them and people's faces don't outlive their pictures."""
+    store = _store_dir()
+    for f in [*store.glob(f"{_key(name)}.*"), *(store.parent / "faces").glob(f"{_key(name)}.*")]:
         f.unlink(missing_ok=True)
 
 

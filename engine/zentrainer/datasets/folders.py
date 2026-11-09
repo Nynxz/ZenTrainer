@@ -42,7 +42,10 @@ def folder(name: str, must_exist: bool = True) -> Path:
 
 
 def _inside(d: Path, rel: str) -> Path:
-    p = (d / rel).resolve()
+    try:
+        p = (d / rel).resolve()
+    except ValueError:  # a NUL in the path
+        raise DatasetError(f"bad path {rel!r}") from None
     if d not in p.parents:
         raise DatasetError(f"path {rel!r} is outside the dataset")
     return p

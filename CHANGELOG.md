@@ -21,7 +21,7 @@ and Manager show.
 - **A dataset's folders show.** In name order each subfolder's pictures sit under its name and
   count, and a folder menu beside the filter shows one folder at a time.
 - **Delete a dataset, or one of its folders.** Delete dataset is in a dataset's Settings (type its
-  name to confirm), and each folder's header has a delete button. Their files go for good; the
+  name to confirm), and each folder's header has a delete button. Their files go for good, with a deleted dataset's face data; the
   folders they were added from stay. Neither is done while a run or a caption job is using the
   dataset.
 - **A new dataset shows up while it's still empty.** It used to stay out of the list until a

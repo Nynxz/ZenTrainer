@@ -162,11 +162,11 @@ async function upload(files: File[], folders: string[] = [], note = '') {
   if (failed) notice.value = null
   else {
     const into = [...groups.keys()].filter(Boolean)
-    flash(added + (into.length ? ` into ${into.join(', ')}` : '') + (r.errors.length ? `, ${r.errors.length} skipped` : ''))
+    flash(added + (into.length ? ` into ${into.join(', ')}` : '') + (r.errors.length ? `, ${r.errors.length} skipped` : '') + (note ? `. ${note}` : ''))
   }
   bust.value = Date.now()
   await load() // clears the error when it loads: this upload's own go in after
-  const report = [...(failed ? [`Adding the files failed${n ? ` after ${added}` : ''}: ${failed}`] : []), ...r.errors, ...(note ? [note] : [])]
+  const report = [...(failed ? [`Adding the files failed${n ? ` after ${added}` : ''}: ${failed}`] : []), ...r.errors, ...(failed && note ? [note] : [])]
   if (report.length) error.value = report.join('\n')
   uploading.value = false
 }

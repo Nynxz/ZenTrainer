@@ -404,10 +404,18 @@ def test_a_dataset_or_one_of_its_folders_is_deleted_with_everything_in_it(tmp_pa
     (user / "dataset_settings.json").write_text(json.dumps({"chars": {"faces": True}, "other": {"faces": True}}))
     history = user / "dataset_stats" / f"{hashlib.sha1(b'chars').hexdigest()[:16]}.jsonl"
     history.write_text("{}\n")
+    (user / "faces").mkdir()
+    key = hashlib.sha1(b"chars").hexdigest()[:16]
+    embeddings = [user / "faces" / f"{key}.json", user / "faces" / f"{key}.antelopev2.json"]
+    for f in embeddings:
+        f.write_text("{}")
+    other_faces = user / "faces" / f"{hashlib.sha1(b'other').hexdigest()[:16]}.json"
+    other_faces.write_text("{}")
     # the count is what training reads: Windows walks into a junction, elsewhere a symlinked folder isn't walked
     assert datasets.delete_dataset("chars") == (2 if os.name == "nt" else 1)
     assert not (tmp_path / "chars").exists() and (target / "a.png").is_file() and (target / "a.txt").is_file()
     assert json.loads((user / "dataset_settings.json").read_text()) == {"other": {"faces": True}} and not history.exists()
+    assert not any(f.exists() for f in embeddings) and other_faces.exists()  # the faces go with the pictures
 
     # a read-only file goes too (Windows won't delete one as it is); the dataset stays listed, and
     # deletable, once its last folder goes
@@ -493,7 +501,7 @@ def test_an_added_folder_lands_as_a_subfolder(tmp_path, monkeypatch):
     assert Path(datasets.save_upload("chars", "a-masklabel.png", png, "bob")) == Path("bob/_masks/a.png")
     assert Path(datasets.save_upload("chars", "b.png", png, "bob/closeups")) == Path("bob/closeups/b.png")
     # outside, a folder training skips, or a file already there
-    for bad in ("../evil", "_masks", ".hidden", "bob/_x", "bob/..", "bob/a.png", "bob/a.png/x"):
+    for bad in ("../evil", "_masks", ".hidden", "bob/_x", "bob/..", "bob/a.png", "bob/a.png/x", "nul\0byte"):
         with pytest.raises(datasets.DatasetError):
             datasets.save_upload("chars", "c.png", png, bad)
     (tmp_path / "chars/blocked").mkdir()
