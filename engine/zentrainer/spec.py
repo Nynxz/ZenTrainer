@@ -110,7 +110,7 @@ class DatasetSpec:
                                            '("3_ohwx" trains ohwx, three times over). Pictures in the dataset folder '
                                            "itself use `trigger`. Sample prompts name the triggers they want.")
     folder_trigger_words: dict[str, str] = setting(doc='With folder_triggers: a trigger word in place of a folder\'s name, by '
-                                                       'folder: {"18": "tus18"}. A folder not in it uses its name.',
+                                                       'folder: {"alice": "myalice"}. A folder not in it uses its name.',
                                                    factory=dict)
     masked_loss: bool = setting(False, "Masked training: pictures with a mask only learn where it's white.")
     unmasked_weight: float = setting(0.0, "Masked training: how much the rest of the picture still trains "
@@ -478,7 +478,7 @@ class TrainSpec:
             raise SpecError('network.targets has no patterns: add the layers to train (regexes), or use "attn", '
                             '"mlp", "attn_mlp" or "all"')
         if not all(isinstance(w, str) and w.strip() for w in self.dataset.folder_trigger_words.values()):
-            raise SpecError('dataset.folder_trigger_words gives each folder a word: {"18": "tus18"}, none of them empty')
+            raise SpecError('dataset.folder_trigger_words gives each folder a word: {"alice": "myalice"}, none of them empty')
         if self.objective.preserve.strip():
             if not any(w.strip() for w in self.objective.preserve.split(",")):
                 raise SpecError('objective.preserve is class words, comma-separated: e.g. "woman, man, person"')

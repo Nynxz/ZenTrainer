@@ -174,7 +174,7 @@ async function upload(files: File[], folders: string[] = [], note = '') {
 const TAKES = /\.(png|jpe?g|webp|bmp|mp4|webm|mov|mkv|avi|m4v|txt)$/i
 // a folder (picked, or dropped) comes in as a subfolder of the same name, its own subfolders kept:
 // each a class with Trigger per folder. `picked` is each file with its path from the folder's name
-// ("tus18/a.png"). Masks (_masks/<name>) go in as <name>-masklabel beside their pictures. Edit inputs
+// ("alice/a.png"). Masks (_masks/<name>) go in as <name>-masklabel beside their pictures. Edit inputs
 // (_controls/<set>/) are left out and counted: Edit inputs adds them. Anything else in a "." or "_"
 // folder is left out, as training skips it.
 function addFolder(picked: [File, string][]) {

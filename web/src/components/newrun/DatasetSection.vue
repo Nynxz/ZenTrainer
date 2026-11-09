@@ -76,7 +76,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
     </button>
   </ZenField>
   <DatasetPicker v-model:open="pickerOpen" :datasets="datasets" :current="spec.dataset.folder" @pick="spec.dataset.folder = $event" />
-  <ZenField v-if="folderWords.length" label="Trigger per folder" stack tip="Each folder trains under a trigger word of its own: its name, or the word typed beside it. A number in front of a name sets repeats and stays out of the word (3_vegeta trains vegeta)">
+  <ZenField v-if="folderWords.length" label="Trigger per folder" stack tip="Each folder trains under a trigger word of its own: its name, or the word typed beside it. A number in front of a name sets repeats and stays out of the word (3_alice trains alice)">
     <div class="fold-block">
     <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.folder_triggers" @update:model-value="spec.dataset.folder_triggers = $event" /><span class="sw-state">{{ spec.dataset.folder_triggers ? `On: each of the ${folderWords.length} folders trains as the word in its box, or as its folder's name when the box is empty` : 'Off: every picture uses the one trigger word' }}</span></div>
     <div class="folds" :class="{ off: !spec.dataset.folder_triggers }">
