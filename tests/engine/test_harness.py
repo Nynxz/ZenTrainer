@@ -1380,6 +1380,8 @@ def test_windows_caps_the_allocator_at_the_card(monkeypatch):
     gb = 1024 ** 3
     t = object.__new__(tr.Trainer)
     t.device = torch.device("cuda", 0)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=False))
+    t.models = types.SimpleNamespace(patcher=types.SimpleNamespace(model_size=lambda: 8 * gb))
     capped = []
     monkeypatch.setattr(tr.vram, "mem_get_info", lambda device=None: (6 * gb, 24 * gb))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: 16 * gb)
@@ -1406,8 +1408,7 @@ def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, of
 
     setup() caps the allocator on the card as it finds it, before enter_training has freed it of the
     other models: what they give back sits above that cap, and the load then runs out a few MB short
-    with the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free). With the whole model loading,
-    ComfyUI's own leftovers go first, before the measurement; with offloading they stay."""
+    with the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free)."""
     import sys
 
     from zentrainer.harness import trainer as tr
@@ -1423,9 +1424,7 @@ def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, of
         card["free"] = 15 * gb  # what it unloaded left the card
 
     mm = types.SimpleNamespace(current_loaded_models=[], free_memory=free_memory,
-                               load_models_gpu=lambda models, **kw: order.append("load"),
-                               unload_all_models=lambda: order.append("unload"),
-                               cleanup_models_gc=lambda: order.append("gc"))
+                               load_models_gpu=lambda models, **kw: order.append("load"))
     monkeypatch.setitem(sys.modules, "comfy", types.ModuleType("comfy"))
     monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
     monkeypatch.setattr(tr, "_comfy_compiler", lambda on: None)
@@ -1443,7 +1442,7 @@ def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, of
 
     patcher = types.SimpleNamespace(
         model=types.SimpleNamespace(requires_grad_=lambda v: None, train=lambda: None, diffusion_model=None),
-        pre_run=lambda: None, loaded_size=lambda: 0)
+        pre_run=lambda: None, loaded_size=lambda: 0, model_size=lambda: 8 * gb)
     t = object.__new__(tr.Trainer)
     t.device = torch.device("cuda", 0)
     t.models = types.SimpleNamespace(patcher=patcher)
@@ -1455,11 +1454,7 @@ def test_enter_training_measures_the_cap_after_it_frees_the_card(monkeypatch, of
 
     t.enter_training()
 
-    # with the whole model loading, ComfyUI's own leftover models go first (their VRAM is not the
-    # desktop's, and counting it capped this process below the model's own size); with offloading the
-    # model in place is kept and only the others are freed
-    first = [] if offloading else ["unload", "gc"]
-    assert order == first + ["free", ("cap", 0.9375), "load"]  # 16 GB less the 1 GB the desktop holds
+    assert order == ["free", ("cap", 0.9375), "load"]  # 16 GB less the 1 GB the desktop holds
 
 
 def test_the_cap_leaves_our_own_staged_vram_out_of_others(monkeypatch):
@@ -1480,6 +1475,7 @@ def test_the_cap_leaves_our_own_staged_vram_out_of_others(monkeypatch):
                         lambda f, d=None: caps.append(round(f, 4)))
     t = object.__new__(tr.Trainer)
     t.device = torch.device("cuda", 0)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=False))
     t.models = types.SimpleNamespace(patcher=types.SimpleNamespace(model_size=lambda: 5 * gb))
 
     total, others = t._card()
@@ -1504,6 +1500,7 @@ def test_the_cap_is_skipped_when_it_cannot_hold_the_model(monkeypatch, caplog):
                         lambda f, d=None: caps.append(round(f, 4)))
     t = object.__new__(tr.Trainer)
     t.device = torch.device("cuda", 0)
+    t.spec = types.SimpleNamespace(memory=types.SimpleNamespace(offloading=False))
     t.models = types.SimpleNamespace(patcher=types.SimpleNamespace(model_size=lambda: 12 * gb))
 
     with caplog.at_level(logging.WARNING):
@@ -1511,6 +1508,15 @@ def test_the_cap_is_skipped_when_it_cannot_hold_the_model(monkeypatch, caplog):
 
     assert caps == [1.0]  # the 6 GB allowed would not hold 12 GB of weights: no cap at all
     assert "not capping this load" in caplog.text
+    caps.clear()
+    caplog.clear()
+    t.spec.memory.offloading = True  # offloaded, it isn't meant to fit: the cap stays, or a step would spill
+
+    with caplog.at_level(logging.WARNING):
+        t._card()
+
+    assert caps == [0.375]
+    assert "not capping this load" not in caplog.text
 
 
 def test_preserve_needs_a_trigger():

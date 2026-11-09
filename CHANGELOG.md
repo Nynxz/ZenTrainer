@@ -15,8 +15,8 @@ and Manager show.
   torch's share still held gigabytes of this process's own text encoder; the cap came out below the
   diffusion model itself (4.61 GB allowed for a 5.04 GB model) and its load died with ~4 GB free on
   the card. The measurement now subtracts what the process holds outside torch, and if the allowance
-  still can't hold the model's weights the cap is skipped and logged rather than failing the load for
-  the wrong reason. The log line now names each part: free, ours in torch, ours staged, held elsewhere.
+  still can't hold a model that loads whole the cap is skipped and logged rather than failing the load
+  for the wrong reason. The log line now names each part: free, ours in torch, ours staged, held elsewhere.
 - **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
   first accent between Hacker's greens and Ghost Circuit's cyan.
 - The log says once that the text encoder and the VAE are loaded while a run prepares its dataset

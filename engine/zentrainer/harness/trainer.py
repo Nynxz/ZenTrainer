@@ -915,11 +915,6 @@ class Trainer:
             if not getattr(self, "_first_resident", None):
                 self._first_resident = patcher.loaded_size()  # the safe estimate's load, to return to
         else:
-            if not ours:
-                # a long ComfyUI session (generation, RelayVSR passes) can still hold models whose VRAM
-                # is not ours to count; drop everything before the cap below measures what's free.
-                mm.unload_all_models()
-                mm.cleanup_models_gc()
             mm.free_memory(1e30, self.device, keep_loaded=ours)  # out first: the cap below is measured after
             torch.cuda.empty_cache()
             if torch.cuda.is_available():
@@ -1130,9 +1125,9 @@ class Trainer:
         if os.name == "nt" and self.device.type == "cuda":
             allowed = total - others
             gb = 1024 ** 3
-            size_of = getattr(getattr(self, "models", None) and self.models.patcher, "model_size", None)
-            model = int(size_of()) if callable(size_of) else 0
-            if model and allowed < model + 256 * 1024 ** 2:
+            model = self.models.patcher.model_size()
+            # with weights offloaded the model isn't meant to fit: the cap is what makes a step run out
+            if not self.spec.memory.offloading and allowed < model + 256 * 1024 ** 2:
                 # The measurement says we may not even hold the weights. Either something else really
                 # owns the card, or what looks foreign is our own staging that this API can't report:
                 # capping then fails the load for the wrong reason, so let the allocator decide and say
