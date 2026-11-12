@@ -258,12 +258,13 @@ class MemorySpec:
     tread_steps: float = setting(1.0, "The share of clip steps that route; the rest run whole. A dataset of clips only, "
                                       "routed every step, lets the LoRA learn to make up for the routing "
                                       "(over-sharpened samples): below 1 keeps whole steps.", ge=0, le=1)
-    int8_forward: bool = setting(True, "int8 bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's int8 kernel "
-                                       "forward instead of a dequantized bf16 matmul. Off is slower: for comparing "
-                                       "quality.")
+    int8_forward: bool = setting(True, "int8 and packed (w4a8/w6a8) bases (MiniMax H3, Krea 2 int8): trained layers "
+                                       "run ComfyUI's quantized kernel forward instead of a dequantized bf16 matmul. "
+                                       "Off is slower: for comparing quality.")
     int8_backward: str = setting("w8a8", 'int8 bases: how the backward gets each frozen layer\'s input gradient. "w8a8": '
                                          "quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), "
-                                         'for some gradient precision. "fused": a fused Triton kernel at full '
+                                         'for some gradient precision; int8_tensorwise weights only, the packed 4/6-bit '
+                                         'ones (w4a8, w6a8) dequantize. "fused": a fused Triton kernel at full '
                                          'precision, without rebuilding the layer\'s bf16 weight. "bf16": the weight '
                                          "rebuilt in bf16 (ComfyUI's way; the slowest).",
                                  choices=("w8a8", "fused", "bf16"))

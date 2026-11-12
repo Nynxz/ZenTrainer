@@ -760,12 +760,12 @@
         },
         "int8_forward": {
           "type": "boolean",
-          "description": "int8 bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's int8 kernel forward instead of a dequantized bf16 matmul. Off is slower: for comparing quality.",
+          "description": "int8 and packed (w4a8/w6a8) bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's quantized kernel forward instead of a dequantized bf16 matmul. Off is slower: for comparing quality.",
           "default": true
         },
         "int8_backward": {
           "type": "string",
-          "description": "int8 bases: how the backward gets each frozen layer's input gradient. \"w8a8\": quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), for some gradient precision. \"fused\": a fused Triton kernel at full precision, without rebuilding the layer's bf16 weight. \"bf16\": the weight rebuilt in bf16 (ComfyUI's way; the slowest).",
+          "description": "int8 bases: how the backward gets each frozen layer's input gradient. \"w8a8\": quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), for some gradient precision; int8_tensorwise weights only, the packed 4/6-bit ones (w4a8, w6a8) dequantize. \"fused\": a fused Triton kernel at full precision, without rebuilding the layer's bf16 weight. \"bf16\": the weight rebuilt in bf16 (ComfyUI's way; the slowest).",
           "default": "w8a8",
           "enum": [
             "w8a8",

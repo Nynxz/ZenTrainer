@@ -491,9 +491,9 @@ class Trainer:
         if s.memory.int8_forward:
             n8 = int8_backward.install(patcher.model)
             if n8:
-                logging.info("[ZenTrainer] int8 training path on %d layers", n8)
+                logging.info("[ZenTrainer] quantized training path on %d layers", n8)
         elif n8 := int8_backward.weight_only(patcher.model):
-            logging.info("[ZenTrainer] int8 weights dequantized to bf16 for every matmul on %d layers", n8)
+            logging.info("[ZenTrainer] quantized weights dequantized to bf16 for every matmul on %d layers", n8)
         self.device = patcher.load_device
         if torch.cuda.is_available():
             self._card()  # Windows: the allocator's cap, before anything loads or encodes
