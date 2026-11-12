@@ -3,6 +3,7 @@
     "Corrections to the model catalog, which is otherwise built from ComfyUI's workflow templates and the makers' Hugging Face repos (engine/zentrainer/models/families.py). Read by the engine when it builds the catalog, and by the web app when it's built.",
     "families: the first entry whose `match` (a regex on the family id) fits applies. maker: who makes it. logo: a file in web/public/logos/ (64 px, transparent). mono: a black-on-transparent logo, shown white on dark themes. name: rename the family. hide: leave it out of the catalog. source: where the logo came from. other: listed under \"Other models\" in the picker instead of the main list (models few people train).",
     "text_encoder_skip: text encoder files (regexes) that load through CLIPLoader but aren't the model's text encoder (prompt upsamplers, enhancers, rewriters).",
+    "template_skip: templates (regexes on the template name) left out of the catalog: models ZenTrainer doesn't train that load another family's diffusion model, and would otherwise add their own text encoder and VAE to that family.",
     "tested: the family ids that have trained end to end here (a recipe, a real-ComfyUI smoke test in tests/comfy, or a run checked by hand). The pickers list these as models; every other family, a new one the catalog finds included, is under \"Other models\", marked untested, until someone trains it and adds its id."
   ],
   "tested": ["moss-image", "krea-2", "fibo-2-0", "flux-3-image", "minimax-h3", "qwen-image-2-1", "z-image", "anima", "flux-2-klein-9b", "sdxl"],
@@ -11,6 +12,9 @@
     "prompt_?enhanc",
     "rewriter",
     "[_-]pe[_.-]"
+  ],
+  "template_skip": [
+    "^image_p_h3_"
   ],
   "families": [
     {"match": "^ming", "hide": true, "note": "Ming 3.0 TTS: a text-to-speech model, not something ZenTrainer trains"},

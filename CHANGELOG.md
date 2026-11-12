@@ -5,6 +5,12 @@ and Manager show.
 
 ## Unreleased
 
+- **MiniMax H3's text encoder and VAE choices no longer include another model's.** One of ComfyUI's
+  newer templates loads a different model through H3's diffusion model, which put its own encoder
+  and VAE in H3's lists.
+- **Templates that rewrite the prompt with a second LLM load right.** A text encoder that only feeds
+  text generation is told apart by what it's wired to, so models like ERNIE-Image and HiDream O1
+  show up too.
 - **A load no longer runs out of VRAM with most of the card free.** On Windows ZenTrainer caps the
   allocator at the card bar what other models and programs hold, so a step can't spill into slow
   system RAM. That cap was measured while the run was still preparing, before it had freed the card
