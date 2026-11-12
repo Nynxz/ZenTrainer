@@ -80,6 +80,18 @@ def h3():
                                        operations=ops), 64, (24, 16))
 
 
+def h3image():
+    from comfy.ldm.minimax.model import MiniMaxH3ImageModel
+
+    # H3 without the audio stream, a head per step of its own sigma grid: the file's config metadata
+    # declares both (pdd_steps, pdd_sigmas), as MiniMax-H3-Image's does
+    grid = [1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132, 0.0]
+    return (lambda ops: MiniMaxH3ImageModel(pdd_sigmas=grid, pdd_steps=6, hidden_size=256, num_layers=2,
+                                            token_refiner_num_layers=1, num_attention_heads=2, ffn_hidden_size=256,
+                                            text_dim=64, time_embed_hidden_size=256, time_embed_dim=128, operations=ops),
+            64, (24, 16), {"config": json.dumps({"transformer": {"pdd_steps": 6, "pdd_sigmas": grid}})})
+
+
 def anima():
     from comfy.ldm.anima.model import Anima
 
@@ -110,8 +122,9 @@ def flux2():
 
 
 # each: (the model at a tiny size, from ComfyUI's operations), its text width, its VAE's (latent
-# channels, downscale)
-FAMILIES = {"moss": moss, "krea2": krea2, "fibo2": fibo2, "flux3": flux3, "h3": h3, "anima": anima, "flux2": flux2}
+# channels, downscale), and optionally the file's metadata
+FAMILIES = {"moss": moss, "krea2": krea2, "fibo2": fibo2, "flux3": flux3, "h3": h3, "h3image": h3image, "anima": anima,
+            "flux2": flux2}
 
 
 class Clip:
@@ -154,8 +167,8 @@ class Vae:
         return x.unflatten(0, latent.shape[:1] + latent.shape[2:3]) if latent.ndim == 5 else x
 
 
-def tiny_model(build):
-    """The family's ComfyUI model, loaded from a state dict as a file of it would be."""
+def tiny_model(build, metadata=None):
+    """The family's ComfyUI model, loaded from a state dict (and metadata) as a file of it would be."""
     import comfy.ops
     import comfy.sd
 
@@ -166,7 +179,7 @@ def tiny_model(build):
             p.normal_(0, 0.1)
         for b in m.buffers():  # rope frequencies and the like: (0, 1]
             b.uniform_(0.01, 1)
-    return comfy.sd.load_diffusion_model_state_dict(m.state_dict(), model_options={})
+    return comfy.sd.load_diffusion_model_state_dict(m.state_dict(), model_options={}, metadata=metadata)
 
 
 def dataset(root: Path):
@@ -220,8 +233,10 @@ def patch_drift(spec) -> float:
             t.enter_training()
             x0, _, shapes = t.batch([0])
             conds, sigma = [t.fixed_cond(0, x0, shapes)], torch.full((1,), 0.5)
+            # MiniMax-H3-Image's heads read the sampler's schedule, which its grid stands in for (the patch's job)
+            grid = getattr(t.models.patcher.model.diffusion_model, "pdd_sigmas", None)
             with torch.no_grad():
-                want = t.denoiser(x0, sigma, conds)
+                want = t.denoiser(x0, sigma, conds, {"sample_sigmas": torch.tensor(grid)} if grid else None)
             apply(qk_rope=spec.memory.fused_qk_rope)
             got = t.denoiser(x0.clone().requires_grad_(True), sigma, conds)
     finally:
@@ -241,8 +256,8 @@ def main():
     from zentrainer.runs.store import RunStore
     from zentrainer.spec import TrainSpec
 
-    build, text_width, (channels, down) = FAMILIES[FAMILY]()
-    patcher = tiny_model(build)
+    build, text_width, (channels, down), *metadata = FAMILIES[FAMILY]()
+    patcher = tiny_model(build, *metadata)
     vae = Vae(patcher.model.latent_format, channels, down)
     models.load = lambda spec: models.Models(patcher, Clip(text_width), vae)
     models.load_text = lambda spec: models.Models(None, Clip(text_width), None)  # the text encoded first

@@ -5,6 +5,19 @@ and Manager show.
 
 ## Unreleased
 
+- **MiniMax-H3-Image.** MiniMax's own image build of H3 (6 steps, no CFG) is in the model list,
+  with a recipe: it trains on the model's six sampling noise levels, each through the output head
+  it has for that step, over Ostris's de-distillation adapter, which the recipe picks for you
+  (download it from the Training only row if you don't have it). Samples are 2048², 6 steps,
+  CFG 1. Needs ComfyUI v0.45.0, which `zt update` now installs.
+- **MiniMax H3's text encoder and VAE choices no longer include another model's.** One of ComfyUI's
+  newer templates loads a different model through H3's diffusion model, which put its own encoder
+  and VAE in H3's lists.
+- **Templates that rewrite the prompt with a second LLM load right.** A text encoder that only feeds
+  text generation is told apart by what it's wired to, so models like ERNIE-Image and HiDream O1
+  show up too.
+- **The New run page fits a phone with a recipe picked.** A recipe's one-line summary stretched the
+  form past the screen's edge.
 - **A load no longer runs out of VRAM with most of the card free.** On Windows ZenTrainer caps the
   allocator at the card bar what other models and programs hold, so a step can't spill into slow
   system RAM. That cap was measured while the run was still preparing, before it had freed the card

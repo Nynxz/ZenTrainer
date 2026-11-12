@@ -1,8 +1,8 @@
 {
   "comfyui": {
     "repo": "https://github.com/comfyanonymous/ComfyUI.git",
-    "ref": "f5c611e3849ff7219dfb7d7b251092ab8a9b51dc",
-    "describe": "v0.42.0-18-gf5c611e3"
+    "ref": "989d93d0d968e704c589ce0146bb18c77f6b50cc",
+    "describe": "v0.45.0"
   },
   "python": "3.12",
   "torch": {
