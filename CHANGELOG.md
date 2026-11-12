@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **A tiny VAE ComfyUI can't load no longer stops a run.** A `models/vae_approx` file that isn't the
+  TAEHV ComfyUI expects (a bare decoder, no `decoder.*` keys) failed while the previewer was built;
+  the run carried on and only the log showed it. The previewer is skipped with a line saying previews
+  fall back to the latent colours.
 - **Packed 4/6-bit bases train (w4a8, w6a8).** MiniMax H3's smaller quantized files stopped at the
   first backward with "W4A8 GEMM expects RHS W.T.": their layers are weight-only quantized, and the
   weight a LoRA'd linear hands autograd's backward is one the w4a8 matmul refuses. Only
