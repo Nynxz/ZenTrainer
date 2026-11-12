@@ -87,23 +87,28 @@ async function saveEdit() {
 /** a run started with no sample prompts still gets previews (see getsDefaults): two plain ones with
  *  the trigger. Nothing from the dataset: its captions would go into every LoRA's metadata with the spec */
 const DEFAULT_PROMPTS = ['[trigger], a close up portrait photo, soft window light', '[trigger] outdoors on a sunny day, candid photo']
-function defaultPrompts() {
-  if (spec.samples.prompts.length || !getsDefaults()) return
+function defaultPrompts(): boolean {
+  if (spec.samples.prompts.length || !getsDefaults()) return false
   // a word per folder: a portrait of each of the first four, so every class shows how it's coming along
   spec.samples.prompts = perFolder.value.length
     ? perFolder.value.slice(0, 4).map((word) => DEFAULT_PROMPTS[0]!.replace('[trigger]', word))
     : [...DEFAULT_PROMPTS]
+  return true
 }
 
 async function start(position: 'next' | 'end' = 'next') {
   submitting.value = true
   error.value = null
+  let filled = false
   try {
     pruneFolderTriggers()
-    defaultPrompts()
+    filled = defaultPrompts()
     const run = await engine.start(spec, position)
     router.push(`/runs/${run.run_id}`)
   } catch (e) {
+    // a start that didn't happen leaves the form as it was: the prompts it filled in carry today's
+    // folder words, and a retry after changing one should write them again
+    if (filled) spec.samples.prompts = []
     const comfy = e instanceof EngineError ? (e.body as { comfy?: unknown })?.comfy : null
     error.value = comfy ? `${(e as Error).message}\n${JSON.stringify(comfy, null, 2)}` : String((e as Error).message ?? e)
   } finally {
