@@ -41,7 +41,7 @@ const selected = computed(() => list.value.find((a) => a.installed && a.installe
 const items = computed(() => {
   const rows: Record<string, unknown>[] = [{ value: NONE, label: 'None' }]
   for (const a of shown.value) rows.push({ value: a.id, label: a.label, keywords: `${a.label} ${a.repo} ${a.name}`, a })
-  if (model.value && !selected.value) rows.push({ value: `raw:${model.value}`, label: model.value })
+  if (model.value && !selected.value) rows.push({ value: `raw:${model.value}`, label: missing.value?.label ?? model.value })
   return rows as { value: string; label: string }[]
 })
 const value = computed({
@@ -91,6 +91,12 @@ const cancel = () => dl.value && engine.cancelDownload(dl.value.id)
 
 // suggest the family's adapter while none is set (MiniMax H3: the image adapter)
 const suggestion = computed(() => (!model.value && !pending.value ? shown.value.find((a) => a.suggest && a.fits) : undefined))
+// a model's recipe names its adapter before it's downloaded: offer the download
+const missing = computed(() =>
+  model.value && !selected.value && !pending.value
+    ? shown.value.find((a) => !a.installed && a.name === model.value.split('/').pop())
+    : undefined,
+)
 
 // ---- add from Hugging Face ---------------------------------------------------------------
 const adding = ref(false)
@@ -153,6 +159,10 @@ async function forget(a: TrainingAdapter) {
       <div class="ap-bar"><span :style="{ width: `${pct}%` }" /></div>
       <span class="mono">{{ pct }}%</span>
       <button class="ap-link" @click="cancel">Cancel</button>
+    </div>
+    <div v-else-if="missing" class="ap-line">
+      <span class="muted">Not downloaded yet</span>
+      <button class="ap-link" @click="pick(missing.id)">Download {{ fmtBytes(missing.size) }}</button>
     </div>
     <div v-else-if="suggestion" class="ap-line">
       <span class="muted">Suggested: {{ suggestion.label }}</span>
