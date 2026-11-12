@@ -5,6 +5,11 @@ and Manager show.
 
 ## Unreleased
 
+- **MiniMax-H3-Image.** MiniMax's own image build of H3 (6 steps, no CFG) is in the model list,
+  with a recipe: it trains on the model's six sampling noise levels, each through the output head
+  it has for that step, over Ostris's de-distillation adapter, which the recipe picks for you
+  (download it from the Training only row if you don't have it). Samples are 2048², 6 steps,
+  CFG 1. Needs ComfyUI v0.45.0, which `zt update` now installs.
 - **MiniMax H3's text encoder and VAE choices no longer include another model's.** One of ComfyUI's
   newer templates loads a different model through H3's diffusion model, which put its own encoder
   and VAE in H3's lists.

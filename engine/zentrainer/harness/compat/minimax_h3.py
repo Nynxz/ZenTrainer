@@ -5,6 +5,9 @@
   With memory.fused_qk_rope, norms and rope run as one op that trains (kernels/qk_norm_rope.py).
 - `_mod_gate` adds the gated branch into the residual stream in place, but norm1/norm2 saved
   that stream for their backward ("modified by an inplace operation"). Out of place in training.
+- MiniMax-H3-Image has an output head per step of its own sigma grid, picked by where the step
+  sits in the sampler's schedule (transformer_options["sample_sigmas"]). Training has no
+  schedule, so the grid stands in: a σ on the grid trains that one head.
 """
 
 from __future__ import annotations
@@ -71,6 +74,16 @@ def apply() -> None:
 
     attention.forward = forward
     h3._mod_gate = mod_gate
+    image = getattr(h3, "MiniMaxH3ImageModel", None)
+    if image is not None:
+        image_forward = image._forward
+
+        def image_forward_grid(self, x, timestep, context, transformer_options={}, **kwargs):
+            if mm.in_training and "sample_sigmas" not in transformer_options:
+                transformer_options = {**transformer_options, "sample_sigmas": torch.tensor(self.pdd_sigmas)}
+            return image_forward(self, x, timestep, context, transformer_options, **kwargs)
+
+        image._forward = image_forward_grid
     compat._applied.add("minimax_h3")
     logging.info("[ZenTrainer] MiniMax H3: trainable attention and residual gate patched in")
 
