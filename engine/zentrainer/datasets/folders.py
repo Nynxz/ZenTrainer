@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+from itertools import islice
 from pathlib import Path, PurePosixPath
 
 from .. import safeio
@@ -94,7 +95,7 @@ def _summary(d: Path, r: Path) -> dict | None:
     for i in items:
         groups.setdefault(top_folder(i.path, d), []).append(i)
     # the cover takes a picture from each folder in turn, so a collection shows its classes
-    cover = [g[n] for n in range(max(map(len, groups.values()), default=0)) for g in groups.values() if n < len(g)]
+    cover = list(islice((g[n] for n in range(max(map(len, groups.values()), default=0)) for g in groups.values() if n < len(g)), 8))
     mutes = _muted(d) if items else {}
     muted_in = lambda i: sorted(s for s, paths in mutes.items() if str(i.path.relative_to(d)) in paths)
     return {
@@ -111,7 +112,7 @@ def _summary(d: Path, r: Path) -> dict | None:
         "captioned": sum(1 for i in items if i.caption),
         "sets": sorted({s for i in items for s in i.captions} | {"default"}, key=lambda s: (s != "default", s)),
         "thumbs": [{"subfolder": str(i.path.parent.relative_to(r)), "filename": i.path.name,
-                    "path": str(i.path.relative_to(d))} for i in cover[:8]],
+                    "path": str(i.path.relative_to(d))} for i in cover],
         # its subfolders ("" the dataset folder's own pictures), each with the trigger its name gives
         # (dataset.folder_triggers), its first picture, how many have masks, and the caption sets each
         # muted picture is muted in (a picture sits out of a run that uses only sets it's muted in);
@@ -516,15 +517,20 @@ def delete_dataset(name: str) -> int:
     _listed(raw, items)
     n = len(items)
     _remove(raw)
-    try:  # its settings and health history: the dataset is gone either way
+    # its settings, then its health history and face data: the dataset is gone either way, and one
+    # failing mustn't keep the other (faces shouldn't outlive their pictures)
+    try:
         f = _settings_file()
         kept = safeio.read_json(f, {})
         if isinstance(kept, dict) and kept.pop(name, None) is not None:
             safeio.write_json(f, kept)
+    except (OSError, ImportError, AttributeError):  # outside ComfyUI (tests, tools), or no usable user folder
+        pass
+    try:
         from .stats import forget
 
         forget(name)
-    except (OSError, ImportError, AttributeError):  # outside ComfyUI (tests, tools), or no usable user folder
+    except (OSError, ImportError, AttributeError):
         pass
     return n
 

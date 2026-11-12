@@ -222,7 +222,8 @@ def dataset_in_use(name: str) -> str | None:
 
     store = state.store()
     for meta in store.list():
-        if meta.get("status") not in ACTIVE:
+        # a sample job ("sampling") reads the run's dataset again as it sets up
+        if meta.get("status") not in (*ACTIVE, "sampling"):
             continue
         spec = store.spec(meta["run_id"])
         if uses((spec.get("dataset") or {}).get("folder")) or uses((spec.get("validation") or {}).get("dataset")):
