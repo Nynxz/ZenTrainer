@@ -21,9 +21,10 @@ and Manager show.
   adding each character's folder is all a collection takes. Adding files says how many it's adding
   straight away, and says so when a folder has nothing in it to add or the upload fails.
 - **A dataset's folders show.** In name order each subfolder's pictures sit under its name and
-  count, and a folder menu beside the filter shows one folder at a time.
+  count, and a folder menu beside the filter shows one folder at a time. A folder's ⋯ menu mutes
+  or unmutes all its pictures in the caption set shown, and its header says how many are muted.
 - **Delete a dataset, or one of its folders.** Delete dataset is in a dataset's Settings (type its
-  name to confirm), and each folder's header has a delete button. Their files go for good, with a deleted dataset's face data; the
+  name to confirm), and Delete folder is in each folder's ⋯ menu. Their files go for good, with a deleted dataset's face data; the
   folders they were added from stay. Neither is done while a run or a caption job is using the
   dataset.
 - **A new dataset shows up while it's still empty.** It used to stay out of the list until a

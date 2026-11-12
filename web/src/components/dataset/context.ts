@@ -522,7 +522,7 @@ export function useDataset(name: () => string) {
   )
 
   return {
-    view, zoom, fit, showMasks, maskHighVis, sideOpen,
+    name, view, zoom, fit, showMasks, maskHighVis, sideOpen,
     items, sets, activeSet, cap, k, controlSets, activeControl, inputs, loading, error, notice, drafts, saving, bust, load, maskThumb, working,
     filter, folder, folders, query, sortKey, sortDir, selected, boxing, reviewing, review, counts,
     isMuted, setMuted, imageFlags, statsPanel,

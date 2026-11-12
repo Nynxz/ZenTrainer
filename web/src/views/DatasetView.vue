@@ -100,7 +100,7 @@ const filterItems = computed(() => [
 // '/' (all of them) and '.' (the dataset folder's own) are values no folder can be named
 const folderItems = computed(() => [
   { value: '/', label: `All folders · ${items.value.length}` },
-  ...folders.value.map((f) => ({ value: f.name || '.', label: `${f.name || 'Top level'} · ${f.count}` })),
+  ...folders.value.map((f) => ({ value: f.name || '.', label: `${f.name || props.name} · ${f.count}` })),
 ])
 const folderPick = computed({
   get: () => (folder.value === null ? '/' : folder.value || '.'),
@@ -294,7 +294,7 @@ onUnmounted(() => {
       </div>
       <ZenButton size="sm" icon="mdi mdi-vector-selection" :disabled="!maskStart" title="Paint or find (SAM3) where each picture trains; ←/→ moves between pictures" @click="openMasks">Mask editor</ZenButton>
       <ZenButton size="sm" icon="mdi mdi-upload" :disabled="uploading" @click="fileInput?.click()">Add files</ZenButton>
-      <ZenButton size="sm" icon="mdi mdi-folder-upload-outline" :disabled="uploading" title="Copy a folder in as a subfolder of the same name, its pictures, captions and masks with it: with Trigger per folder, its name is its trigger word" @click="folderInput?.click()">Add folder</ZenButton>
+      <ZenButton size="sm" icon="mdi mdi-folder-upload-outline" :disabled="uploading" title="Copy a folder in as a subfolder of the same name, its pictures, captions and masks with it: with One word per folder, its name is its trigger word" @click="folderInput?.click()">Add folder</ZenButton>
       <ZenButton size="sm" variant="primary" icon="mdi mdi-play" @click="router.push({ path: '/runs/new', query: { dataset: name } })">Train on this</ZenButton>
       <input ref="fileInput" type="file" multiple accept="image/*,video/*,.txt" hidden @change="upload([...(($event.target as HTMLInputElement).files ?? [])])" />
       <input ref="folderInput" type="file" webkitdirectory hidden @change="addFolder([...(($event.target as HTMLInputElement).files ?? [])].map((f) => [f, f.webkitRelativePath])); ($event.target as HTMLInputElement).value = ''" />
@@ -322,7 +322,7 @@ onUnmounted(() => {
         <i class="mdi mdi-filter-variant" />
         <ZenCombo v-model="filter" :items="filterItems" :sorted="false" :searchable="false" size="sm" />
       </div>
-      <div v-if="folders.length" class="tb-field" title="Show one folder's pictures: with Trigger per folder, each folder trains its own trigger word, its name">
+      <div v-if="folders.length" class="tb-field" title="Show one folder's pictures">
         <i class="mdi mdi-folder-outline" />
         <ZenCombo v-model="folderPick" :items="folderItems" :sorted="false" :searchable="false" size="sm" />
       </div>
@@ -578,6 +578,21 @@ onUnmounted(() => {
   .page-toolbar .zoom,
   .tb-field > .mdi {
     display: none;
+  }
+}
+/* a phone: the menus share a row, and the search has one of its own beside the panel button */
+@media (max-width: 640px) {
+  .tb-field {
+    flex: 1 1 130px;
+    min-width: 0;
+  }
+  .tb-field :deep(.zen-combo) {
+    width: 100%;
+    min-width: 0;
+  }
+  .search {
+    flex: 1 1 calc(100% - 56px);
+    min-width: 0;
   }
 }
 </style>
