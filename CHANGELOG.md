@@ -16,6 +16,8 @@ and Manager show.
 - **Templates that rewrite the prompt with a second LLM load right.** A text encoder that only feeds
   text generation is told apart by what it's wired to, so models like ERNIE-Image and HiDream O1
   show up too.
+- **The New run page fits a phone with a recipe picked.** A recipe's one-line summary stretched the
+  form past the screen's edge.
 - **A load no longer runs out of VRAM with most of the card free.** On Windows ZenTrainer caps the
   allocator at the card bar what other models and programs hold, so a step can't spill into slow
   system RAM. That cap was measured while the run was still preparing, before it had freed the card
