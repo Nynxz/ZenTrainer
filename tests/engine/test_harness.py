@@ -479,9 +479,13 @@ def test_a_collection_lists_its_folders(tmp_path, monkeypatch):
                 "chars/loose.png", "pics/a.png"):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (8, 8)).save(tmp_path / rel)
+    (tmp_path / "chars/alice/_masks").mkdir()
+    Image.new("L", (8, 8)).save(tmp_path / "chars/alice/_masks/a.png")
+    datasets.set_muted("chars", "default", [str(Path("3_bob/a.png")), str(Path("3_bob/b.png"))], True)
+    datasets.set_muted("chars", "short", [str(Path("3_bob/a.png"))], True)
     listed = {s["folder"]: s for s in datasets.summary()}
-    assert [(f["name"], f["trigger"], f["images"]) for f in listed["chars"]["folders"]] == [
-        ("", "", 1), ("3_bob", "bob", 3), ("alice", "alice", 1)]
+    assert [(f["name"], f["trigger"], f["images"], f["masked"], f["muted"]) for f in listed["chars"]["folders"]] == [
+        ("", "", 1, 0, []), ("3_bob", "bob", 3, 0, [["default", "short"], ["default"]]), ("alice", "alice", 1, 1, [])]
     assert {Path(t["path"]).parts[0] for t in listed["chars"]["thumbs"][:3]} == {"loose.png", "3_bob", "alice"}
     assert listed["pics"]["folders"] == []  # no subfolders
 

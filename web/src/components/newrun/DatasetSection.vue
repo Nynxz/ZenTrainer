@@ -1,13 +1,14 @@
 <script setup lang="ts">
 // 2 Dataset: the folder, captions and trigger, resolution (and starting lower), dropout, edit
 // pairs, masks, and how videos turn into training clips.
-import { ZenCombo, ZenField, ZenInput, ZenNumber, ZenSwitch } from '@nynxz/zenkit-ui'
+import { ZenCombo, ZenField, ZenInput, ZenNumber, ZenSwitch, ZenToggleGroup } from '@nynxz/zenkit-ui'
 import { computed, ref } from 'vue'
 import { thumbUrl, type DatasetInfo, type TrainSpec } from '@/api/engine'
+import RunDatasetLightbox from '@/components/run/RunDatasetLightbox.vue'
 import DatasetPicker from './DatasetPicker.vue'
 import { items, useRunFormContext } from './form'
 
-const { spec, choices, datasets, dataset, folderWords, pairCount, stage0, resuming, controlCounts, chosenInputs, toggleInput, channelModel } = useRunFormContext()
+const { spec, choices, datasets, dataset, folderWords, trainsIn, pairCount, stage0, resuming, controlCounts, chosenInputs, toggleInput, channelModel } = useRunFormContext()
 
 const NK2E_TEMPLATE =
   'Make the following edit to the reference image, changing only what is requested and keeping everything else identical: {}'
@@ -45,8 +46,25 @@ const nameTrigger = computed(() => (spec.dataset.folder || '').toLowerCase().rep
 // the dataset's cover: up to four pictures, from as many of its folders
 const cover = (d: DatasetInfo) =>
   d.thumbs.slice(0, d.thumbs.length >= 4 ? 4 : 1).map((t) => thumbUrl(d.folder, t.path ?? [...t.subfolder.split('/').slice(1), t.filename].join('/'), 256))
-// pictures outside the subfolders, which keep the one trigger word
-const loose = computed(() => dataset.value?.folders?.find((f) => !f.name)?.images ?? 0)
+// pictures outside the subfolders this run trains on, which keep the one trigger word
+const loose = computed(() => {
+  const f = dataset.value?.folders?.find((f) => !f.name)
+  return f ? trainsIn(f) : 0
+})
+// a folder's count as this run sees it: the pictures it trains on, of how many (the rest are muted)
+const trainsText = (f: { images: number; trains: number }) =>
+  f.trains === f.images ? `${f.images} picture${f.images === 1 ? '' : 's'}` : f.trains ? `${f.trains} of ${f.images} pictures` : `All ${f.images} muted`
+// what a dataset's subfolders are for: dataset.folder_triggers, said as the choice it is
+const FOLDER_MODES = [
+  { value: 'together', label: 'Train together', title: 'Every picture, in every folder, trains under the one trigger word' },
+  { value: 'each', label: 'One word per folder', title: 'Each folder trains under a word of its own. A number in front of a name sets repeats: 3_alice trains alice' },
+]
+const folderMode = computed({
+  get: () => (spec.dataset.folder_triggers ? 'each' : 'together'),
+  set: (mode: string) => (spec.dataset.folder_triggers = mode === 'each'),
+})
+// the folder whose pictures are up in the lightbox
+const previewing = ref<string | null>(null)
 // a folder's own word, or none: then its name's
 function setWord(name: string, value: string) {
   const words = { ...(spec.dataset.folder_trigger_words ?? {}) }
@@ -63,32 +81,35 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
 
 <template>
 <section class="card sec" :class="{ locked: resuming }">
-  <h2><span class="num">2</span> Dataset</h2>
+  <div class="head-row">
+    <h2><span class="num">2</span> Dataset</h2>
+    <span class="grow" />
+    <ZenToggleGroup v-if="folderWords.length" v-model="folderMode" class="fold-mode" :options="FOLDER_MODES" size="sm" />
+  </div>
   <ZenField label="Folder" stack>
     <button type="button" class="ds-field" :class="{ empty: !dataset }" @click="pickerOpen = true">
       <span class="ds-thumb" :class="{ blank: !dataset, mosaic: dataset && cover(dataset).length > 1 }"><template v-if="dataset && cover(dataset).length"><img v-for="src in cover(dataset)" :key="src" :src="src" alt="" /></template><i v-else :class="dataset ? 'mdi mdi-image-multiple-outline' : 'mdi mdi-plus'" /></span>
       <span class="ds-text">
         <b>{{ dataset?.folder ?? (spec.dataset.folder || 'Choose a dataset') }}</b>
-        <span v-if="dataset" class="muted small">{{ dataset.images }} pictures · {{ dataset.captioned }} captioned</span>
+        <span v-if="dataset" class="muted small">{{ dataset.images }} pictures<template v-if="folderWords.length"> · {{ folderWords.length }} folder{{ folderWords.length === 1 ? '' : 's' }}</template> · {{ dataset.captioned }} captioned</span>
         <span v-else class="muted small">A folder of pictures in ComfyUI's input</span>
       </span>
       <span class="ds-change">{{ dataset ? 'Change' : 'Pick' }} <i class="mdi mdi-chevron-right" /></span>
     </button>
   </ZenField>
   <DatasetPicker v-model:open="pickerOpen" :datasets="datasets" :current="spec.dataset.folder" @pick="spec.dataset.folder = $event" />
-  <ZenField v-if="folderWords.length" label="Trigger per folder" stack tip="Each folder trains under a trigger word of its own: its name, or the word typed beside it. A number in front of a name sets repeats and stays out of the word (3_alice trains alice)">
-    <div class="fold-block">
-    <div class="sw-row"><ZenSwitch :model-value="!!spec.dataset.folder_triggers" @update:model-value="spec.dataset.folder_triggers = $event" /><span class="sw-state">{{ spec.dataset.folder_triggers ? `On: each of the ${folderWords.length} folders trains as the word in its box, or as its folder's name when the box is empty` : 'Off: every picture uses the one trigger word' }}</span></div>
-    <div class="folds" :class="{ off: !spec.dataset.folder_triggers }">
-      <div v-for="f in folderWords" :key="f.name" class="fold">
-        <img :src="thumbUrl(spec.dataset.folder, f.path, 128)" alt="" loading="lazy" />
-        <span class="fold-text"><b :title="f.name">{{ f.name }}</b><span class="muted small">{{ f.images }} picture{{ f.images === 1 ? '' : 's' }}</span></span>
-        <ZenInput :model-value="spec.dataset.folder_trigger_words?.[f.name] ?? ''" :placeholder="f.trigger === f.name ? 'uses folder name' : `uses “${f.trigger}”`" :disabled="!spec.dataset.folder_triggers" size="sm" :title="`Its trigger word. Empty: “${f.trigger}”, the folder's name`" @update:model-value="setWord(f.name, String($event))" />
+  <RunDatasetLightbox v-if="previewing !== null" :name="spec.dataset.folder" :set="spec.dataset.caption_mix[0] ?? spec.dataset.caption_set" :folder="previewing" @close="previewing = null" />
+  <div v-if="folderWords.length && spec.dataset.folder_triggers" class="fold-block">
+    <span class="muted small">Type a word to use instead of a folder's name</span>
+    <div class="folds">
+      <div v-for="f in folderWords" :key="f.name" class="fold" :class="{ out: !f.trains }">
+        <button type="button" class="fold-pic" title="See this folder's pictures" @click="previewing = f.name"><img :src="thumbUrl(spec.dataset.folder, f.path, 128)" alt="" loading="lazy" /></button>
+        <span class="fold-text"><b :title="f.name">{{ f.name }}</b><span class="muted small"><span :title="f.trains < f.images ? `${f.images - f.trains} muted in the caption set${spec.dataset.caption_mix.length > 1 ? 's' : ''} this run uses: ${f.trains ? 'they sit out' : 'this folder doesn\'t train'}` : undefined">{{ trainsText(f) }}</span><span v-if="f.masked" class="fold-masks" :title="`${f.masked} of them ${f.masked === 1 ? 'has a mask' : 'have masks'}`"><i class="mdi mdi-layers-outline" /> {{ f.masked }}</span></span></span>
+        <ZenInput :model-value="spec.dataset.folder_trigger_words?.[f.name] ?? ''" :placeholder="`uses “${f.trigger}”`" size="sm" :title="`Its trigger word. Empty: “${f.trigger}”, the folder's name`" @update:model-value="setWord(f.name, String($event))" />
       </div>
     </div>
-    <span v-if="loose && spec.dataset.folder_triggers" class="muted small">{{ loose }} picture{{ loose === 1 ? '' : 's' }} outside the folders use the trigger word below</span>
-    </div>
-  </ZenField>
+    <span v-if="loose && spec.dataset.folder_triggers" class="muted small">{{ loose }} other picture{{ loose === 1 ? ' uses' : 's use' }} the trigger word below</span>
+  </div>
   <div class="grid-2">
     <ZenField label="Captions" stack :hint="spec.dataset.caption_mix.length > 1 ? 'Each step picks one of these sets at random' : 'Which caption set to train on; click more to mix them'">
       <div class="chips">
@@ -105,7 +126,7 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
     </ZenField>
     <!-- the dataset's name as a link on the label's line: the input keeps its width either way -->
     <div class="trig-field">
-      <ZenField label="Trigger word" stack tip="Replaces [trigger] in captions and prompts">
+      <ZenField label="Trigger word" stack tip="Replaces [trigger] in captions and prompts" :hint="spec.dataset.folder_triggers && folderWords.length && !loose ? 'Every picture uses its folder\'s word: this only fills [trigger] in sample prompts' : undefined">
         <ZenInput v-model="spec.dataset.trigger" placeholder="e.g. ohwx" />
       </ZenField>
       <button
@@ -350,8 +371,23 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
 .ds-thumb.mosaic {
   width: 64px;
   height: 64px;
-  grid-template-columns: 1fr 1fr;
+  grid-template: repeat(2, minmax(0, 1fr)) / repeat(2, minmax(0, 1fr));
   gap: 1px;
+}
+.head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.head-row h2 {
+  margin-bottom: 0;
+}
+.head-row .grow {
+  flex: 1;
+}
+.fold-mode {
+  flex: none;
+  width: auto;
 }
 .fold-block {
   display: flex;
@@ -364,9 +400,6 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 6px;
 }
-.folds.off {
-  opacity: 0.6;
-}
 .fold {
   display: flex;
   align-items: center;
@@ -376,18 +409,39 @@ const VIDEO_MODES: [TrainSpec['dataset']['video_mode'], string][] = [
   border-radius: var(--r-md);
   background: var(--zen-surface);
 }
-.fold img {
+.fold-pic {
   width: 36px;
   height: 36px;
   flex: none;
+  padding: 0;
+  border: none;
   border-radius: var(--r-md);
+  overflow: hidden;
+  background: none;
+  cursor: zoom-in;
+}
+.fold-pic:hover,
+.fold-pic:focus-visible {
+  outline: 1px solid var(--zen-accent);
+}
+.fold-pic img {
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
+}
+.fold.out {
+  opacity: 0.55;
+}
+.fold-masks {
+  margin-left: 6px;
+  white-space: nowrap;
 }
 .fold-text {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  width: 80px;
+  width: 104px;
   flex: none;
 }
 .fold-text b {

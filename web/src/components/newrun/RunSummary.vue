@@ -10,9 +10,9 @@ import { useRunFormContext } from './form'
 
 const router = useRouter()
 const saveOpen = ref(false) // where you'd think of it: as you start a run
-const { spec, modelMissing, dataset, folderWords, pruneFolderTriggers, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
-// Trigger per folder on a dataset with folders: each folder's word
-const perFolder = computed(() => (spec.dataset.folder_triggers ? folderWords.value.map((f) => f.word) : []))
+const { spec, modelMissing, dataset, folderWords, trainsIn, pruneFolderTriggers, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
+// Trigger per folder on a dataset with folders: each word a folder trains (not one that's all muted)
+const perFolder = computed(() => (spec.dataset.folder_triggers ? folderWords.value.filter((f) => f.trains).map((f) => f.word) : []))
 const submitting = ref(false)
 
 /** a run with no sample prompts gets plain ones as it starts, when they'd show anything: not a
@@ -39,7 +39,7 @@ const warnings = computed(() => {
   else if (!spec.samples.every) w.push('Samples are off (Every 0): only Sample now renders them, so checkpoints get no samples or likeness. Set Every to the save interval.')
   else if (spec.output.save_every && spec.output.save_every % spec.samples.every && !spec.output.keep.startsWith('likeness')) w.push(`Samples every ${spec.samples.every} don't land on the saves every ${spec.output.save_every}: checkpoints get no samples or likeness to compare.`)
   // with a word per folder, the one trigger only trains pictures loose in the dataset folder (a '' folder)
-  else if (!slider && spec.dataset.trigger && !(perFolder.value.length && !dataset.value?.folders?.some((f) => !f.name)) && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
+  else if (!slider && spec.dataset.trigger && !(perFolder.value.length && !dataset.value?.folders?.some((f) => !f.name && trainsIn(f))) && !spec.samples.prompts.map(promptText).some((p) => p.includes('[trigger]') || p.includes(spec.dataset.trigger)))
     w.push("Sample prompts don't use [trigger].")
   if (Array.isArray(spec.network.targets) && !spec.network.targets.length) w.push('Layers is Custom with no patterns: no layer would get an adapter.')
   const keep = spec.output.save_every ? spec.output.keep.replace('_new_best', '') : 'all'

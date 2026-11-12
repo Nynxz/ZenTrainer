@@ -96,8 +96,9 @@ export interface DatasetInfo {
   captioned: number
   sets: string[]
   thumbs: { subfolder: string; filename: string; path?: string }[]
-  /** its subfolders ('' its own pictures), each with the trigger its name gives and its first picture; [] with none */
-  folders?: { name: string; trigger: string; images: number; path: string }[]
+  /** its subfolders ('' its own pictures), each with the trigger its name gives, its first picture, how many have masks
+   * and the caption sets each muted picture is muted in; [] with none */
+  folders?: { name: string; trigger: string; images: number; path: string; masked: number; muted: string[][] }[]
 }
 
 /** a curated captioning LoRA (engine captioner.TE_LORA_CATALOG) */

@@ -83,6 +83,8 @@ def summary() -> list[dict]:
 
 
 def _summary(d: Path, r: Path) -> dict | None:
+    from ..harness.data import muted as _muted
+
     items = scan(d, warn=False)
     # an empty folder is a dataset only if ZenTrainer made it: the input folder has others (3d, ...)
     if not items and not (d / MUTES_FILE).is_file():
@@ -93,6 +95,8 @@ def _summary(d: Path, r: Path) -> dict | None:
         groups.setdefault(top_folder(i.path, d), []).append(i)
     # the cover takes a picture from each folder in turn, so a collection shows its classes
     cover = [g[n] for n in range(max(map(len, groups.values()), default=0)) for g in groups.values() if n < len(g)]
+    mutes = _muted(d) if items else {}
+    muted_in = lambda i: sorted(s for s, paths in mutes.items() if str(i.path.relative_to(d)) in paths)
     return {
         "folder": d.name,
         "images": len(items),
@@ -109,9 +113,12 @@ def _summary(d: Path, r: Path) -> dict | None:
         "thumbs": [{"subfolder": str(i.path.parent.relative_to(r)), "filename": i.path.name,
                     "path": str(i.path.relative_to(d))} for i in cover[:8]],
         # its subfolders ("" the dataset folder's own pictures), each with the trigger its name gives
-        # (dataset.folder_triggers) and its first picture; [] with none
+        # (dataset.folder_triggers), its first picture, how many have masks, and the caption sets each
+        # muted picture is muted in (a picture sits out of a run that uses only sets it's muted in);
+        # [] with none
         "folders": [{"name": name, "trigger": folder_trigger(g[0].path, d), "images": len(g),
-                     "path": str(g[0].path.relative_to(d))}
+                     "path": str(g[0].path.relative_to(d)), "masked": sum(1 for i in g if i.mask),
+                     "muted": [m for m in map(muted_in, g) if m]}
                     for name, g in sorted(groups.items())] if any(groups) else [],
     }
 

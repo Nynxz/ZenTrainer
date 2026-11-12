@@ -295,10 +295,16 @@ export function useRunForm() {
   )
 
   const dataset = computed(() => datasets.value.find((d) => d.folder === spec.dataset.folder))
+  // how many of a folder's pictures this run trains on: as training decides, a picture muted in every
+  // caption set the run uses sits out
+  const trainsIn = (f: { images: number; muted: string[][] }) => {
+    const used = spec.dataset.caption_mix.length ? spec.dataset.caption_mix : [spec.dataset.caption_set]
+    return f.images - f.muted.filter((m) => used.every((s) => m.includes(s))).length
+  }
   // the dataset's subfolders, each with the word it trains under with Trigger per folder: its own
   // (folder_trigger_words), else the one its name gives
   const folderWords = computed(() =>
-    (dataset.value?.folders ?? []).filter((f) => f.name).map((f) => ({ ...f, word: spec.dataset.folder_trigger_words?.[f.name] || f.trigger })),
+    (dataset.value?.folders ?? []).filter((f) => f.name).map((f) => ({ ...f, trains: trainsIn(f), word: spec.dataset.folder_trigger_words?.[f.name] || f.trigger })),
   )
   // Trigger per folder belongs to its dataset: keep only the words for folders this one has, and
   // turn it off on one with no folders (its switch isn't shown there to turn off)
@@ -374,7 +380,7 @@ export function useRunForm() {
     datasets, optimizers, trainAttention, runPresets, promptSets, pairCount, pairItems,
     controlCounts, chosenInputs, runInputs, toggleInput, channelModel,
     editing, retrying, resuming, resumeStep, error,
-    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, folderWords, pruneFolderTriggers, opt, epochs, modelLabel, noise, preserveOn,
+    deleteRecipe, recipeApplied, applyRecipe, undoRecipe, imported, exportSettings, copySettings, importSettings, isVideoModel, stage0, dataset, folderWords, trainsIn, pruneFolderTriggers, opt, epochs, modelLabel, noise, preserveOn,
   }
 }
 
