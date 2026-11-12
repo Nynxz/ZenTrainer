@@ -56,6 +56,7 @@ const ago = (t?: number) => {
   const s = Date.now() / 1000 - t
   return s < 3600 ? `${Math.max(1, Math.round(s / 60))} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`
 }
+const foldersOf = (d: DatasetInfo) => (d.folders ?? []).filter((f) => f.name).length
 const facts = computed(() => {
   const d = shown.value
   if (!d) return []
@@ -63,6 +64,7 @@ const facts = computed(() => {
     { k: 'Pictures', v: d.videos ? `${d.images - d.videos} · ${d.videos} videos` : String(d.images) },
     { k: 'Captioned', v: `${d.captioned} of ${d.images}` },
     { k: 'Caption sets', v: d.sets.join(', ') || 'default' },
+    ...(foldersOf(d) ? [{ k: 'Folders', v: String(foldersOf(d)) }] : []),
     { k: 'Masks', v: d.masked ? String(d.masked) : 'none' },
     ...(d.pairs ? [{ k: 'Edit pairs', v: String(d.pairs) }] : []),
     { k: 'Size', v: fmtBytes(d.bytes) },
@@ -115,7 +117,7 @@ function use(folder = picked.value) {
               <span class="thumb"><img v-if="d.thumbs[0]" :src="thumb(d, d.thumbs[0], 96)" alt="" loading="lazy" /><i v-else class="mdi mdi-image-off-outline" /></span>
               <span class="item-text">
                 <span class="item-title">{{ d.folder }}<span v-if="d.folder === current" class="here">in this run</span></span>
-                <span class="item-blurb">{{ d.images }} pictures · {{ d.sets.length || 1 }} caption set{{ (d.sets.length || 1) === 1 ? '' : 's' }}</span>
+                <span class="item-blurb">{{ d.images }} pictures<template v-if="foldersOf(d)"> · {{ foldersOf(d) }} folder{{ foldersOf(d) === 1 ? '' : 's' }}</template> · {{ d.sets.length || 1 }} caption set{{ (d.sets.length || 1) === 1 ? '' : 's' }}</span>
               </span>
               <StarButton :id="d.folder" :name="d.folder" kind="dataset" />
             </div>

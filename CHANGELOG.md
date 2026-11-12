@@ -5,6 +5,31 @@ and Manager show.
 
 ## Unreleased
 
+- **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
+  each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
+  One word per folder and one LoRA learns several characters or concepts, each called up by its own
+  word. `[trigger]` in a folder's captions becomes that word, a `3_` in front of the name still sets
+  repeats (now for the pictures in its subfolders too), and your caption files stay as they are.
+  A folder's picture opens its pictures, its count is the pictures the run trains (muted ones sit
+  out), and a folder that's all muted is left out of the words. The summary lists the words, a run
+  with no sample prompts gets a portrait of each of the first four folders, and the saved LoRA
+  lists its words in its trigger phrase.
+- A dataset's cover takes its pictures from each of its folders in turn, and the dataset in a new
+  run shows four of them.
+- **Add folder**, beside Add files on a dataset, or drop a folder on the page: it comes in as a
+  subfolder of the same name, with its own subfolders, captions and masks. With One word per folder,
+  adding each character's folder is all a collection takes. Adding files says how many it's adding
+  straight away, and says so when a folder has nothing in it to add or the upload fails.
+- **A dataset's folders show.** In name order each subfolder's pictures sit under its name and
+  count, and a folder menu beside the filter shows one folder at a time. A folder's ⋯ menu mutes
+  or unmutes all its pictures in the caption set shown, and its header says how many are muted.
+- **Delete a dataset, or one of its folders.** Delete dataset is in a dataset's Settings (type its
+  name to confirm), and Delete folder is in each folder's ⋯ menu. Their files go for good, with a
+  deleted dataset's face data; the folders they were added from stay. Neither is done while a run
+  or a caption job is using the dataset.
+- **A new dataset shows up while it's still empty.** It used to stay out of the list until a
+  picture was in it, with its name taken, so there was no page to add the first files on. One
+  stuck like that comes back by making a dataset of the same name again.
 - **MiniMax-H3-Image.** MiniMax's own image build of H3 (6 steps, no CFG) is in the model list,
   with a recipe: it trains on the model's six sampling noise levels, each through the output head
   it has for that step, over Ostris's de-distillation adapter, which the recipe picks for you

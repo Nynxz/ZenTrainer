@@ -258,6 +258,16 @@
           "description": "Prepend the trigger to captions that don't mention it.",
           "default": true
         },
+        "folder_triggers": {
+          "type": "boolean",
+          "description": "Each top-level subfolder is a class with a trigger of its own: its name, without a kohya \"N_\" repeat count, is the trigger for the pictures in it (\"3_ohwx\" trains ohwx, three times over). Pictures in the dataset folder itself use `trigger`. Sample prompts name the triggers they want.",
+          "default": false
+        },
+        "folder_trigger_words": {
+          "type": "object",
+          "description": "With folder_triggers: a trigger word in place of a folder's name, by folder: {\"alice\": \"myalice\"}. A folder not in it uses its name.",
+          "default": {}
+        },
         "masked_loss": {
           "type": "boolean",
           "description": "Masked training: pictures with a mask only learn where it's white.",

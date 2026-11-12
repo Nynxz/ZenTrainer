@@ -25,7 +25,7 @@ export function loadMyRecipes(again = false): Promise<void> {
  *  is (the run's name, dataset, trigger word and captions) */
 export function recipeData(spec: TrainSpec): Partial<TrainSpec> {
   const { name: _n, dataset, ...rest } = JSON.parse(JSON.stringify(spec)) as TrainSpec
-  const { folder: _f, trigger: _t, trigger_prepend: _tp, caption_set: _cs, caption_mix: _cm, ...ds } = dataset
+  const { folder: _f, trigger: _t, trigger_prepend: _tp, caption_set: _cs, caption_mix: _cm, folder_triggers: _ft, folder_trigger_words: _fw, ...ds } = dataset
   return { ...rest, dataset: ds } as unknown as Partial<TrainSpec> // a partial dataset: it merges over the form's
 }
 

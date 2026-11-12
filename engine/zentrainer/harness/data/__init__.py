@@ -55,6 +55,7 @@ class Item:
     captions: dict[str, str] = field(default_factory=dict)  # set name -> text, "default" included
     controls: list[Path] = field(default_factory=list)  # the input picture(s) this run uses (pick_controls)
     control_sets: dict[str, list[Path]] = field(default_factory=dict)  # every set's input(s), by set name
+    trigger: str = ""  # what [trigger] becomes in this picture's captions (_captions)
 
 
 @dataclass
@@ -81,6 +82,7 @@ class Dataset:
     empty_caption: int  # index of "" (for caption dropout)
     buckets: dict[tuple, list[int]] = field(default_factory=dict)  # latent shape -> sample idx
     owners: list[int] = field(default_factory=list)  # sample -> the scanned item it came from (a video gives several)
+    triggers: list[str] = field(default_factory=list)  # sample -> its item's trigger (objective.preserve); not cached
 
 
 DISK_FIELDS = ("latent", "mask", "refs", "cond", "cond_empty")
@@ -369,17 +371,20 @@ def find_mask(img: Path) -> Path | None:
 
 
 def scan(root: Path, caption_ext: str = ".txt", warn: bool = True) -> list[Item]:
-    """Images and videos under root with same-stem captions (and masks, see module doc). "N_name"
-    subfolders repeat N times; folders starting with "." or "_" are ignored."""
+    """Images and videos under root with same-stem captions (and masks, see module doc). An
+    "N_name" subfolder repeats everything under it N times (a nearer "N_" folder sets its own);
+    folders starting with "." or "_" are ignored."""
     items = []
+    repeats_of: dict[Path, int] = {}
     for dirpath, dirs, files in os.walk(root):
         # skip hidden and tool folders: other trainers leave .thumbs/, _latent_cache/, ...
         dirs[:] = sorted(x for x in dirs if not x.startswith((".", "_")))
         d = Path(dirpath)
-        repeats = 1
+        repeats = repeats_of.get(d.parent, 1) if d != root else 1
         head = d.name.split("_", 1)[0] if d != root else ""
         if head.isdigit() and "_" in d.name:
             repeats = max(1, int(head))
+        repeats_of[d] = repeats
         index = control_index(d)
         captions = caption_index(files, caption_ext)
         for f in sorted(files):
@@ -481,6 +486,21 @@ def plain_class(word: str) -> str:
     return f"a photo of a {word}"
 
 
+def top_folder(path: Path, root: Path) -> str:
+    """The subfolder of root a picture is in, at the top ("3_ohwx" for 3_ohwx/close/a.png); "" for a
+    picture in root itself."""
+    parts = path.relative_to(root).parts
+    return parts[0] if len(parts) > 1 else ""
+
+
+def folder_trigger(path: Path, root: Path) -> str:
+    """dataset.folder_triggers: the class a picture's top-level subfolder names, without a kohya "N_"
+    repeat count ("3_ohwx" -> "ohwx"); "" for a picture in the dataset folder itself."""
+    name = top_folder(path, root)
+    head, _, rest = name.partition("_")
+    return rest if head.isdigit() and rest else name
+
+
 def apply_trigger(text: str, trigger: str, prepend: bool) -> str:
     """ai-toolkit semantics: "[trigger]" -> the word; if the caption still doesn't
     contain it, prepend "trigger, ". A structured (JSON) caption gets it at the start of its
@@ -579,23 +599,29 @@ def _captions(spec, root: Path, preserve: tuple[str, ...] = ()):
                             "they train with the inputs they have", partial, ", ".join(spec.control_sets))
     variants: list[list[str]] = []
     for it in items:  # pick each image's caption(s), trigger applied, before the cache key
+        top = top_folder(it.path, root) if spec.folder_triggers else ""
+        it.trigger = (spec.folder_trigger_words.get(top, "").strip() or folder_trigger(it.path, root)) if top else spec.trigger
         rel = str(it.path.relative_to(root))
         if spec.caption_mix:
             texts = [it.captions[s] for s in spec.caption_mix if it.captions.get(s) and rel not in mutes.get(s, ())]
         else:
             texts = [it.captions.get(spec.caption_set, "")] if it.captions.get(spec.caption_set) else []
         texts = texts or [it.captions.get("default", "")]
-        texts = [apply_trigger(t, spec.trigger, spec.trigger_prepend) for t in texts]
+        texts = [apply_trigger(t, it.trigger, spec.trigger_prepend) for t in texts]
         if spec.edit and spec.edit_template:
             from .edit import instruction
 
             texts = [instruction(t, spec.edit_template) for t in texts]
         variants.append(texts)
         it.caption = " ||| ".join(texts)  # only feeds the cache key
+    if preserve and (bare := sum(1 for it in items if not it.trigger.strip())):
+        # with no trigger to swap, the class caption is the caption: preserve would undo their training
+        raise ValueError(f"objective.preserve swaps the trigger for a class word, and {bare} picture(s) have none: "
+                         "set dataset.trigger for the pictures in the dataset folder itself")
     # objective.preserve: each caption also as each class word in the trigger's place, encoded with
     # the rest (a cache made without them is another key)
-    classes = [[as_class(t, spec.trigger, w) for t in texts for w in preserve] + [plain_class(w) for w in preserve]
-               for texts in variants]
+    classes = [[as_class(t, it.trigger, w) for t in texts for w in preserve] + [plain_class(w) for w in preserve]
+               for it, texts in zip(items, variants)]
     if preserve:
         for it, cl in zip(items, classes):
             it.caption += " ||| preserve: " + " ||| ".join(cl)
@@ -997,6 +1023,7 @@ def _expand_repeats(ds: Dataset, items: list[Item]) -> Dataset:
     owners = ds.owners or list(range(len(ds.samples)))
     for i, owner in enumerate(owners):
         order += [i] * items[owner].repeats
+    ds.triggers = [items[owner].trigger for owner in owners]
     buckets: dict[tuple, list[int]] = {}
     for i in order:
         buckets.setdefault(sample_shape(ds.samples[i]), []).append(i)

@@ -79,6 +79,8 @@ The pictures and videos, their captions, and how they're prepared.
 | `dataset.caption_mix` | `[]` | list of text | Several caption sets to mix: each step picks one of the picture's at random. [] = caption_set only. |
 | `dataset.trigger` | `""` | text | "[trigger]" in captions and sample prompts becomes this, and captions that don't mention it get it prepended ("ohwx, a photo of ..."). |
 | `dataset.trigger_prepend` | `true` | true/false | Prepend the trigger to captions that don't mention it. |
+| `dataset.folder_triggers` | `false` | true/false | Each top-level subfolder is a class with a trigger of its own: its name, without a kohya "N_" repeat count, is the trigger for the pictures in it ("3_ohwx" trains ohwx, three times over). Pictures in the dataset folder itself use `trigger`. Sample prompts name the triggers they want. |
+| `dataset.folder_trigger_words` | `{}` | object | With folder_triggers: a trigger word in place of a folder's name, by folder: {"alice": "myalice"}. A folder not in it uses its name. |
 | `dataset.masked_loss` | `false` | true/false | Masked training: pictures with a mask only learn where it's white. |
 | `dataset.unmasked_weight` | `0.0` | number, >= 0, <= 1 | Masked training: how much the rest of the picture still trains (0 = not at all, 0.1 = lightly). |
 | `dataset.video_frames` | `49` | whole number, >= 1 | Videos train as clips this many frames long at most (snapped to a length the model's VAE encodes exactly). An image model trains a video's frames as pictures. |

@@ -3,6 +3,7 @@
 // beside the pictures, or, in a narrow window, a drawer over the right edge.
 import { ZenButton, ZenInput, ZenSwitch } from '@nynxz/zenkit-ui'
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { engine } from '@/api/engine'
 import { remembered } from '@/lib/remembered'
 import { activeCaptions, captionInfo } from '@/stores/captions'
@@ -129,6 +130,25 @@ async function deleteInputSet() {
   await engine.deleteControlSet(props.name, set)
   flash(`“${set}” deleted`)
   await load()
+}
+// the whole dataset, once its name is typed: its files go for good, where they came from stays
+const router = useRouter()
+async function deleteDataset() {
+  const typed = await askText({
+    title: `Delete the dataset “${props.name}”?`,
+    message: 'Type the dataset name to delete it.',
+    ok: 'Delete',
+    danger: true,
+    input: { placeholder: props.name, check: (v) => (v === props.name ? null : `Type “${props.name}” to delete it`) },
+  })
+  if (typed !== props.name) return
+  try {
+    await engine.deleteDataset(props.name)
+  } catch (e) {
+    await load() // a delete that failed partway has still removed some: show what's left
+    return tellError(e, 'Couldn’t delete it')
+  }
+  router.push('/datasets')
 }
 const inputFiles = ref<HTMLInputElement | null>(null)
 async function addInputs(files: FileList | null) {
@@ -294,6 +314,9 @@ function onCaptioned(set: string) {
       <div class="side-row" title="What a mask leaves out as a purple/black checker instead of faded into the background: unmistakable on dark or busy pictures. The mask editor's High-vis switch is the same setting">
         <span class="small">High-vis</span><span class="spacer" />
         <ZenSwitch v-model="maskHighVis" :disabled="!counts.masked || !showMasks" />
+      </div>
+      <div class="side-row">
+        <ZenButton size="sm" variant="danger" icon="mdi mdi-delete-outline" title="Delete this dataset and every file in it; the folders you added from stay" @click="deleteDataset">Delete dataset…</ZenButton>
       </div>
       </template>
     </section>

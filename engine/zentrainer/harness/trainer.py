@@ -1647,7 +1647,8 @@ class Trainer:
         if plain:
             return self._prepared(i, index[data.plain_class(word)], x0, shapes)
         cap = random.choice(sample.variants) if len(sample.variants) > 1 else sample.caption
-        return self._prepared(i, index[data.as_class(ds.captions[cap], self.spec.dataset.trigger, word)], x0, shapes)
+        trigger = ds.triggers[i] if ds.triggers else self.spec.dataset.trigger
+        return self._prepared(i, index[data.as_class(ds.captions[cap], trigger, word)], x0, shapes)
 
     def _preserve_loss(self, idx: list, x0: torch.Tensor, shapes: list | None, x_t: torch.Tensor,
                        sigma: torch.Tensor, noise: torch.Tensor, acc: int) -> torch.Tensor | None:
@@ -1809,7 +1810,8 @@ class Trainer:
         _room_for(folder, sum(t.numel() * t.element_size() for t in weights.values()))
         # written beside it under a name ComfyUI doesn't list, flushed, then swapped in: a full disk,
         # a kill or a power cut mid-save leaves no half-written LoRA in the loras folder
-        meta = write_metadata(self.spec.to_dict(), self.step)
+        words = sorted({w for w in self.dataset.triggers if w}) if self.spec.dataset.folder_triggers else []
+        meta = write_metadata(self.spec.to_dict(), self.step, words)
         safeio.write_to_path(path, lambda tmp: sft.save_file(weights, tmp, metadata=meta))
         # safetensors writes owner-only (0600); a LoRA is an output like ComfyUI's images, readable
         # by whatever else serves or syncs the folder (Docker, a share, another user's ComfyUI)

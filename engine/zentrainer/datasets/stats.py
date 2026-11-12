@@ -446,6 +446,14 @@ def snapshot(name: str, set_name: str = "default") -> dict:
     return {"current": now, "history": past[-60:]}
 
 
+def forget(name: str) -> None:
+    """A deleted dataset's history, looks and face embeddings, so a new one of that name starts
+    without them and people's faces don't outlive their pictures."""
+    store = _store_dir()
+    for f in [*store.glob(f"{_key(name)}.*"), *(store.parent / "faces").glob(f"{_key(name)}.*")]:
+        f.unlink(missing_ok=True)
+
+
 def latest_scores(name: str) -> dict | None:
     """The scores of the caption set looked at most recently (its history was written last), cheap,
     for the datasets list: {"scores", "set"}; None before a first look."""

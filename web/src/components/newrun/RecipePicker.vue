@@ -152,7 +152,10 @@ function mineOver(p: Mine, current: TrainSpec): TrainSpec {
   const out = JSON.parse(JSON.stringify(current)) as TrainSpec // the form's: parts of it are proxies
   merge(out as unknown as Record<string, unknown>, JSON.parse(JSON.stringify(p.data)) as Record<string, unknown>)
   const d = current.dataset
-  Object.assign(out.dataset, { folder: d.folder, trigger: d.trigger, trigger_prepend: d.trigger_prepend, caption_set: d.caption_set, caption_mix: d.caption_mix })
+  Object.assign(out.dataset, {
+    folder: d.folder, trigger: d.trigger, trigger_prepend: d.trigger_prepend, caption_set: d.caption_set, caption_mix: d.caption_mix,
+    folder_triggers: d.folder_triggers, folder_trigger_words: JSON.parse(JSON.stringify(d.folder_trigger_words ?? {})),
+  })
   out.name = current.name
   return out
 }

@@ -105,6 +105,13 @@ class DatasetSpec:
     trigger: str = setting("", '"[trigger]" in captions and sample prompts becomes this, and captions that don\'t '
                                'mention it get it prepended ("ohwx, a photo of ...").')
     trigger_prepend: bool = setting(True, "Prepend the trigger to captions that don't mention it.")
+    folder_triggers: bool = setting(False, "Each top-level subfolder is a class with a trigger of its own: its name, "
+                                           'without a kohya "N_" repeat count, is the trigger for the pictures in it '
+                                           '("3_ohwx" trains ohwx, three times over). Pictures in the dataset folder '
+                                           "itself use `trigger`. Sample prompts name the triggers they want.")
+    folder_trigger_words: dict[str, str] = setting(doc='With folder_triggers: a trigger word in place of a folder\'s name, by '
+                                                       'folder: {"alice": "myalice"}. A folder not in it uses its name.',
+                                                   factory=dict)
     masked_loss: bool = setting(False, "Masked training: pictures with a mask only learn where it's white.")
     unmasked_weight: float = setting(0.0, "Masked training: how much the rest of the picture still trains "
                                           "(0 = not at all, 0.1 = lightly).", ge=0, le=1)
@@ -470,11 +477,14 @@ class TrainSpec:
             # nothing would train: it failed only once the model had loaded ("no layers matched")
             raise SpecError('network.targets has no patterns: add the layers to train (regexes), or use "attn", '
                             '"mlp", "attn_mlp" or "all"')
+        if not all(isinstance(w, str) and w.strip() for w in self.dataset.folder_trigger_words.values()):
+            raise SpecError('dataset.folder_trigger_words gives each folder a word: {"alice": "myalice"}, none of them empty')
         if self.objective.preserve.strip():
             if not any(w.strip() for w in self.objective.preserve.split(",")):
                 raise SpecError('objective.preserve is class words, comma-separated: e.g. "woman, man, person"')
-            if not self.dataset.trigger.strip():
-                raise SpecError("objective.preserve swaps the trigger for a class word: set dataset.trigger")
+            if not self.dataset.trigger.strip() and not self.dataset.folder_triggers:
+                raise SpecError("objective.preserve swaps the trigger for a class word: set dataset.trigger "
+                                "(or dataset.folder_triggers, with every picture in a folder)")
             if self.slider.kind:
                 raise SpecError("objective.preserve is for adapters with a trigger, not sliders")
             if self.dataset.edit_grounded:
@@ -562,6 +572,8 @@ def _type_name(hint: Any) -> str:
         return " or ".join(json.dumps(a) for a in args)
     if origin is list or hint is list:
         return f"list of {_type_name(args[0])}" if args else "list"
+    if origin is dict:
+        return "object"
     return {bool: "true/false", int: "whole number", float: "number", str: "text", dict: "object",
             type(None): "null"}.get(hint, getattr(hint, "__name__", str(hint)))
 
@@ -855,6 +867,8 @@ def _ts_type(hint: Any) -> str:
     if origin is list or hint is list:
         inner = _ts_type(args[0]) if args else "unknown"
         return f"({inner})[]" if "|" in inner else f"{inner}[]"
+    if origin is dict and args:
+        return f"Record<string, {_ts_type(args[1])}>"
     return {bool: "boolean", int: "number", float: "number", str: "string", dict: "Record<string, unknown>",
             type(None): "null"}.get(hint, "unknown")
 
