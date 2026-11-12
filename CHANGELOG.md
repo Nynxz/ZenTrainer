@@ -5,6 +5,11 @@ and Manager show.
 
 ## Unreleased
 
+- **MiniMax H3 samples keep sage attention.** The token refiner's attention received fp32 q/k
+  beside a bf16 v, and no attention override could see it: `preprocess_text_embeds` runs outside
+  `transformer_options`. Sage refused every one of those calls (an "Error running sage attention"
+  line per image) and those passes ran on ComfyUI's slower pytorch attention. q/k are now cast to
+  v's dtype at the model's one attention entry point, which changes nothing when they already agree.
 - **A tiny VAE ComfyUI can't load no longer stops a run.** A `models/vae_approx` file that isn't the
   TAEHV ComfyUI expects (a bare decoder, no `decoder.*` keys) failed while the previewer was built;
   the run carried on and only the log showed it. The previewer is skipped with a line saying previews

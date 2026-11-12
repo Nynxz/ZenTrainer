@@ -1,8 +1,10 @@
 """Fixes for ComfyUI model code that runs fine for sampling but can't train, applied at runtime
 from here so the pinned ComfyUI checkout stays untouched: one module per model, after ComfyUI's
 comfy/ldm/<model>/. Each patch only changes what runs while `comfy.model_management.in_training`
-is set: sampling keeps ComfyUI's fused kernels. Each is the change worth sending upstream; drop
-its module here once ComfyUI has it.
+is set: sampling keeps ComfyUI's fused kernels. (MiniMax H3's attention dtype cast is the one that
+sample renders need as well: it casts q/k to v's dtype only when they disagree, which sampling's
+own attention can't survive either.) Each is the change worth sending upstream; drop its module
+here once ComfyUI has it.
 
 tests/comfy trains each patched model through a real ComfyUI and checks the patched model
 computes what ComfyUI's code does.
