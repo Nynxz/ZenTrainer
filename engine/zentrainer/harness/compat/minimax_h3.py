@@ -96,10 +96,9 @@ def apply() -> None:
         if isinstance(qt, torch.Tensor) and isinstance(kt, torch.Tensor) and isinstance(vt, torch.Tensor) \
                 and (qt.dtype != vt.dtype or kt.dtype != vt.dtype):
             if hasattr(q, "peek") and hasattr(k, "peek") and hasattr(v, "peek"):
-                # containers in, containers out: bare tensors would skip the backend's container path
-                q = h3.AttentionTensorContainer(qt.to(vt.dtype))
-                k = h3.AttentionTensorContainer(kt.to(vt.dtype))
-                v = h3.AttentionTensorContainer(vt)
+                # Transfer ownership so the caller's containers cannot retain the input storage.
+                q = h3.AttentionTensorContainer(q.take().to(vt.dtype))
+                k = h3.AttentionTensorContainer(k.take().to(vt.dtype))
             else:
                 q, k, v = qt.to(vt.dtype), kt.to(vt.dtype), vt
         del qt, kt, vt  # the backend frees q/k/v after prequantization; these refs would keep them alive
