@@ -24,6 +24,13 @@ Two ways to take the first product:
 Outside the CUDA kernels the rotation after either is a small per-group matmul. Training only;
 anything else (other layouts, an fp8 backward, a weight that trains, no Triton) and any error
 falls back to ComfyUI's own path.
+
+Packed formats (asym_w4a8_int8, w6a8_int8: comfy_kitchen's AsymW4A8Int8Layout, 4/6-bit codes with
+group scales and a codebook) have no input-gradient kernel above: the qdata isn't a tensor-wise
+int8 matrix, so the backward dequantizes the weight and takes one bf16 matmul against it. That is
+also the fix for ComfyUI's own path on these layers, which fails outright: a weight-only quantized
+layer runs F.linear on the QuantizedTensor, and autograd's linear backward hands `mm(grad, W)` a
+non-transposed RHS, which the w4a8 mm handler refuses ("W4A8 GEMM expects RHS W.T.").
 """
 
 from __future__ import annotations
@@ -194,13 +201,24 @@ def _patch() -> None:
     logging.info("[ZenTrainer] int8 ConvRot backward: %s", _mode)
 
 
-# ---- weight-only int8 layers (ComfyUI's int8_tensorwise: quantize_input False) --------------
+# ---- weight-only quantized layers (ComfyUI's int8_tensorwise and the packed 4/6-bit formats:
+# asym_w4a8_int8, w6a8_int8) ---------------------------------------------------------------
 # ComfyUI never routes these through QuantLinearFunc: a layer whose input needs a gradient runs
 # F.linear on the QuantizedTensor under autograd, which decomposes to matmul, so the weight is
 # dequantized and both the forward and the input-gradient matmul run in bf16 (profiled on H3 int8:
 # every trained layer). Only grad-free layers hit the int8 kernel. While training, these layers
 # get their own autograd Function instead: the int8 kernel forward, and the input gradient from
-# the W8A8 kernels (mode "w8a8") or a dequantized matmul.
+# the W8A8 kernels (mode "w8a8", int8_tensorwise only: they read a tensor-wise int8 qdata) or a
+# dequantized matmul (the packed formats, and every other mode).
+
+INT8_FORMATS = ("int8_tensorwise",)  # the W8A8 kernels' layout: one scale per output row, int8 qdata
+PACKED_FORMATS = ("asym_w4a8_int8", "w6a8_int8")  # 4/6-bit codes: input gradient from a dequantized weight
+
+
+def quant_format(m) -> str | None:
+    """The layer's ComfyUI quantization format when this module has a training path for it."""
+    fmt = getattr(m, "quant_format", None)
+    return fmt if fmt in INT8_FORMATS + PACKED_FORMATS else None
 
 
 class _Int8Linear(torch.autograd.Function):
@@ -235,16 +253,29 @@ def _kernel_failed(e: Exception) -> None:
                         "matmul instead", type(e).__name__, e)
 
 
+_fuse_failed_once = False
+
+
+def _fuse_failed(e: Exception) -> None:
+    global _fuse_failed_once
+    if not _fuse_failed_once:
+        _fuse_failed_once = True
+        logging.warning("[ZenTrainer] a packed format's fused LoRA+GEMM forward failed (%s: %s): those adapters run "
+                        "unfused instead", type(e).__name__, e)
+
+
 def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
-    """A frozen int8 layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
+    """A frozen quantized layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
     from comfy.ops import CastBiasWeightContext
 
+    fmt = quant_format(m)
     with CastBiasWeightContext(m, g, offloadable=True, compute_dtype=g.dtype, want_requant=False) as (w, _b):
         gi = None
         if type(w).__name__ == "QuantizedTensor":
             params = w._params
             group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
-            if _mode == "w8a8" and g.is_cuda:
+            # the W8A8 kernels read a tensor-wise int8 qdata: a packed 4/6-bit one would give a wrong gradient
+            if _mode == "w8a8" and g.is_cuda and fmt in INT8_FORMATS:
                 try:
                     gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
                 except _BUGS:  # a mistake in the code, not the kernel: don't hide it behind the fallback
@@ -252,7 +283,8 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
                 except Exception as e:  # a kernel that fails to compile or launch here: dequantize
                     _kernel_failed(e)
                     gi = None
-            _count("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized")
+            _count(("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized") if fmt in INT8_FORMATS
+                   else f"{fmt}: dequantized")
             if gi is not None:
                 return gi
             gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
@@ -314,7 +346,15 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
         if fused is None:
             return None
         ones = torch.ones(residual.shape[-1], device=x2.device, dtype=x2.dtype)
-        out = fused(x2, bias, residual=residual, residual_scale=ones)
+        try:
+            out = fused(x2, bias, residual=residual, residual_scale=ones)
+        except _BUGS:  # a mistake in the code, not the backend: don't hide it behind the fallback
+            raise
+        except Exception as e:  # a packed format's fused epilogue can be missing on a backend: unfused is the same maths
+            if quant_format(m) not in PACKED_FORMATS:
+                raise
+            _fuse_failed(e)
+            return None
     if out is NotImplemented:
         return None
     _count("lora + int8: fused")
@@ -370,12 +410,12 @@ _installed: list = []
 
 def _int8_layer(m) -> bool:
     w = getattr(m, "weight", None)
-    return (getattr(m, "quant_format", None) == "int8_tensorwise" and getattr(m, "layout_type", None) is not None
+    return (quant_format(m) is not None and getattr(m, "layout_type", None) is not None
             and type(w).__name__ == "QuantizedTensor" and hasattr(m, "forward_comfy_cast_weights"))
 
 
 def install(model) -> int:
-    """Give the model's weight-only int8 layers the training path above (undone by uninstall)."""
+    """Give the model's weight-only quantized layers the training path above (undone by uninstall)."""
     import comfy.model_management as mm
 
     n = 0
@@ -397,7 +437,7 @@ def install(model) -> int:
 
 
 def weight_only(model) -> int:
-    """memory.int8_forward off: the model's int8 layers dequantize to bf16 for every matmul. ComfyUI
+    """memory.int8_forward off: the model's quantized layers dequantize to bf16 for every matmul. ComfyUI
     otherwise quantizes the input and multiplies in int8 whenever a layer trains (its
     QuantLinearFunc), so without this "off" would change nothing. Undone by uninstall."""
     n = 0

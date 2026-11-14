@@ -3,6 +3,11 @@
   backward. Plain torch here: the q/k RMSNorm modules, then the partial split-half rope (the
   first `rot` of each head's dims rotate, the rest pass through). Matches the kitchen op to ~1e-7.
   With memory.fused_qk_rope, norms and rope run as one op that trains (kernels/qk_norm_rope.py).
+- One dtype into attention (`optimized_attention`), whatever path built q/k/v: the token refiner's
+  attention receives q/k in a wider dtype than its bf16 v and gets no transformer_options
+  (model_base calls preprocess_text_embeds outside them), so no attention override can fix it
+  there; sage refuses the mix and ComfyUI's pytorch fallback raises on it. This one matters for
+  sampling too.
 - `_mod_gate` adds the gated branch into the residual stream in place, but norm1/norm2 saved
   that stream for their backward ("modified by an inplace operation"). Out of place in training.
 - MiniMax-H3-Image has an output head per step of its own sigma grid, picked by where the step
@@ -74,6 +79,33 @@ def apply() -> None:
 
     attention.forward = forward
     h3._mod_gate = mod_gate
+    real_optimized = getattr(h3, "optimized_attention", None)
+
+    def optimized_attention_cast(q, k, v, heads, **kwargs):
+        """One dtype for q, k and v, whichever path built them.
+
+        The token refiner's attention gets q/k in a wider dtype than its bf16 v, and it can't be
+        reached by transformer_options (model_base calls preprocess_text_embeds outside them, so
+        neither a sampling run's nor training's attention override sees those calls). sage and
+        SDPA both refuse the mix and the error lands in the log once per image; cast q/k to v's
+        dtype, the model's own."""
+        def peek(t):
+            return t.peek() if hasattr(t, "peek") else t
+
+        qt, kt, vt = peek(q), peek(k), peek(v)
+        if isinstance(qt, torch.Tensor) and isinstance(kt, torch.Tensor) and isinstance(vt, torch.Tensor) \
+                and (qt.dtype != vt.dtype or kt.dtype != vt.dtype):
+            if hasattr(q, "peek") and hasattr(k, "peek") and hasattr(v, "peek"):
+                # Transfer ownership so the caller's containers cannot retain the input storage.
+                q = h3.AttentionTensorContainer(q.take().to(vt.dtype))
+                k = h3.AttentionTensorContainer(k.take().to(vt.dtype))
+            else:
+                q, k, v = qt.to(vt.dtype), kt.to(vt.dtype), vt
+        del qt, kt, vt  # the backend frees q/k/v after prequantization; these refs would keep them alive
+        return real_optimized(q, k, v, heads, **kwargs)
+
+    if real_optimized is not None:
+        h3.optimized_attention = optimized_attention_cast
     image = getattr(h3, "MiniMaxH3ImageModel", None)
     if image is not None:
         image_forward = image._forward

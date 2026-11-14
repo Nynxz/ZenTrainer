@@ -893,6 +893,9 @@ def _tiny_previewer(t, fmt):
             from comfy.sd import VAE
 
             vae = VAE(comfy.utils.load_torch_file(path))
+            if vae.first_stage_model is None:  # not a VAE ComfyUI detects (a bare decoder, no decoder.* keys)
+                logging.warning("[ZenTrainer] %s isn't a tiny VAE ComfyUI can load; previews use the latent colours", file)
+                return None
             vae.first_stage_model.show_progress_bar = False
             return _video_tae_previewer(vae, t.device)
         from comfy.taesd.taesd import TAESD

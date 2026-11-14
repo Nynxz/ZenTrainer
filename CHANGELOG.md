@@ -5,6 +5,21 @@ and Manager show.
 
 ## Unreleased
 
+- **MiniMax H3 samples keep sage attention.** The token refiner's attention received fp32 q/k
+  beside a bf16 v, and no attention override could see it: `preprocess_text_embeds` runs outside
+  `transformer_options`. Sage refused every one of those calls (an "Error running sage attention"
+  line per image) and those passes ran on ComfyUI's slower pytorch attention. q/k are now cast to
+  v's dtype at the model's one attention entry point, which changes nothing when they already agree.
+- **A tiny VAE ComfyUI can't load no longer stops a run.** A `models/vae_approx` file that isn't the
+  TAEHV ComfyUI expects (a bare decoder, no `decoder.*` keys) failed while the previewer was built;
+  the run carried on and only the log showed it. The previewer is skipped with a line saying previews
+  fall back to the latent colours.
+- **Packed 4/6-bit bases train (w4a8, w6a8).** MiniMax H3's smaller quantized files stopped at the
+  first backward with "W4A8 GEMM expects RHS W.T.": their layers are weight-only quantized, and the
+  weight a LoRA'd linear hands autograd's backward is one the w4a8 matmul refuses. Only
+  `int8_tensorwise` layers had a training path. They now get the same one, with the input gradient
+  from a dequantized weight (the W8A8 kernels read a tensor-wise int8 qdata); int8 bases are
+  unchanged. H3-Image at 512 px: 4.0 s a step, level with the int8 build.
 - **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
   each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
   One word per folder and one LoRA learns several characters or concepts, each called up by its own
