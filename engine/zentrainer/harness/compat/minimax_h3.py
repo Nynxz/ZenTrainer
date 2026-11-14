@@ -95,7 +95,14 @@ def apply() -> None:
         qt, kt, vt = peek(q), peek(k), peek(v)
         if isinstance(qt, torch.Tensor) and isinstance(kt, torch.Tensor) and isinstance(vt, torch.Tensor) \
                 and (qt.dtype != vt.dtype or kt.dtype != vt.dtype):
-            return real_optimized(qt.to(vt.dtype), kt.to(vt.dtype), vt, heads, **kwargs)
+            if hasattr(q, "peek") and hasattr(k, "peek") and hasattr(v, "peek"):
+                # containers in, containers out: bare tensors would skip the backend's container path
+                q = h3.AttentionTensorContainer(qt.to(vt.dtype))
+                k = h3.AttentionTensorContainer(kt.to(vt.dtype))
+                v = h3.AttentionTensorContainer(vt)
+            else:
+                q, k, v = qt.to(vt.dtype), kt.to(vt.dtype), vt
+        del qt, kt, vt  # the backend frees q/k/v after prequantization; these refs would keep them alive
         return real_optimized(q, k, v, heads, **kwargs)
 
     if real_optimized is not None:
