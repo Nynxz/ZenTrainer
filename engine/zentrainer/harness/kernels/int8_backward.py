@@ -348,6 +348,8 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
         ones = torch.ones(residual.shape[-1], device=x2.device, dtype=x2.dtype)
         try:
             out = fused(x2, bias, residual=residual, residual_scale=ones)
+        except _BUGS:  # a mistake in the code, not the backend: don't hide it behind the fallback
+            raise
         except Exception as e:  # a packed format's fused epilogue can be missing on a backend: unfused is the same maths
             if quant_format(m) not in PACKED_FORMATS:
                 raise

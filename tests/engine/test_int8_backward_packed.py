@@ -81,13 +81,17 @@ def test_a_packed_weight_never_reaches_the_w8a8_kernels(monkeypatch):
     def w8a8_should_not_run(*args, **kwargs):
         raise AssertionError("the W8A8 kernels got a packed weight")
 
+    class CudaGradient(torch.Tensor):  # the gate is CUDA-only and CI has no GPU: a CPU tensor read as CUDA exercises it
+        is_cuda = True
+
     monkeypatch.setattr(ib, "_mode", "w8a8")
     monkeypatch.setattr(ib, "w8a8_input_grad", w8a8_should_not_run)
-    ib.stats.clear()
-    g = torch.randn(3, 8)
-    got = ib._layer_input_grad(Layer("asym_w4a8_int8", q), g)
-    torch.testing.assert_close(got.float(), (g @ w), rtol=2e-2, atol=5e-2)  # bf16 on both sides
-    assert ib.stats["asym_w4a8_int8: dequantized"] == 1
+    for fmt in ib.PACKED_FORMATS:
+        ib.stats.clear()
+        g = torch.randn(3, 8).as_subclass(CudaGradient)
+        got = ib._layer_input_grad(Layer(fmt, q), g)
+        torch.testing.assert_close(got.float(), (g.float() @ w), rtol=2e-2, atol=5e-2)  # bf16 on both sides
+        assert ib.stats[f"{fmt}: dequantized"] == 1
 
 
 def test_an_int8_weight_still_takes_the_w8a8_kernel(monkeypatch):
