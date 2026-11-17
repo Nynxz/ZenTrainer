@@ -4,8 +4,8 @@ comfy/ldm/<model>/. Each patch only changes what runs while `comfy.model_managem
 is set: sampling keeps ComfyUI's fused kernels. (MiniMax H3's attention dtype cast is the one that
 sample renders need as well: it casts q/k to v's dtype only when they disagree, which sampling's
 own attention can't survive either. It acts while `in_run` is set, a ZenTrainer run and its
-samples, never on the user's own workflows in that ComfyUI before or after one.) Each is the change worth sending upstream; drop its module
-here once ComfyUI has it.
+samples, never on the user's own workflows in that ComfyUI before or after one.) Each is the
+change worth sending upstream; drop its module here once ComfyUI has it.
 
 tests/comfy trains each patched model through a real ComfyUI and checks the patched model
 computes what ComfyUI's code does.

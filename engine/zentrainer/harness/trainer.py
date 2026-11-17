@@ -331,7 +331,7 @@ class Trainer:
                 packed = int8_backward.has_packed(dm)
                 dequantized = packed and (not self.spec.memory.int8_forward or int8_backward.packed_dequantized(
                     dm, _DTYPES[self.spec.memory.training_dtype]))
-                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps, packed=dequantized)
+                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps, dequantized=dequantized)
                 if why:
                     logging.info("[ZenTrainer] %s", why)
                 if compile_on and compat.fused_qk_rope:
