@@ -116,7 +116,7 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
         seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
         return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256, residual)
     g = _w8a8_input_grad(grad_2d, q, scale, group)
-    return g if residual is None else g + residual
+    return g if residual is None else g + residual.to(g.dtype)  # an fp16 residual: the bf16 result's dtype
 
 
 def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor:
@@ -356,7 +356,7 @@ def _check_packed(dequantized, g: torch.Tensor, gi: torch.Tensor, residual: torc
     _packed_checked.add(kind)
     ref = torch.mm(g.to(torch.bfloat16), dequantized())
     if residual is not None:
-        ref = ref + residual
+        ref = ref + residual.to(ref.dtype)
     rel = ((gi.float() - ref.float()).norm() / ref.float().norm().clamp_min(1e-30)).item()
     if rel > 0.15:
         _packed_w8a8 = False
@@ -407,8 +407,8 @@ def packed_input_grad(g: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor,
     if gi is None:
         gi = torch.mm(g.to(torch.bfloat16), dequantized())
         if residual is not None:
-            gi = gi + residual
-    return gi
+            gi = gi + residual.to(gi.dtype)
+    return gi.to(torch.bfloat16)  # what the fake declares: a compiled graph is built on it
 
 
 @packed_input_grad.register_fake

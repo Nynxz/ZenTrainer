@@ -348,3 +348,22 @@ def test_the_w4a8_forward_compiles_while_routed():
 
     assert w4a8_int8.w4a8_int8_linear is ib._ck_w4a8_linear  # put back after
     torch.testing.assert_close(got, want)
+
+
+def test_the_packed_backward_stays_bf16_with_an_fp16_residual(monkeypatch):
+    """fp16 training hands the packed op an fp16 residual (a LoRA's input gradient): bf16 + fp16 would
+    come out fp32, against the bf16 a compiled graph is built on."""
+    w = _real_packed()
+    p = w._params
+    n, k = p.orig_shape
+    monkeypatch.setattr(ib, "_mode", "bf16")
+    args = (w._qdata, p.scale, p.s_channel, p.codebook, None, 16, 256, False, n, k, "w6a8_int8")
+    g, residual = torch.randn(5, n, dtype=torch.float16), torch.randn(5, k, dtype=torch.float16)
+
+    def grad(g, residual):
+        return ib.packed_input_grad(g, *args, residual)
+
+    eager = grad(g, residual)
+    assert eager.dtype == torch.bfloat16
+    torch._dynamo.reset()
+    torch.testing.assert_close(torch.compile(grad, backend="aot_eager", fullgraph=True)(g, residual), eager)
