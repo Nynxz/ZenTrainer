@@ -302,7 +302,16 @@ class Trainer:
     # ---- lifecycle -------------------------------------------------------------
 
     def run(self) -> str:
-        """Train to completion (or stop). Returns the final status."""
+        """Train to completion (or stop), or sample a finished run (sample_job). Returns the final
+        status. compat.in_run is set for all of it: the ComfyUI patches that change sampling too act
+        on this run's renders only, never on the user's own workflows after it."""
+        compat.in_run = True
+        try:
+            return self._run()
+        finally:
+            compat.in_run = False
+
+    def _run(self) -> str:
         import comfy.model_management as mm
 
         if self.sample_job:

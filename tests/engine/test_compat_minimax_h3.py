@@ -40,6 +40,7 @@ def _install(monkeypatch, attention, in_training):
         monkeypatch.setitem(sys.modules, name, mod)
     sys.modules["comfy"].model_management = mm
     monkeypatch.setattr(compat, "_applied", set())
+    monkeypatch.setattr(compat, "in_run", True)  # during a ZenTrainer run, its samples included
     patch.apply()
     return h3.optimized_attention
 
@@ -104,3 +105,36 @@ def test_cast_keeps_values_and_gradients(monkeypatch, in_training, q_dtype, k_dt
     got.float().sum().backward()
     expected.float().sum().backward()
     torch.testing.assert_close(tuple(t.grad for t in inputs), tuple(t.grad for t in reference), rtol=0, atol=0)
+
+
+def test_outside_a_run_comfyui_gets_its_own_attention(monkeypatch):
+    """Applied once a run trains H3, the cast stays in ComfyUI: before and after a run, the user's own
+    H3 workflows must reach ComfyUI's attention with what they passed, mixed dtypes and all."""
+    seen = {}
+
+    def attention(q, k, v, heads, **kwargs):
+        seen.update(q=q, k=k, v=v)
+        return "out"
+
+    cast = _install(monkeypatch, attention, in_training=False)
+    monkeypatch.setattr(compat, "in_run", False)
+    q, k, v = (AttentionTensorContainer(torch.randn(1, 2, 4, 8, dtype=d))
+               for d in (torch.float32, torch.float32, torch.bfloat16))
+    assert cast(q, k, v, 2, skip_reshape=True) == "out"
+    assert seen["q"] is q and seen["k"] is k and seen["v"] is v and q.peek().dtype == torch.float32
+
+
+def test_a_run_clears_the_flag_however_it_ends(monkeypatch):
+    from zentrainer.harness.trainer import Trainer
+
+    trainer = Trainer.__new__(Trainer)  # run() only wraps _run(): nothing else of a trainer is needed
+    inside = []
+
+    def crash():
+        inside.append(compat.in_run)
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(trainer, "_run", crash)
+    with pytest.raises(RuntimeError):
+        trainer.run()
+    assert inside == [True] and compat.in_run is False

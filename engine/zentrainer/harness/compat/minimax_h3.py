@@ -7,7 +7,8 @@
   attention receives q/k in a wider dtype than its bf16 v and gets no transformer_options
   (model_base calls preprocess_text_embeds outside them), so no attention override can fix it
   there; sage refuses the mix and ComfyUI's pytorch fallback raises on it. This one matters for
-  sampling too.
+  sampling too, so it acts for a whole ZenTrainer run (compat.in_run), its samples included, and
+  only then: the user's own H3 workflows in that ComfyUI run ComfyUI's code, before and after.
 - `_mod_gate` adds the gated branch into the residual stream in place, but norm1/norm2 saved
   that stream for their backward ("modified by an inplace operation"). Out of place in training.
 - MiniMax-H3-Image has an output head per step of its own sigma grid, picked by where the step
@@ -88,7 +89,10 @@ def apply() -> None:
         reached by transformer_options (model_base calls preprocess_text_embeds outside them, so
         neither a sampling run's nor training's attention override sees those calls). sage and
         SDPA both refuse the mix and the error lands in the log once per image; cast q/k to v's
-        dtype, the model's own."""
+        dtype, the model's own. Only during a ZenTrainer run: outside one, ComfyUI's as it is."""
+        if not compat.in_run:
+            return real_optimized(q, k, v, heads, **kwargs)
+
         def peek(t):
             return t.peek() if hasattr(t, "peek") else t
 

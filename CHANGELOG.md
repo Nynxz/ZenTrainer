@@ -10,6 +10,8 @@ and Manager show.
   `transformer_options`. Sage refused every one of those calls (an "Error running sage attention"
   line per image) and those passes ran on ComfyUI's slower pytorch attention. q/k are now cast to
   v's dtype at the model's one attention entry point, which changes nothing when they already agree.
+  Only during a ZenTrainer run and its samples: your own H3 workflows in that ComfyUI run ComfyUI's
+  code as they are, before a run and after one.
 - **A tiny VAE ComfyUI can't load says so in the log.** A `models/vae_approx` file that isn't the
   TAEHV ComfyUI expects (a bare decoder, no `decoder.*` keys) failed with a traceback while the
   previewer was built; the run carried on with the latent colours. It's now one line naming the file.
