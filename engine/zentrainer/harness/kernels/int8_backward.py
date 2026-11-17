@@ -238,6 +238,13 @@ def has_packed(model) -> bool:
     return any(quant_format(m) in PACKED_FORMATS for m in model.modules())
 
 
+def packed_dequantized(model, dtype: torch.dtype) -> bool:
+    """Whether ComfyUI dequantizes the model's packed layers for every matmul when training in `dtype`:
+    it does for a weight asked for in a dtype other than its own (comfy.ops.cast_bias_weight), e.g.
+    fp16 training on a bf16 file."""
+    return any(quant_format(m) in PACKED_FORMATS and getattr(m.weight, "dtype", dtype) != dtype for m in model.modules())
+
+
 class _Int8Linear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, m, original):

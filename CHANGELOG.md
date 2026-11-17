@@ -28,8 +28,9 @@ and Manager show.
   dequantizing. The first packed layer of each kind is checked against the bf16 gradient, and a real
   mismatch falls back to it. They train with Compile blocks too: comfy_kitchen's w4a8 kernels run as
   opaque ops in a compiled block, H3 w6a8 at 512 px 1.9x as fast as uncompiled and MOSS w6a8 at 768
-  px 1.4x, with the same loss (not with Int8 forward off, whose dequantized matmuls can't compile).
-  The decode to int8 is from BobJohnson24. int8 bases are unchanged.
+  px 1.4x, with the same loss (not with Int8 forward off, or fp16 training on a bf16 file: ComfyUI
+  dequantizes those matmuls, which can't compile). The decode to int8 is from BobJohnson24. int8
+  bases are unchanged.
 - **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
   each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
   One word per folder and one LoRA learns several characters or concepts, each called up by its own

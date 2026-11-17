@@ -175,6 +175,15 @@ def test_packed_w8a8_keeps_the_dequantized_path_where_it_cant_apply(monkeypatch,
     assert ib.stats["asym_w4a8_int8: dequantized"] == 1
 
 
+def test_packed_layers_trained_in_another_dtype_are_dequantized():
+    """ComfyUI dequantizes a weight asked for in a dtype other than its own: fp16 training on a bf16 packed
+    file runs dequantized matmuls, which can't compile."""
+    bf16 = torch.zeros(1, dtype=torch.bfloat16)
+    model = torch.nn.Sequential(Layer("int8_tensorwise", torch.zeros(1, dtype=torch.float16)), Layer("w6a8_int8", bf16))
+    assert not ib.packed_dequantized(model, torch.bfloat16)  # the int8 layer's dtype isn't a packed one's
+    assert ib.packed_dequantized(model, torch.float16)
+
+
 def test_a_model_with_a_packed_layer_is_found():
     plain = torch.nn.Sequential(Layer("int8_tensorwise", torch.zeros(1)), torch.nn.Linear(2, 2))
     assert not ib.has_packed(plain)

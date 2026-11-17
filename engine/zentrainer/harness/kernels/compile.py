@@ -31,14 +31,15 @@ def wanted(setting: bool | str, steps: int, packed: bool = False) -> tuple[bool,
     inductor generates its kernels with (often missing on Windows, where it also needs a C++
     compiler).
 
-    `packed`: the base has w4a8/w6a8 layers and int8_forward is off, so ComfyUI dequantizes them
-    for every matmul through comfy_kitchen, whose w4a8 code reads raw data pointers a compiled
-    trace's fake tensors don't have. With int8_forward on their kernels run as opaque ops
-    (int8_backward.opaque_packed, packed_input_grad) and compile."""
+    `packed`: the base has w4a8/w6a8 layers ComfyUI dequantizes for every matmul through comfy_kitchen
+    (int8_forward off, or a training dtype other than the weights' own: fp16 on a bf16 file), whose
+    code reads raw data pointers a compiled trace's fake tensors don't have. Otherwise their kernels
+    run as opaque ops (int8_backward.opaque_packed, packed_input_grad) and compile."""
     if setting == "auto":
         return False, "not compiling: Compile blocks is off unless turned on (Memory), and an older spec's \"auto\" is off"
     if setting and packed:
-        return False, "not compiling: a packed (w4a8/w6a8) base with Int8 forward off dequantizes every matmul, which can't run compiled; this run trains uncompiled"
+        return False, ("not compiling: this packed (w4a8/w6a8) base is dequantized for every matmul (Int8 forward off, "
+                       "or a training dtype other than its weights'), which can't run compiled; this run trains uncompiled")
     return bool(setting), ""
 
 
