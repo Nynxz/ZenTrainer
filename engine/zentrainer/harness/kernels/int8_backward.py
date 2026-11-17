@@ -73,6 +73,7 @@ def enable(mode: str | bool) -> None:
     _packed_checked = set()
     _fuse_failed_once = False
     _failed_once.clear()
+    _decoder.clear()
     if _mode:
         _patch()
     if _mode == "w8a8" and torch.cuda.is_available():
@@ -276,6 +277,14 @@ def _kernel_failed(e: Exception, kind: str = "int8") -> None:
                         "matmul instead", type(e).__name__, e, kind)
 
 
+def _packed_failed(e: Exception) -> None:
+    """A packed decode or kernel this backend refuses: packed layers dequantize for the rest of the run,
+    rather than trying it again on every layer of every step."""
+    global _packed_w8a8
+    _packed_w8a8 = False
+    _kernel_failed(e, "packed")
+
+
 _fuse_failed_once = False
 
 
@@ -328,6 +337,8 @@ def _decode_to_int8(qdata: torch.Tensor, s_rel: torch.Tensor, codebook, group_si
     for fn in _decoders(qdata.is_cuda):
         try:
             out = fn(qdata, s_rel, codebook, group_size)
+        except torch.OutOfMemoryError:  # the card was full, not this backend unable: the trainer handles it
+            raise
         except RuntimeError as e:  # a backend that imports but can't launch on this device or build: the next one
             err = e
             continue
@@ -391,26 +402,31 @@ def packed_input_grad(g: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor,
     def dequantized():
         return _dequantize_packed(qdata, s_rel, s_channel, codebook, correction, group_size, convrot_groupsize)
 
-    gi = None
+    gi, decoded = None, False
     if _mode == "w8a8" and _packed_w8a8 and g.is_cuda and correction is None:
         try:
             q = _decode_to_int8(qdata, s_rel, codebook, group_size)
+        except torch.OutOfMemoryError:
+            raise
         except (RuntimeError, ValueError) as e:  # comfy_kitchen refusing this layer or device: dequantize
-            _kernel_failed(e, "packed")  # (a TypeError or AttributeError, a changed signature, propagates)
+            _packed_failed(e)  # (a TypeError or AttributeError, a changed signature, propagates)
             q = None
         if q is not None:
             try:
                 gi = w8a8_input_grad(g, q, s_channel, convrot_groupsize, residual)
-            except _BUGS:
+            except (*_BUGS, torch.OutOfMemoryError):
                 raise
             except Exception as e:
-                _kernel_failed(e, "packed")
+                _packed_failed(e)
                 gi = None
             del q
             kind = (fmt, mma_packed)
             if gi is not None and kind not in _packed_checked:
-                gi = _check_packed(dequantized, g, gi, residual, kind)
-    _count(f"{fmt}: w8a8 (decoded)" if gi is not None else f"{fmt}: dequantized")
+                checked = _check_packed(dequantized, g, gi, residual, kind)
+                gi, decoded = checked, checked is gi  # a rejected check hands back the bf16 gradient
+            else:
+                decoded = gi is not None
+    _count(f"{fmt}: w8a8 (decoded)" if decoded else f"{fmt}: dequantized")
     if gi is None:
         gi = torch.mm(g.to(torch.bfloat16), dequantized())
         if residual is not None:
@@ -488,7 +504,7 @@ def packed_linear(x: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_c
     if residual is None or not _fuse_failed_once:
         try:
             return linear(residual, residual_scale)
-        except _BUGS:
+        except (*_BUGS, torch.OutOfMemoryError):
             raise
         except Exception as e:
             if residual is None:
@@ -583,7 +599,7 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
         ones = torch.ones(residual.shape[-1], device=x2.device, dtype=x2.dtype)
         try:
             out = fused(x2, bias, residual=residual, residual_scale=ones)
-        except _BUGS:  # a mistake in the code, not the backend: don't hide it behind the fallback
+        except (*_BUGS, torch.OutOfMemoryError):  # a mistake in the code, or a full card: not a missing epilogue
             raise
         except Exception as e:  # a packed format's fused epilogue can be missing on a backend: unfused is the same maths
             if quant_format(m) not in PACKED_FORMATS:

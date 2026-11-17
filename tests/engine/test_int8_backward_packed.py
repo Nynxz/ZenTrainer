@@ -409,3 +409,71 @@ def test_a_refused_fused_residual_is_added_after_the_gemm(monkeypatch, compiled)
     calls.clear()
     forward(x, h)
     assert calls == [False]  # once refused, not asked again this run
+
+
+def _packed_call(monkeypatch, decode):
+    """One packed layer's backward in w8a8 mode, with `decode` standing in for comfy_kitchen's."""
+    fake_comfy(monkeypatch)
+    w = torch.randn(8, 32)
+    monkeypatch.setattr(ib, "_mode", "w8a8")
+    monkeypatch.setattr(ib, "_packed_w8a8", True)
+    monkeypatch.setattr(ib, "_failed_once", {"int8", "packed"})
+    monkeypatch.setattr(ib, "_decode_to_int8", decode)
+    dequantizes_to(monkeypatch, w)
+    return lambda: ib._layer_input_grad(Layer("w6a8_int8", PackedQuantizedTensor(w)),
+                                        torch.randn(3, 8).as_subclass(CudaGradient))
+
+
+def test_a_full_card_is_not_a_backend_refusing_the_decode(monkeypatch):
+    def decode(*args):
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    with pytest.raises(torch.OutOfMemoryError):  # the trainer's own out-of-memory handling takes it
+        _packed_call(monkeypatch, decode)()
+    assert ib._packed_w8a8  # nothing switched off for the rest of the run
+
+
+def test_a_refused_decode_is_not_tried_again_this_run(monkeypatch):
+    calls = []
+
+    def decode(*args):
+        calls.append(1)
+        raise RuntimeError("no kernel image for this device")
+
+    step = _packed_call(monkeypatch, decode)
+    step()
+    step()
+    assert calls == [1] and not ib._packed_w8a8  # dequantized from then on, as the warning says
+
+
+def test_a_rejected_check_is_counted_as_dequantized(monkeypatch):
+    step = _packed_call(monkeypatch, lambda *args: torch.zeros(8, 32, dtype=torch.int8))
+    monkeypatch.setattr(ib, "w8a8_input_grad", lambda g, *a, **k: torch.zeros(g.shape[0], 32))
+    monkeypatch.setattr(ib, "_packed_checked", set())
+    monkeypatch.setattr(ib, "_check_packed", lambda dequantized, g, gi, residual, kind: gi + 1)  # the bf16 one instead
+    ib.stats.clear()
+    step()
+    assert ib.stats["w6a8_int8: dequantized"] == 1 and not ib.stats["w6a8_int8: w8a8 (decoded)"]
+
+
+def test_a_full_card_in_the_fused_forward_is_not_a_missing_epilogue(monkeypatch):
+    def kitchen(*args, **kwargs):
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(ib, "_ck_w4a8_linear", kitchen)
+    monkeypatch.setattr(ib, "_fuse_failed_once", False)
+    t = torch.zeros(1)
+    with pytest.raises(torch.OutOfMemoryError):
+        ib.packed_linear(torch.randn(3, 8), t, t, torch.zeros(6), None, None, None, 16, 256, torch.float32, False,
+                         None, None, 0.0, torch.randn(3, 6), torch.ones(6))
+    assert not ib._fuse_failed_once  # fused stays on: it was the card, not the backend
+
+
+def test_a_new_run_looks_for_its_decoder_again(monkeypatch):
+    monkeypatch.setattr(ib, "_patch", lambda: None)
+    monkeypatch.setattr(ib.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(ib, "_mode", "")
+    monkeypatch.setattr(ib, "_decoder", {True: print})
+    ib.enable("w8a8")
+    assert ib._decoder == {}
+    ib.enable("")
