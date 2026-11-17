@@ -222,6 +222,7 @@ def test_decoded_int8_reproduces_the_dequantized_gradient():
     """The identity the whole mode rests on, against comfy_kitchen itself: for a symmetric packed weight,
     ((g * s_channel) @ decoded_int8) rotated == g @ dequantize()."""
     pytest.importorskip("comfy_kitchen")
+    from comfy_kitchen.exceptions import NoCapableBackendError
     from comfy_kitchen.tensor.w4a8_int8 import dequantize_w4a8_int8_weight, quantize_w4a8_int8_weight
 
     torch.manual_seed(0)
@@ -229,7 +230,7 @@ def test_decoded_int8_reproduces_the_dequantized_gradient():
     try:
         qdata, s_rel, s_channel, correction, codebook = quantize_w4a8_int8_weight(torch.randn(n, k), group_size=16,
                                                                                   convrot_groupsize=256)
-    except Exception as e:  # no backend here that quantizes on this device
+    except NoCapableBackendError as e:  # no backend here that quantizes on this device; anything else fails
         pytest.skip(f"comfy_kitchen can't quantize here: {e}")
     assert correction is None
     q = ib._decode_to_int8(qdata, s_rel, codebook, 16)
