@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Changing the learning rate mid-run works with Automagic.** Automagic keeps its own rate, set
+  once from the run's at its first step, so the run page's learning rate changed nothing it used. Its
+  rate now moves to the one you set, its floor and ceiling with it, and it adapts on from there
+  (a MOSS run at 5.4e-4 set to 1.35e-4 stayed at 1.29-1.36e-4).
 - **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
   each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
   One word per folder and one LoRA learns several characters or concepts, each called up by its own
