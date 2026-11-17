@@ -64,11 +64,14 @@ def _count(path: str) -> None:
 
 
 def enable(mode: str | bool) -> None:
-    """Pick the backward ("" = ComfyUI's), patching ComfyUI's QuantLinearFunc once."""
-    global _mode, _packed_w8a8, _packed_checked
+    """Pick the backward ("" = ComfyUI's), patching ComfyUI's QuantLinearFunc once. Each run starts
+    clean: a fallback one run took (an out-of-memory moment in a fused forward, say) isn't kept."""
+    global _mode, _packed_w8a8, _packed_checked, _fuse_failed_once
     _mode = "fused" if mode is True else (mode or "")
     _packed_w8a8 = _mode == "w8a8"
     _packed_checked = set()
+    _fuse_failed_once = False
+    _failed_once.clear()
     if _mode:
         _patch()
     if _mode == "w8a8" and torch.cuda.is_available():
@@ -462,7 +465,7 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
 
     with CastBiasWeightContext(m, x2, offloadable=True, compute_dtype=x2.dtype, want_requant=True) as (w, bias):
         fused = getattr(w, "linear_input_act", None) if type(w).__name__ == "QuantizedTensor" else None
-        if fused is None:
+        if fused is None or (_fuse_failed_once and quant_format(m) in PACKED_FORMATS):  # failed once: it fails again
             return None
         ones = torch.ones(residual.shape[-1], device=x2.device, dtype=x2.dtype)
         try:

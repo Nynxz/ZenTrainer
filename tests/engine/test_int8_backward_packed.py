@@ -197,8 +197,11 @@ def test_packed_layers_take_the_w8a8_kernels_only_in_w8a8_mode(monkeypatch):
     monkeypatch.setattr(ib, "_mode", "")  # enable() writes these: monkeypatch puts them back
     monkeypatch.setattr(ib, "_packed_w8a8", False)
     monkeypatch.setattr(ib, "_packed_checked", {("w6a8_int8", False)})
+    monkeypatch.setattr(ib, "_fuse_failed_once", True)
+    monkeypatch.setattr(ib, "_failed_once", {"packed"})
     ib.enable("w8a8")
     assert ib._packed_w8a8 and not ib._packed_checked  # a new run checks its first layers again
+    assert not ib._fuse_failed_once and not ib._failed_once  # and tries what the last one fell back from
     ib.enable("fused")
     assert not ib._packed_w8a8
     ib.enable("")
