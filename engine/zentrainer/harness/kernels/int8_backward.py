@@ -24,6 +24,17 @@ Two ways to take the first product:
 Outside the CUDA kernels the rotation after either is a small per-group matmul. Training only;
 anything else (other layouts, an fp8 backward, a weight that trains, no Triton) and any error
 falls back to ComfyUI's own path.
+
+Packed formats (asym_w4a8_int8, w6a8_int8: comfy_kitchen's AsymW4A8Int8Layout, 4/6-bit codes with
+group scales and a codebook) have no input-gradient kernel above: the qdata isn't an int8 matrix,
+so in "w8a8" the codes are decoded, every backward, to the int8 grid the format's own forward
+feeds its GEMM (round(clamp(level * s_rel)), in the rotated basis), and that goes to the W8A8
+kernels with the per-row s_channel as the scale: the same shape as a ConvRot int8 weight. Otherwise
+(and for a layer the decode doesn't cover) the backward dequantizes the weight and takes one bf16
+matmul against it. That is
+also the fix for ComfyUI's own path on these layers, which fails outright: a weight-only quantized
+layer runs F.linear on the QuantizedTensor, and autograd's linear backward hands `mm(grad, W)` a
+non-transposed RHS, which the w4a8 mm handler refuses ("W4A8 GEMM expects RHS W.T.").
 """
 
 from __future__ import annotations
@@ -33,10 +44,13 @@ import logging
 import torch
 
 import collections
+import contextlib
 
 from ..network import _PassesOn
 
 _mode = ""  # "", "fused" or "w8a8"
+_packed_w8a8 = False  # packed 4/6-bit layers decoded to int8 for the w8a8 kernels (off if the first check fails)
+_packed_checked: set = set()  # the kinds of packed layer (format, GEMV-packed) whose first gradient was checked
 stats: collections.Counter = collections.Counter()  # which path each backward took (see profile)
 _patched = False
 _warned = False
@@ -51,9 +65,15 @@ def _count(path: str) -> None:
 
 
 def enable(mode: str | bool) -> None:
-    """Pick the backward ("" = ComfyUI's), patching ComfyUI's QuantLinearFunc once."""
-    global _mode
+    """Pick the backward ("" = ComfyUI's), patching ComfyUI's QuantLinearFunc once. Each run starts
+    clean: a fallback one run took (an out-of-memory moment in a fused forward, say) isn't kept."""
+    global _mode, _packed_w8a8, _packed_checked, _fuse_failed_once
     _mode = "fused" if mode is True else (mode or "")
+    _packed_w8a8 = _mode == "w8a8"
+    _packed_checked = set()
+    _fuse_failed_once = False
+    _failed_once.clear()
+    _decoder.clear()
     if _mode:
         _patch()
     if _mode == "w8a8" and torch.cuda.is_available():
@@ -97,7 +117,7 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
         seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
         return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256, residual)
     g = _w8a8_input_grad(grad_2d, q, scale, group)
-    return g if residual is None else g + residual
+    return g if residual is None else g + residual.to(g.dtype)  # an fp16 residual: the bf16 result's dtype
 
 
 def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor:
@@ -194,13 +214,36 @@ def _patch() -> None:
     logging.info("[ZenTrainer] int8 ConvRot backward: %s", _mode)
 
 
-# ---- weight-only int8 layers (ComfyUI's int8_tensorwise: quantize_input False) --------------
+# ---- weight-only quantized layers (ComfyUI's int8_tensorwise and the packed 4/6-bit formats:
+# asym_w4a8_int8, w6a8_int8) ---------------------------------------------------------------
 # ComfyUI never routes these through QuantLinearFunc: a layer whose input needs a gradient runs
 # F.linear on the QuantizedTensor under autograd, which decomposes to matmul, so the weight is
 # dequantized and both the forward and the input-gradient matmul run in bf16 (profiled on H3 int8:
 # every trained layer). Only grad-free layers hit the int8 kernel. While training, these layers
 # get their own autograd Function instead: the int8 kernel forward, and the input gradient from
-# the W8A8 kernels (mode "w8a8") or a dequantized matmul.
+# the W8A8 kernels (mode "w8a8": an int8_tensorwise qdata as it is, a packed layer's codes decoded to
+# that grid first) or a dequantized matmul (every other mode, and a packed layer the decode can't take).
+
+INT8_FORMATS = ("int8_tensorwise",)  # the W8A8 kernels' layout: one scale per output row, int8 qdata
+PACKED_FORMATS = ("asym_w4a8_int8", "w6a8_int8")  # 4/6-bit codes: decoded to int8 for the W8A8 kernels
+
+
+def quant_format(m) -> str | None:
+    """The layer's ComfyUI quantization format when this module has a training path for it."""
+    fmt = getattr(m, "quant_format", None)
+    return fmt if fmt in INT8_FORMATS + PACKED_FORMATS else None
+
+
+def has_packed(model) -> bool:
+    """Whether any of the model's layers is a packed 4/6-bit one."""
+    return any(quant_format(m) in PACKED_FORMATS for m in model.modules())
+
+
+def packed_dequantized(model, dtype: torch.dtype) -> bool:
+    """Whether ComfyUI dequantizes the model's packed layers for every matmul when training in `dtype`:
+    it does for a weight asked for in a dtype other than its own (comfy.ops.cast_bias_weight), e.g.
+    fp16 training on a bf16 file."""
+    return any(quant_format(m) in PACKED_FORMATS and getattr(m.weight, "dtype", dtype) != dtype for m in model.modules())
 
 
 class _Int8Linear(torch.autograd.Function):
@@ -224,27 +267,195 @@ class _Int8Linear(torch.autograd.Function):
 
 # programming errors propagate; anything else from the w8a8 path (NVRTC, Triton, a launch) falls back
 _BUGS = (TypeError, AttributeError, NameError, AssertionError, IndexError, KeyError, ValueError)
-_failed_once = False
+_failed_once: set = set()  # "int8", "packed": which kind of layer's w8a8 failure was reported
 
 
-def _kernel_failed(e: Exception) -> None:
-    global _failed_once
-    if not _failed_once:
-        _failed_once = True
-        logging.warning("[ZenTrainer] the w8a8 input gradient failed (%s: %s): int8 layers use the dequantized "
-                        "matmul instead", type(e).__name__, e)
+def _kernel_failed(e: Exception, kind: str = "int8") -> None:
+    if kind not in _failed_once:
+        _failed_once.add(kind)
+        logging.warning("[ZenTrainer] the w8a8 input gradient failed (%s: %s): %s layers use the dequantized "
+                        "matmul instead", type(e).__name__, e, kind)
+
+
+def _packed_failed(e: Exception) -> None:
+    """A packed decode or kernel this backend refuses: packed layers dequantize for the rest of the run,
+    rather than trying it again on every layer of every step."""
+    global _packed_w8a8
+    _packed_w8a8 = False
+    _kernel_failed(e, "packed")
+
+
+_fuse_failed_once = False
+
+
+def _fuse_failed(e: Exception) -> None:
+    global _fuse_failed_once
+    if not _fuse_failed_once:
+        _fuse_failed_once = True
+        logging.warning("[ZenTrainer] a packed format's fused LoRA+GEMM forward failed (%s: %s): those adapters run "
+                        "unfused instead", type(e).__name__, e)
+
+
+def _decoders(on_gpu: bool) -> list:
+    """comfy_kitchen's packed -> int8 decoders for a weight on the GPU or not, fastest first: the native
+    one (hip on ROCm, cuda otherwise), Triton, eager (the only one for a CPU tensor). Bit-exact with
+    each other; private functions there."""
+    from comfy_kitchen.backends.eager.w4a8_int8 import _dequant_int4_grouped_to_int8 as eager
+
+    if not on_gpu:
+        return [eager]
+    found = []
+    try:
+        if torch.version.hip:
+            from comfy_kitchen.backends import hip as native
+        else:
+            from comfy_kitchen.backends import cuda as native
+    except ImportError:
+        native = None
+    # the module imports without its extension (it sets _C to None), so ask whether it loaded
+    if native is not None and getattr(native, "_EXT_AVAILABLE", False):
+        found.append(native._dequant_int4_grouped_to_int8)
+    try:
+        from comfy_kitchen.backends.triton.w4a8_int8 import _dequant_int4_grouped_to_int8 as tri
+
+        found.append(tri)
+    except ImportError:
+        pass
+    return found + [eager]
+
+
+_decoder: dict = {}  # GPU or not: the first of _decoders() that decoded a layer here
+
+
+def _decode_to_int8(qdata: torch.Tensor, s_rel: torch.Tensor, codebook, group_size: int) -> torch.Tensor:
+    """Packed 4/6-bit codes -> the int8 grid round(clamp(level(code) * s_rel, -127, 127)), (N, K):
+    what the format's forward feeds its INT8 GEMM."""
+    fn = _decoder.get(qdata.is_cuda)
+    if fn is not None:
+        return fn(qdata, s_rel, codebook, group_size)
+    err = None
+    for fn in _decoders(qdata.is_cuda):
+        try:
+            out = fn(qdata, s_rel, codebook, group_size)
+        except torch.OutOfMemoryError:  # the card was full, not this backend unable: the trainer handles it
+            raise
+        except RuntimeError as e:  # a backend that imports but can't launch on this device or build: the next one
+            err = e
+            continue
+        _decoder[qdata.is_cuda] = fn
+        logging.info("[ZenTrainer] packed w8a8 backward: int8 decode by %s", fn.__module__)
+        return out
+    raise err
+
+
+def _packed_codes(qdata: torch.Tensor, s_rel: torch.Tensor, mma_packed: bool, n: int, k: int):
+    """A packed weight's codes and group scales as they're stored: a resident one ComfyUI repacked for
+    small-M MMA (optimize_for_gemv) is unpacked first, as comfy_kitchen's own dequantize does."""
+    if not mma_packed:
+        return qdata, s_rel
+    from comfy_kitchen.tensor.w4a8_packed import unpack_w4a8_mma_weight
+
+    return unpack_w4a8_mma_weight(qdata, n, k)
+
+
+def _dequantize_packed(qdata, s_rel, s_channel, codebook, correction, group_size: int, convrot_groupsize: int):
+    from comfy_kitchen.tensor.w4a8_int8 import dequantize_w4a8_int8_weight
+
+    return dequantize_w4a8_int8_weight(qdata, s_rel, s_channel, codebook=codebook, correction=correction,
+                                       group_size=group_size, convrot_groupsize=convrot_groupsize,
+                                       output_dtype=torch.bfloat16)
+
+
+def _check_packed(dequantized, g: torch.Tensor, gi: torch.Tensor, residual: torch.Tensor | None, kind: tuple) -> torch.Tensor:
+    """Once per kind of packed layer, on the first: its w8a8 input gradient against the dequantized bf16 matmul's.
+    Logs the relative difference (int8 gradient noise: about a percent). A real mismatch (a decode or
+    rotation convention that changed in comfy_kitchen) turns the mode off and returns the bf16 one."""
+    global _packed_w8a8
+    _packed_checked.add(kind)
+    ref = torch.mm(g.to(torch.bfloat16), dequantized())
+    if residual is not None:
+        ref = ref + residual.to(ref.dtype)
+    rel = ((gi.float() - ref.float()).norm() / ref.float().norm().clamp_min(1e-30)).item()
+    if rel > 0.15:
+        _packed_w8a8 = False
+        logging.warning("[ZenTrainer] packed w8a8 backward: gradient differs from the bf16 one by %.1f%% on the "
+                        "first %s layer; turned off, packed layers use the dequantized matmul", rel * 100, kind[0])
+        return ref
+    logging.info("[ZenTrainer] packed w8a8 backward check: first %s layer within %.2f%% of the bf16 gradient",
+                 kind[0], rel * 100)
+    return gi
+
+
+@torch.library.custom_op("zentrainer::packed_input_grad", mutates_args=())
+def packed_input_grad(g: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_channel: torch.Tensor,
+                      codebook: torch.Tensor | None, correction: torch.Tensor | None, group_size: int,
+                      convrot_groupsize: int, mma_packed: bool, n: int, k: int, fmt: str,
+                      residual: torch.Tensor | None = None) -> torch.Tensor:
+    """A packed W4A8/W6A8 layer's input gradient for g (M, out), plus `residual` (M, in): bf16 (M, in).
+    In "w8a8" the codes are decoded to the int8 grid the format's own forward uses, W = (q * s_channel)
+    @ blockdiag(H^T) as an int8 ConvRot weight is, and go through the same kernels; otherwise, and
+    for what the decode doesn't cover (an asymmetric weight's `correction` term), the weight is
+    dequantized. One opaque op, so a compiled block's trace records it whole and the decode, its
+    backend and the first-layer check run on the real tensors every step."""
+    qdata, s_rel = _packed_codes(qdata, s_rel, mma_packed, n, k)
+
+    def dequantized():
+        return _dequantize_packed(qdata, s_rel, s_channel, codebook, correction, group_size, convrot_groupsize)
+
+    gi, decoded = None, False
+    if _mode == "w8a8" and _packed_w8a8 and g.is_cuda and correction is None:
+        try:
+            q = _decode_to_int8(qdata, s_rel, codebook, group_size)
+        except torch.OutOfMemoryError:
+            raise
+        except (RuntimeError, ValueError) as e:  # comfy_kitchen refusing this layer or device: dequantize
+            _packed_failed(e)  # (a TypeError or AttributeError, a changed signature, propagates)
+            q = None
+        if q is not None:
+            try:
+                gi = w8a8_input_grad(g, q, s_channel, convrot_groupsize, residual)
+            except (*_BUGS, torch.OutOfMemoryError):
+                raise
+            except Exception as e:
+                _packed_failed(e)
+                gi = None
+            del q
+            kind = (fmt, mma_packed)
+            if gi is not None and kind not in _packed_checked:
+                checked = _check_packed(dequantized, g, gi, residual, kind)
+                gi, decoded = checked, checked is gi  # a rejected check hands back the bf16 gradient
+            else:
+                decoded = gi is not None
+    _count(f"{fmt}: w8a8 (decoded)" if decoded else f"{fmt}: dequantized")
+    if gi is None:
+        gi = torch.mm(g.to(torch.bfloat16), dequantized())
+        if residual is not None:
+            gi = gi + residual.to(gi.dtype)
+    return gi.to(torch.bfloat16)  # what the fake declares: a compiled graph is built on it
+
+
+@packed_input_grad.register_fake
+def _(g, qdata, s_rel, s_channel, codebook, correction, group_size, convrot_groupsize, mma_packed, n, k, fmt,
+      residual=None):
+    return g.new_empty((g.shape[0], k), dtype=torch.bfloat16)
 
 
 def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
-    """A frozen int8 layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
+    """A frozen quantized layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
     from comfy.ops import CastBiasWeightContext
 
+    fmt = quant_format(m)
     with CastBiasWeightContext(m, g, offloadable=True, compute_dtype=g.dtype, want_requant=False) as (w, _b):
         gi = None
         if type(w).__name__ == "QuantizedTensor":
             params = w._params
+            if fmt in PACKED_FORMATS and not getattr(params, "transposed", False):
+                n, k = params.orig_shape
+                return packed_input_grad(g, w._qdata, params.scale, params.s_channel, params.codebook,
+                                         params.correction, int(params.group_size), int(params.convrot_groupsize),
+                                         bool(params.mma_packed), n, k, fmt, residual)
             group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
-            if _mode == "w8a8" and g.is_cuda:
+            if _mode == "w8a8" and g.is_cuda and fmt in INT8_FORMATS:
                 try:
                     gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
                 except _BUGS:  # a mistake in the code, not the kernel: don't hide it behind the fallback
@@ -252,7 +463,8 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
                 except Exception as e:  # a kernel that fails to compile or launch here: dequantize
                     _kernel_failed(e)
                     gi = None
-            _count("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized")
+            _count(("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized") if fmt in INT8_FORMATS
+                   else f"{fmt}: dequantized")
             if gi is not None:
                 return gi
             gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
@@ -260,6 +472,77 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
             _count("int8 layer: plain weight")
             gi = torch.mm(g, w.to(g.dtype))
     return gi if residual is None else gi + residual
+
+
+# ---- the packed forward under torch.compile -----------------------------------------------------------
+# comfy_kitchen's w4a8 kernels read their tensors' raw data pointers, which a compiled trace's fake
+# tensors don't have ("Cannot access data pointer of Tensor"); its int8 one is an opaque op and traces.
+# While compiled blocks train a packed base, every caller of comfy_kitchen's w4a8_int8_linear (ComfyUI's
+# forward, the fused LoRA one, samples) goes through the op below instead: the same call, made on the
+# real tensors.
+
+_ck_w4a8_linear = None  # comfy_kitchen's own, while opaque_packed() routes it
+
+
+@torch.library.custom_op("zentrainer::packed_linear", mutates_args=())
+def packed_linear(x: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_channel: torch.Tensor,
+                codebook: torch.Tensor | None, correction: torch.Tensor | None, bias: torch.Tensor | None,
+                group_size: int, convrot_groupsize: int, out_dtype: torch.dtype, mma_packed: bool,
+                input_act: str | None, input_act_weight: torch.Tensor | None, input_act_eps: float,
+                residual: torch.Tensor | None, residual_scale: torch.Tensor | None) -> torch.Tensor:
+    """comfy_kitchen's w4a8_int8_linear, which runs both packed formats (w4a8 and w6a8 share its layout
+    and kernels), as one opaque op. A residual its backend can't add in the GEMM's
+    epilogue (_int8_forward's fused LoRA forward, a packed format on a backend without it) is added
+    here after the unfused GEMM, the same sum: compiled, _int8_forward's own fallback only ran while
+    tracing, so a backend refusing it at run time stopped the step."""
+    def linear(residual, residual_scale):
+        return _ck_w4a8_linear(x, qdata, s_rel, s_channel, codebook=codebook, correction=correction, bias=bias,
+                               group_size=group_size, convrot_groupsize=convrot_groupsize, out_dtype=out_dtype,
+                               mma_packed=mma_packed, input_act=input_act, input_act_weight=input_act_weight,
+                               input_act_eps=input_act_eps, residual=residual, residual_scale=residual_scale)
+
+    if residual is None or not _fuse_failed_once:
+        try:
+            return linear(residual, residual_scale)
+        except (*_BUGS, torch.OutOfMemoryError):
+            raise
+        except Exception as e:
+            if residual is None:
+                raise
+            _fuse_failed(e)
+    out = linear(None, None)
+    return torch.addcmul(residual.to(out.dtype), out, residual_scale.to(out.dtype))
+
+
+@packed_linear.register_fake
+def _(x, qdata, s_rel, s_channel, codebook, correction, bias, group_size, convrot_groupsize, out_dtype,
+      mma_packed, input_act, input_act_weight, input_act_eps, residual, residual_scale):
+    return x.new_empty((*x.shape[:-1], s_channel.shape[0]), dtype=out_dtype)
+
+
+def _packed_linear_routed(x, qdata, s_rel, s_channel, codebook=None, correction=None, bias=None, group_size=16,
+                        convrot_groupsize=256, out_dtype=torch.bfloat16, mma_packed=False, input_act=None,
+                        input_act_weight=None, input_act_eps=0.0, residual=None, residual_scale=None):
+    return packed_linear(x, qdata, s_rel, s_channel, codebook, correction, bias, group_size, convrot_groupsize,
+                       out_dtype, mma_packed, input_act, input_act_weight, float(input_act_eps), residual,
+                       residual_scale)
+
+
+@contextlib.contextmanager
+def opaque_packed(on: bool):
+    """Route comfy_kitchen's packed forward through the opaque op while `on` (compiled blocks, a packed base)."""
+    global _ck_w4a8_linear
+    if not on:
+        yield
+        return
+    from comfy_kitchen.tensor import w4a8_int8 as ck
+
+    _ck_w4a8_linear = ck.w4a8_int8_linear
+    ck.w4a8_int8_linear = _packed_linear_routed
+    try:
+        yield
+    finally:
+        ck.w4a8_int8_linear = _ck_w4a8_linear
 
 
 class _LoRAInt8(torch.autograd.Function):
@@ -311,10 +594,18 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
 
     with CastBiasWeightContext(m, x2, offloadable=True, compute_dtype=x2.dtype, want_requant=True) as (w, bias):
         fused = getattr(w, "linear_input_act", None) if type(w).__name__ == "QuantizedTensor" else None
-        if fused is None:
+        if fused is None or (_fuse_failed_once and quant_format(m) in PACKED_FORMATS):  # failed once: it fails again
             return None
         ones = torch.ones(residual.shape[-1], device=x2.device, dtype=x2.dtype)
-        out = fused(x2, bias, residual=residual, residual_scale=ones)
+        try:
+            out = fused(x2, bias, residual=residual, residual_scale=ones)
+        except (*_BUGS, torch.OutOfMemoryError):  # a mistake in the code, or a full card: not a missing epilogue
+            raise
+        except Exception as e:  # a packed format's fused epilogue can be missing on a backend: unfused is the same maths
+            if quant_format(m) not in PACKED_FORMATS:
+                raise
+            _fuse_failed(e)
+            return None
     if out is NotImplemented:
         return None
     _count("lora + int8: fused")
@@ -370,12 +661,12 @@ _installed: list = []
 
 def _int8_layer(m) -> bool:
     w = getattr(m, "weight", None)
-    return (getattr(m, "quant_format", None) == "int8_tensorwise" and getattr(m, "layout_type", None) is not None
+    return (quant_format(m) is not None and getattr(m, "layout_type", None) is not None
             and type(w).__name__ == "QuantizedTensor" and hasattr(m, "forward_comfy_cast_weights"))
 
 
 def install(model) -> int:
-    """Give the model's weight-only int8 layers the training path above (undone by uninstall)."""
+    """Give the model's weight-only quantized layers the training path above (undone by uninstall)."""
     import comfy.model_management as mm
 
     n = 0
@@ -397,7 +688,7 @@ def install(model) -> int:
 
 
 def weight_only(model) -> int:
-    """memory.int8_forward off: the model's int8 layers dequantize to bf16 for every matmul. ComfyUI
+    """memory.int8_forward off: the model's quantized layers dequantize to bf16 for every matmul. ComfyUI
     otherwise quantizes the input and multiplies in int8 whenever a layer trains (its
     QuantLinearFunc), so without this "off" would change nothing. Undone by uninstall."""
     n = 0

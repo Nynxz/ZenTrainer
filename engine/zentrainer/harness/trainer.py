@@ -302,7 +302,16 @@ class Trainer:
     # ---- lifecycle -------------------------------------------------------------
 
     def run(self) -> str:
-        """Train to completion (or stop). Returns the final status."""
+        """Train to completion (or stop), or sample a finished run (sample_job). Returns the final
+        status. compat.in_run is set for all of it: the ComfyUI patches that change sampling too act
+        on this run's renders only, never on the user's own workflows after it."""
+        compat.in_run = True
+        try:
+            return self._run()
+        finally:
+            compat.in_run = False
+
+    def _run(self) -> str:
         import comfy.model_management as mm
 
         if self.sample_job:
@@ -317,7 +326,12 @@ class Trainer:
                 from .kernels.compile import compiled_blocks, wanted
 
                 dm = self.models.patcher.model.diffusion_model
-                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps)
+                from .kernels import int8_backward
+
+                packed = int8_backward.has_packed(dm)
+                dequantized = packed and (not self.spec.memory.int8_forward or int8_backward.packed_dequantized(
+                    dm, _DTYPES[self.spec.memory.training_dtype]))
+                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps, dequantized=dequantized)
                 if why:
                     logging.info("[ZenTrainer] %s", why)
                 if compile_on and compat.fused_qk_rope:
@@ -328,7 +342,8 @@ class Trainer:
                 # compiled first, so checkpointing wraps the compiled forward
                 m = self.spec.memory
                 skip = m.grad_checkpoint_skip
-                with compiled_blocks(dm, compile_on) as self._compiled, \
+                with int8_backward.opaque_packed(compile_on and packed), \
+                        compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
                                                0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:
                     self._input_grad = ckpt.input_grad
@@ -491,9 +506,9 @@ class Trainer:
         if s.memory.int8_forward:
             n8 = int8_backward.install(patcher.model)
             if n8:
-                logging.info("[ZenTrainer] int8 training path on %d layers", n8)
+                logging.info("[ZenTrainer] quantized training path on %d layers", n8)
         elif n8 := int8_backward.weight_only(patcher.model):
-            logging.info("[ZenTrainer] int8 weights dequantized to bf16 for every matmul on %d layers", n8)
+            logging.info("[ZenTrainer] quantized weights dequantized to bf16 for every matmul on %d layers", n8)
         self.device = patcher.load_device
         if torch.cuda.is_available():
             self._card()  # Windows: the allocator's cap, before anything loads or encodes
