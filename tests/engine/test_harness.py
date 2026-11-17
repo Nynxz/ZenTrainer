@@ -1207,6 +1207,9 @@ def test_compile_is_only_when_turned_on():
     assert comp.wanted(True, 10) == (True, "") and comp.wanted(False, 5000) == (False, "")
     on, why = comp.wanted("auto", 100_000)  # an older spec's "auto" is off, and says so
     assert not on and "off unless turned on" in why
+    on, why = comp.wanted(True, 1000, packed=True)  # a w4a8/w6a8 base's kernel can't be traced: uncompiled, said
+    assert not on and "packed" in why
+    assert comp.wanted(False, 1000, packed=True) == (False, "")  # nothing to say when it wasn't asked for
 
 
 def test_the_fused_qk_rope_is_auto_by_default():

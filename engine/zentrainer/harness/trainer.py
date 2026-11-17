@@ -317,7 +317,11 @@ class Trainer:
                 from .kernels.compile import compiled_blocks, wanted
 
                 dm = self.models.patcher.model.diffusion_model
-                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps)
+                from .kernels import int8_backward
+
+                packed = int8_backward.has_packed(dm)
+                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps,
+                                         packed=packed and not self.spec.memory.int8_forward)
                 if why:
                     logging.info("[ZenTrainer] %s", why)
                 if compile_on and compat.fused_qk_rope:
@@ -328,7 +332,8 @@ class Trainer:
                 # compiled first, so checkpointing wraps the compiled forward
                 m = self.spec.memory
                 skip = m.grad_checkpoint_skip
-                with compiled_blocks(dm, compile_on) as self._compiled, \
+                with int8_backward.opaque_w4a8(compile_on and packed), \
+                        compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
                                                0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:
                     self._input_grad = ckpt.input_grad

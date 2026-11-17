@@ -274,7 +274,9 @@ class MemorySpec:
     compile_blocks: bool | Auto = setting(False, "torch.compile the repeated transformer block, fusing the elementwise "
                                                  "work around the matmuls; the first steps (and first sample) are "
                                                  "slower while it compiles, minutes on ROCm. Off unless turned on: "
-                                                 '"auto" (an older spec\'s) is off too.', choices=("auto", True, False))
+                                                 '"auto" (an older spec\'s) is off too. Packed (w4a8/w6a8) bases '
+                                                 "compile too, except with Int8 forward off.",
+                                 choices=("auto", True, False))
     fused_qk_rope: bool | Auto = setting("auto", "Krea 2, MOSS, MiniMax H3: the attention's q/k norms and rope as one "
                                                  "op with its own backward (Triton): the same maths, 6-9% a step. "
                                                  '"auto": on while the blocks run uncompiled (compiled ones fuse '

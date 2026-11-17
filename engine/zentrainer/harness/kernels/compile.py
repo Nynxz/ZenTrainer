@@ -14,7 +14,7 @@ import logging
 
 import torch
 
-def wanted(setting: bool | str, steps: int) -> tuple[bool, str]:
+def wanted(setting: bool | str, steps: int, packed: bool = False) -> tuple[bool, str]:
     """Whether to compile, and why when it wasn't simply what was asked. Only when turned on: it used
     to be "auto" (runs of 500+ steps with Triton), but what it saves is a few percent with kept
     attention and the fused q/k rope that run uncompiled, against minutes of compiling on ROCm (8.4
@@ -29,9 +29,16 @@ def wanted(setting: bool | str, steps: int) -> tuple[bool, str]:
     GB: 32% a step) and is even when most does (Krea 2, 9.4 of 12.9 GB: the copies set the pace).
     Weights that move recompile fresh graphs (reset_if_moved). It needs Triton, which
     inductor generates its kernels with (often missing on Windows, where it also needs a C++
-    compiler)."""
+    compiler).
+
+    `packed`: the base has w4a8/w6a8 layers and int8_forward is off, so ComfyUI dequantizes them
+    for every matmul through comfy_kitchen, whose w4a8 code reads raw data pointers a compiled
+    trace's fake tensors don't have. With int8_forward on their kernels run as opaque ops
+    (int8_backward.opaque_w4a8, packed_input_grad) and compile."""
     if setting == "auto":
         return False, "not compiling: Compile blocks is off unless turned on (Memory), and an older spec's \"auto\" is off"
+    if setting and packed:
+        return False, "not compiling: a packed (w4a8/w6a8) base with Int8 forward off dequantizes every matmul, which can't run compiled; this run trains uncompiled"
     return bool(setting), ""
 
 

@@ -789,7 +789,7 @@
               ]
             }
           ],
-          "description": "torch.compile the repeated transformer block, fusing the elementwise work around the matmuls; the first steps (and first sample) are slower while it compiles, minutes on ROCm. Off unless turned on: \"auto\" (an older spec's) is off too.",
+          "description": "torch.compile the repeated transformer block, fusing the elementwise work around the matmuls; the first steps (and first sample) are slower while it compiles, minutes on ROCm. Off unless turned on: \"auto\" (an older spec's) is off too. Packed (w4a8/w6a8) bases compile too, except with Int8 forward off.",
           "default": false,
           "enum": [
             "auto",

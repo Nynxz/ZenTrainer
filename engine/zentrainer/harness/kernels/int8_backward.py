@@ -44,6 +44,7 @@ import logging
 import torch
 
 import collections
+import contextlib
 
 from ..network import _PassesOn
 
@@ -232,6 +233,11 @@ def quant_format(m) -> str | None:
     return fmt if fmt in INT8_FORMATS + PACKED_FORMATS else None
 
 
+def has_packed(model) -> bool:
+    """Whether any of the model's layers is a packed 4/6-bit one."""
+    return any(quant_format(m) in PACKED_FORMATS for m in model.modules())
+
+
 class _Int8Linear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, m, original):
@@ -324,33 +330,31 @@ def _decode_to_int8(qdata: torch.Tensor, s_rel: torch.Tensor, codebook, group_si
     raise err
 
 
-def packed_int8(w) -> tuple[torch.Tensor, torch.Tensor, int] | None:
-    """(q int8 (out, in), s_channel (out,), convrot group) of a packed W4A8/W6A8 QuantizedTensor:
-    the weight in the rotated basis, W = (q * s_channel) @ blockdiag(H^T), as an int8 ConvRot
-    weight is. None for what this doesn't cover (an asymmetric one with a `correction` term, a
-    transposed view): those keep the dequantized matmul."""
-    params = w._params
-    if getattr(params, "correction", None) is not None or getattr(params, "transposed", False):
-        return None
-    if getattr(params, "s_channel", None) is None:
-        return None
-    qdata, s_rel = w._qdata, params.scale
-    if getattr(params, "mma_packed", False):  # resident GEMV packing: back to codes + group scales
-        from comfy_kitchen.tensor.w4a8_packed import unpack_w4a8_mma_weight
+def _packed_codes(qdata: torch.Tensor, s_rel: torch.Tensor, mma_packed: bool, n: int, k: int):
+    """A packed weight's codes and group scales as they're stored: a resident one ComfyUI repacked for
+    small-M MMA (optimize_for_gemv) is unpacked first, as comfy_kitchen's own dequantize does."""
+    if not mma_packed:
+        return qdata, s_rel
+    from comfy_kitchen.tensor.w4a8_packed import unpack_w4a8_mma_weight
 
-        n, k = params.orig_shape
-        qdata, s_rel = unpack_w4a8_mma_weight(qdata, n, k)
-    q = _decode_to_int8(qdata, s_rel, getattr(params, "codebook", None), int(params.group_size))
-    return q, params.s_channel, int(params.convrot_groupsize)
+    return unpack_w4a8_mma_weight(qdata, n, k)
 
 
-def _check_packed(w, g: torch.Tensor, gi: torch.Tensor, residual: torch.Tensor | None, kind: tuple) -> torch.Tensor:
+def _dequantize_packed(qdata, s_rel, s_channel, codebook, correction, group_size: int, convrot_groupsize: int):
+    from comfy_kitchen.tensor.w4a8_int8 import dequantize_w4a8_int8_weight
+
+    return dequantize_w4a8_int8_weight(qdata, s_rel, s_channel, codebook=codebook, correction=correction,
+                                       group_size=group_size, convrot_groupsize=convrot_groupsize,
+                                       output_dtype=torch.bfloat16)
+
+
+def _check_packed(dequantized, g: torch.Tensor, gi: torch.Tensor, residual: torch.Tensor | None, kind: tuple) -> torch.Tensor:
     """Once per kind of packed layer, on the first: its w8a8 input gradient against the dequantized bf16 matmul's.
     Logs the relative difference (int8 gradient noise: about a percent). A real mismatch (a decode or
     rotation convention that changed in comfy_kitchen) turns the mode off and returns the bf16 one."""
     global _packed_w8a8
     _packed_checked.add(kind)
-    ref = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
+    ref = torch.mm(g.to(torch.bfloat16), dequantized())
     if residual is not None:
         ref = ref + residual
     rel = ((gi.float() - ref.float()).norm() / ref.float().norm().clamp_min(1e-30)).item()
@@ -364,6 +368,55 @@ def _check_packed(w, g: torch.Tensor, gi: torch.Tensor, residual: torch.Tensor |
     return gi
 
 
+@torch.library.custom_op("zentrainer::packed_input_grad", mutates_args=())
+def packed_input_grad(g: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_channel: torch.Tensor,
+                      codebook: torch.Tensor | None, correction: torch.Tensor | None, group_size: int,
+                      convrot_groupsize: int, mma_packed: bool, n: int, k: int, fmt: str,
+                      residual: torch.Tensor | None = None) -> torch.Tensor:
+    """A packed W4A8/W6A8 layer's input gradient for g (M, out), plus `residual` (M, in): bf16 (M, in).
+    In "w8a8" the codes are decoded to the int8 grid the format's own forward uses, W = (q * s_channel)
+    @ blockdiag(H^T) as an int8 ConvRot weight is, and go through the same kernels; otherwise, and
+    for what the decode doesn't cover (an asymmetric weight's `correction` term), the weight is
+    dequantized. One opaque op, so a compiled block's trace records it whole and the decode, its
+    backend and the first-layer check run on the real tensors every step."""
+    qdata, s_rel = _packed_codes(qdata, s_rel, mma_packed, n, k)
+
+    def dequantized():
+        return _dequantize_packed(qdata, s_rel, s_channel, codebook, correction, group_size, convrot_groupsize)
+
+    gi = None
+    if _mode == "w8a8" and _packed_w8a8 and g.is_cuda and correction is None:
+        try:
+            q = _decode_to_int8(qdata, s_rel, codebook, group_size)
+        except (RuntimeError, ValueError) as e:  # comfy_kitchen refusing this layer or device: dequantize
+            _kernel_failed(e, "packed")  # (a TypeError or AttributeError, a changed signature, propagates)
+            q = None
+        if q is not None:
+            try:
+                gi = w8a8_input_grad(g, q, s_channel, convrot_groupsize, residual)
+            except _BUGS:
+                raise
+            except Exception as e:
+                _kernel_failed(e, "packed")
+                gi = None
+            del q
+            kind = (fmt, mma_packed)
+            if gi is not None and kind not in _packed_checked:
+                gi = _check_packed(dequantized, g, gi, residual, kind)
+    _count(f"{fmt}: w8a8 (decoded)" if gi is not None else f"{fmt}: dequantized")
+    if gi is None:
+        gi = torch.mm(g.to(torch.bfloat16), dequantized())
+        if residual is not None:
+            gi = gi + residual
+    return gi
+
+
+@packed_input_grad.register_fake
+def _(g, qdata, s_rel, s_channel, codebook, correction, group_size, convrot_groupsize, mma_packed, n, k, fmt,
+      residual=None):
+    return g.new_empty((g.shape[0], k), dtype=torch.bfloat16)
+
+
 def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
     """A frozen quantized layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
     from comfy.ops import CastBiasWeightContext
@@ -373,9 +426,12 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
         gi = None
         if type(w).__name__ == "QuantizedTensor":
             params = w._params
+            if fmt in PACKED_FORMATS and not getattr(params, "transposed", False):
+                n, k = params.orig_shape
+                return packed_input_grad(g, w._qdata, params.scale, params.s_channel, params.codebook,
+                                         params.correction, int(params.group_size), int(params.convrot_groupsize),
+                                         bool(params.mma_packed), n, k, fmt, residual)
             group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
-            # the W8A8 kernels read an int8 qdata with a scale per output row: a packed 4/6-bit one only
-            # after packed_int8(); handed over as it is it would give a wrong gradient
             if _mode == "w8a8" and g.is_cuda and fmt in INT8_FORMATS:
                 try:
                     gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
@@ -384,29 +440,8 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
                 except Exception as e:  # a kernel that fails to compile or launch here: dequantize
                     _kernel_failed(e)
                     gi = None
-            elif _mode == "w8a8" and _packed_w8a8 and g.is_cuda and fmt in PACKED_FORMATS:
-                # the codes decoded to int8 (the grid the format's forward uses), then the
-                # same kernels as an int8 ConvRot weight. The decoded copy lives for this call only.
-                try:
-                    dec = packed_int8(w)
-                except (RuntimeError, ValueError) as e:  # comfy_kitchen refusing this layer or device: dequantize
-                    _kernel_failed(e, "packed")  # (a TypeError or AttributeError, a changed signature, propagates)
-                    dec = None
-                if dec is not None:
-                    q, s_channel, pgroup = dec
-                    try:
-                        gi = w8a8_input_grad(g, q, s_channel, pgroup, residual)
-                    except _BUGS:
-                        raise
-                    except Exception as e:
-                        _kernel_failed(e, "packed")
-                        gi = None
-                    del q, dec
-                    kind = (fmt, bool(getattr(params, "mma_packed", False)))
-                    if gi is not None and kind not in _packed_checked:
-                        gi = _check_packed(w, g, gi, residual, kind)
             _count(("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized") if fmt in INT8_FORMATS
-                   else f"{fmt}: w8a8 (decoded)" if gi is not None and _packed_w8a8 else f"{fmt}: dequantized")
+                   else f"{fmt}: dequantized")
             if gi is not None:
                 return gi
             gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
@@ -414,6 +449,60 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
             _count("int8 layer: plain weight")
             gi = torch.mm(g, w.to(g.dtype))
     return gi if residual is None else gi + residual
+
+
+# ---- the w4a8 forward under torch.compile -----------------------------------------------------------
+# comfy_kitchen's w4a8 kernels read their tensors' raw data pointers, which a compiled trace's fake
+# tensors don't have ("Cannot access data pointer of Tensor"); its int8 one is an opaque op and traces.
+# While compiled blocks train a packed base, every caller of comfy_kitchen's w4a8_int8_linear (ComfyUI's
+# forward, the fused LoRA one, samples) goes through the op below instead: the same call, made on the
+# real tensors.
+
+_ck_w4a8_linear = None  # comfy_kitchen's own, while opaque_w4a8() routes it
+
+
+@torch.library.custom_op("zentrainer::w4a8_linear", mutates_args=())
+def w4a8_linear(x: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_channel: torch.Tensor,
+                codebook: torch.Tensor | None, correction: torch.Tensor | None, bias: torch.Tensor | None,
+                group_size: int, convrot_groupsize: int, out_dtype: torch.dtype, mma_packed: bool,
+                input_act: str | None, input_act_weight: torch.Tensor | None, input_act_eps: float,
+                residual: torch.Tensor | None, residual_scale: torch.Tensor | None) -> torch.Tensor:
+    """comfy_kitchen's w4a8_int8_linear, as one opaque op."""
+    return _ck_w4a8_linear(x, qdata, s_rel, s_channel, codebook=codebook, correction=correction, bias=bias,
+                           group_size=group_size, convrot_groupsize=convrot_groupsize, out_dtype=out_dtype,
+                           mma_packed=mma_packed, input_act=input_act, input_act_weight=input_act_weight,
+                           input_act_eps=input_act_eps, residual=residual, residual_scale=residual_scale)
+
+
+@w4a8_linear.register_fake
+def _(x, qdata, s_rel, s_channel, codebook, correction, bias, group_size, convrot_groupsize, out_dtype,
+      mma_packed, input_act, input_act_weight, input_act_eps, residual, residual_scale):
+    return x.new_empty((*x.shape[:-1], s_channel.shape[0]), dtype=out_dtype)
+
+
+def _w4a8_linear_routed(x, qdata, s_rel, s_channel, codebook=None, correction=None, bias=None, group_size=16,
+                        convrot_groupsize=256, out_dtype=torch.bfloat16, mma_packed=False, input_act=None,
+                        input_act_weight=None, input_act_eps=0.0, residual=None, residual_scale=None):
+    return w4a8_linear(x, qdata, s_rel, s_channel, codebook, correction, bias, group_size, convrot_groupsize,
+                       out_dtype, mma_packed, input_act, input_act_weight, float(input_act_eps), residual,
+                       residual_scale)
+
+
+@contextlib.contextmanager
+def opaque_w4a8(on: bool):
+    """Route comfy_kitchen's w4a8 forward through the opaque op while `on` (compiled blocks, a packed base)."""
+    global _ck_w4a8_linear
+    if not on:
+        yield
+        return
+    from comfy_kitchen.tensor import w4a8_int8 as ck
+
+    _ck_w4a8_linear = ck.w4a8_int8_linear
+    ck.w4a8_int8_linear = _w4a8_linear_routed
+    try:
+        yield
+    finally:
+        ck.w4a8_int8_linear = _ck_w4a8_linear
 
 
 class _LoRAInt8(torch.autograd.Function):

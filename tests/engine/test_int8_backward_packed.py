@@ -74,28 +74,6 @@ def test_packed_formats_take_the_training_path():
     assert ib.quant_format(fp8) is None and not ib._int8_layer(fp8)
 
 
-def test_a_packed_weight_never_reaches_the_w8a8_kernels(monkeypatch):
-    fake_comfy(monkeypatch)
-    torch.manual_seed(0)
-    w = torch.randn(8, 16)
-    q = QuantizedTensor(w, torch.zeros(8, 8, dtype=torch.int8), torch.ones(8))
-
-    def w8a8_should_not_run(*args, **kwargs):
-        raise AssertionError("the W8A8 kernels got a packed weight")
-
-    class CudaGradient(torch.Tensor):  # the gate is CUDA-only and CI has no GPU: a CPU tensor read as CUDA exercises it
-        is_cuda = True
-
-    monkeypatch.setattr(ib, "_mode", "w8a8")
-    monkeypatch.setattr(ib, "w8a8_input_grad", w8a8_should_not_run)
-    for fmt in ib.PACKED_FORMATS:
-        ib.stats.clear()
-        g = torch.randn(3, 8).as_subclass(CudaGradient)
-        got = ib._layer_input_grad(Layer(fmt, q), g)
-        torch.testing.assert_close(got.float(), (g.float() @ w), rtol=2e-2, atol=5e-2)  # bf16 on both sides
-        assert ib.stats[f"{fmt}: dequantized"] == 1
-
-
 def test_an_int8_weight_still_takes_the_w8a8_kernel(monkeypatch):
     fake_comfy(monkeypatch)
     q = QuantizedTensor(torch.randn(8, 16), torch.zeros(8, 16, dtype=torch.int8), torch.ones(8))
@@ -122,10 +100,10 @@ def test_install_covers_a_packed_layer(monkeypatch):
 
 
 class PackedQuantizedTensor(QuantizedTensor):
-    """A packed layer's weight with the params packed_int8() reads (group scales, s_channel, a codebook)."""
+    """A packed layer's weight with the params packed_input_grad reads (group scales, s_channel, a codebook)."""
 
     def __init__(self, weight, correction=None, transposed=False):
-        super().__init__(weight, torch.zeros(weight.shape[0], weight.shape[1] // 2, dtype=torch.int8), torch.ones(weight.shape[0], 1))
+        super().__init__(weight, torch.zeros(weight.shape[0], weight.shape[1] // 2, dtype=torch.int8), None)
         self._params = types.SimpleNamespace(
             scale=torch.ones(weight.shape[0], weight.shape[1] // 16), s_channel=torch.full((weight.shape[0],), 0.5),
             correction=correction, codebook=torch.zeros(16), group_size=16, convrot_groupsize=256,
@@ -137,6 +115,11 @@ PackedQuantizedTensor.__name__ = "QuantizedTensor"  # the layer check reads the 
 
 class CudaGradient(torch.Tensor):  # the gate is CUDA-only and CI has no GPU: a CPU tensor read as CUDA exercises it
     is_cuda = True
+
+
+def dequantizes_to(monkeypatch, w):
+    """comfy_kitchen's dequantize, standing in for a fake packed weight: it gives back `w`."""
+    monkeypatch.setattr(ib, "_dequantize_packed", lambda *args: w.to(torch.bfloat16))
 
 
 def test_packed_w8a8_hands_the_decoded_int8_to_the_kernel(monkeypatch):
@@ -164,7 +147,7 @@ def test_packed_w8a8_hands_the_decoded_int8_to_the_kernel(monkeypatch):
         assert ib.stats[f"{fmt}: w8a8 (decoded)"] == 1
 
 
-@pytest.mark.parametrize("variant", ["off", "correction", "transposed", "decode fails"])
+@pytest.mark.parametrize("variant", ["fused mode", "off", "correction", "transposed", "decode fails"])
 def test_packed_w8a8_keeps_the_dequantized_path_where_it_cant_apply(monkeypatch, variant):
     fake_comfy(monkeypatch)
     torch.manual_seed(0)
@@ -178,9 +161,10 @@ def test_packed_w8a8_keeps_the_dequantized_path_where_it_cant_apply(monkeypatch,
     def decode_fails(*args, **kwargs):
         raise ValueError("a layout comfy_kitchen refuses")
 
-    monkeypatch.setattr(ib, "_mode", "w8a8")
+    monkeypatch.setattr(ib, "_mode", "fused" if variant == "fused mode" else "w8a8")
     monkeypatch.setattr(ib, "_packed_w8a8", variant != "off")
     monkeypatch.setattr(ib, "w8a8_input_grad", kernel_should_not_run)
+    dequantizes_to(monkeypatch, w)
     if variant == "decode fails":
         monkeypatch.setattr(ib, "_decode_to_int8", decode_fails)
     monkeypatch.setattr(ib, "_failed_once", {"int8", "packed"})  # no warning noise
@@ -189,6 +173,12 @@ def test_packed_w8a8_keeps_the_dequantized_path_where_it_cant_apply(monkeypatch,
     got = ib._layer_input_grad(Layer("asym_w4a8_int8", qt), g)
     torch.testing.assert_close(got.float(), g.float() @ w, rtol=2e-2, atol=5e-2)
     assert ib.stats["asym_w4a8_int8: dequantized"] == 1
+
+
+def test_a_model_with_a_packed_layer_is_found():
+    plain = torch.nn.Sequential(Layer("int8_tensorwise", torch.zeros(1)), torch.nn.Linear(2, 2))
+    assert not ib.has_packed(plain)
+    assert ib.has_packed(torch.nn.Sequential(plain, Layer("w6a8_int8", torch.zeros(1))))
 
 
 def test_packed_layers_take_the_w8a8_kernels_only_in_w8a8_mode(monkeypatch):
@@ -216,9 +206,9 @@ def test_the_first_packed_layer_of_each_kind_is_checked_against_bf16(monkeypatch
     w6, w4_gemv = ("w6a8_int8", False), ("asym_w4a8_int8", True)
     monkeypatch.setattr(ib, "_packed_w8a8", True)
     monkeypatch.setattr(ib, "_packed_checked", set())
-    assert ib._check_packed(QuantizedTensor(w, None, None), g, ref * 1.01, None, w6).equal(ref * 1.01)  # close: kept
+    assert ib._check_packed(lambda: w.bfloat16(), g, ref * 1.01, None, w6).equal(ref * 1.01)  # close: kept
     assert ib._packed_w8a8 and ib._packed_checked == {w6}  # another kind still gets its own check
-    got = ib._check_packed(QuantizedTensor(w, None, None), g, -ref, None, w4_gemv)  # wrong: bf16 result, mode off
+    got = ib._check_packed(lambda: w.bfloat16(), g, -ref, None, w4_gemv)  # wrong: bf16 result, mode off
     assert got.equal(ref) and not ib._packed_w8a8 and ib._packed_checked == {w6, w4_gemv}
 
 
@@ -300,5 +290,61 @@ def test_a_gemv_packed_weight_decodes_to_the_same_int8(bits):
     resident = CKTensor(q_in, plain._layout_cls, dataclasses.replace(plain._params, scale=s_in))
     packed = resident.optimize_for_gemv(storage)
     assert packed._params.mma_packed
-    want, got = ib.packed_int8(plain), ib.packed_int8(packed)
-    assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1]) and got[2] == want[2] == 256
+    n, k = plain._params.orig_shape
+    want = ib._decode_to_int8(plain._qdata, plain._params.scale, plain._params.codebook, 16)
+    got = ib._decode_to_int8(*ib._packed_codes(packed._qdata, packed._params.scale, True, n, k), packed._params.codebook, 16)
+    assert torch.equal(got, want)
+    g = torch.randn(300, n, device="cuda", dtype=torch.bfloat16)  # and the gradient through the whole op matches
+    grads = [ib.packed_input_grad(g, t._qdata, t._params.scale, t._params.s_channel, t._params.codebook, None, 16, 256,
+                                  t._params.mma_packed, n, k, "asym_w4a8_int8") for t in (plain, packed)]
+    torch.testing.assert_close(grads[1], grads[0], rtol=0, atol=0)
+
+
+def _real_packed(n=64, k=512, bits=6):
+    """A comfy_kitchen packed weight on the CPU (its eager backend), or a skip where it can't quantize."""
+    pytest.importorskip("comfy_kitchen")
+    from comfy_kitchen.exceptions import NoCapableBackendError
+    from comfy_kitchen.tensor.base import QuantizedTensor as CKTensor
+
+    torch.manual_seed(0)
+    try:
+        return CKTensor.from_float(torch.randn(n, k) * 0.02, "AsymW4A8Int8Layout", bits=bits, group_size=16,
+                                   codebook=bits == 4)
+    except NoCapableBackendError as e:
+        pytest.skip(f"comfy_kitchen can't quantize here: {e}")
+
+
+def test_the_packed_backward_compiles_as_one_op(monkeypatch):
+    """A compiled block traces the backward with fake tensors: the packed input gradient must be one opaque
+    op there (fullgraph: no graph break), and give what it gives eagerly."""
+    w = _real_packed()
+    p = w._params
+    n, k = p.orig_shape
+    monkeypatch.setattr(ib, "_mode", "bf16")  # the dequantized path: no CUDA kernel needed
+    args = (w._qdata, p.scale, p.s_channel, p.codebook, None, 16, 256, False, n, k, "w6a8_int8")
+    g = torch.randn(5, n, dtype=torch.bfloat16)
+
+    def grad(g):
+        return ib.packed_input_grad(g, *args) * 2
+
+    torch._dynamo.reset()
+    torch.testing.assert_close(torch.compile(grad, backend="aot_eager", fullgraph=True)(g), grad(g))
+
+
+def test_the_w4a8_forward_compiles_while_routed():
+    """comfy_kitchen's w4a8 forward reads raw data pointers, which fake tensors don't have: opaque_w4a8()
+    routes it through an op a compiled block traces whole (fullgraph), with the same result."""
+    w = _real_packed()
+    x = torch.randn(3, 512, dtype=torch.bfloat16)
+
+    def forward(x):
+        return torch.nn.functional.linear(x, w) * 2
+
+    want = forward(x)
+    with ib.opaque_w4a8(True):
+        torch._dynamo.reset()
+        got = torch.compile(forward, backend="aot_eager", fullgraph=True)(x)
+    from comfy_kitchen.tensor import w4a8_int8
+
+    assert w4a8_int8.w4a8_int8_linear is ib._ck_w4a8_linear  # put back after
+    torch.testing.assert_close(got, want)
