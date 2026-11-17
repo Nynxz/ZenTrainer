@@ -5,6 +5,9 @@ and Manager show.
 
 ## Unreleased
 
+- **A run's Total counts from when it started.** The run page's Total ran from when the run was
+  queued, so a run that waited behind another showed the wait as its own time (11 minutes of
+  training read as 25). It now runs from its start, as the Jobs list's "Ran for" does.
 - **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
   each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
   One word per folder and one LoRA learns several characters or concepts, each called up by its own

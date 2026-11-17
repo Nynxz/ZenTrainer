@@ -143,10 +143,12 @@ export function useRun(id: Ref<string>) {
       error.value = String((e as Error).message ?? e)
     }
   }
+  // from when this go started (a queued run's wait isn't its time; runs from before starts were
+  // recorded fall back to when they were made), to now or to when it ended
   const wall = computed(() => {
     const d = detail.value
     if (!d) return null
-    return (running.value ? now.value : d.run.updated) - d.run.created
+    return (running.value ? now.value : (d.run.ended ?? d.run.updated)) - (d.run.started ?? d.run.created)
   })
   const marks = computed(() => {
     const d = detail.value
