@@ -254,3 +254,33 @@ def test_a_native_backend_without_its_extension_is_not_a_decoder(monkeypatch):
     names = [fn.__module__ for fn in ib._decoders(on_gpu=True)]
     assert native.__name__ not in names and names[-1] == "comfy_kitchen.backends.eager.w4a8_int8"
     assert [fn.__module__ for fn in ib._decoders(on_gpu=False)] == ["comfy_kitchen.backends.eager.w4a8_int8"]
+
+
+@pytest.mark.parametrize("bits", [4, 6])
+def test_a_gemv_packed_weight_decodes_to_the_same_int8(bits):
+    """A resident packed weight ComfyUI repacked for small-M MMA (optimize_for_gemv, CUDA only) is
+    unpacked back to codes and group scales first: the int8 it decodes to must be the plain weight's."""
+    pytest.importorskip("comfy_kitchen")
+    if not torch.cuda.is_available() or torch.version.hip or torch.cuda.get_device_capability() < (8, 0):
+        pytest.skip("the MMA packing exists on NVIDIA cards of compute capability 8.0+ only")
+    import dataclasses
+
+    from comfy_kitchen.backends import cuda
+    from comfy_kitchen.tensor.base import QuantizedTensor as CKTensor
+
+    if not cuda._EXT_AVAILABLE:
+        pytest.skip("comfy_kitchen's CUDA extension isn't built here")
+    torch.manual_seed(0)
+    plain = CKTensor.from_float(torch.randn(256, 512, device="cuda") * 0.02, "AsymW4A8Int8Layout", bits=bits,
+                                group_size=16, codebook=bits == 4)
+    q, s = plain._qdata, plain._params.scale
+    storage = torch.empty(q.nbytes + s.nbytes, dtype=torch.uint8, device="cuda")  # how ComfyUI keeps it resident
+    q_in = storage[:q.nbytes].view(q.dtype).view(q.shape)
+    s_in = storage[q.nbytes:].view(s.dtype).view(s.shape)
+    q_in.copy_(q)
+    s_in.copy_(s)
+    resident = CKTensor(q_in, plain._layout_cls, dataclasses.replace(plain._params, scale=s_in))
+    packed = resident.optimize_for_gemv(storage)
+    assert packed._params.mma_packed
+    want, got = ib.packed_int8(plain), ib.packed_int8(packed)
+    assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1]) and got[2] == want[2] == 256
