@@ -289,10 +289,25 @@ def current_lr(opt: torch.optim.Optimizer) -> float:
 
 
 def set_lr(opt: torch.optim.Optimizer, sched, lr: float) -> None:
-    """Change the base LR mid-run; the schedule keeps shaping it."""
+    """Change the LR mid-run; the schedule keeps shaping it. An optimizer that keeps its own rate per
+    parameter (Automagic's state["lr"], seeded from the group's at its first step and adapted after)
+    never reads the group's again: its rates, and the floor and ceiling they're clamped to, move by
+    the same factor, from the rate steps take now to `lr` (what the run page shows and asks for),
+    and it adapts on from there."""
+    now = current_lr(opt)
     sched.base_lrs = [lr * g.get("lr_mult", 1.0) for g in opt.param_groups]  # LoRA+ keeps its ratio
     for group, base, f in zip(opt.param_groups, sched.base_lrs, sched.lr_lambdas):
         group["lr"] = base * f(sched.last_epoch)
+    own = [st["lr"] for st in opt.state.values() if isinstance(st.get("lr"), torch.Tensor)]
+    if not own or now <= 0:
+        return
+    factor = lr / now
+    for t in own:
+        t.mul_(factor)
+    for group in opt.param_groups:
+        for bound in ("min_lr", "max_lr"):
+            if bound in group:
+                group[bound] *= factor
 
 
 def seek(opt: torch.optim.Optimizer, sched, step: int) -> None:

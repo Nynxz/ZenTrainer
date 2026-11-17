@@ -95,6 +95,25 @@ def test_schedules_warmup_then_decay():
     assert opt.param_groups[0]["lr"] == pytest.approx(0.5 * sched.lr_lambdas[0](sched.last_epoch))
 
 
+@pytest.mark.parametrize("name", ["Automagic3", "Automagic4"])
+def test_set_lr_moves_an_adaptive_optimizers_own_rate(name):
+    """The run page's learning rate: Automagic keeps a rate per parameter, seeded from the group's once,
+    so changing the group's did nothing. Its own rate moves to what was asked, below its old floor too."""
+    torch.manual_seed(0)
+    p = [torch.nn.Parameter(torch.randn(64, 64))]
+    opt, sched = optim.build(p, OptimSpec(optimizer=name, learning_rate=1e-4, lr_floor=0.5))
+    for _ in range(3):
+        p[0].grad = torch.randn(64, 64)
+        opt.step()
+        sched.step()
+    before = optim.current_lr(opt)
+    optim.set_lr(opt, sched, before / 4)  # under the floor it started with (half the spec's rate)
+    assert optim.current_lr(opt) == pytest.approx(before / 4, rel=1e-5)
+    p[0].grad = torch.randn(64, 64)
+    opt.step()
+    assert optim.current_lr(opt) < before / 1.5  # it adapts on from there, not back to where it was
+
+
 def test_seek_puts_a_fresh_schedule_where_a_stepped_one_is():
     p = [torch.nn.Parameter(torch.zeros(1))]
     spec = OptimSpec(lr_scheduler="cosine", warmup_steps=10, steps=110, learning_rate=1.0)
