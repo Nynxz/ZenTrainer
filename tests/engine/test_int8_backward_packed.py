@@ -240,3 +240,16 @@ def test_decoded_int8_reproduces_the_dequantized_gradient():
     ref = g @ dequantize_w4a8_int8_weight(qdata, s_rel, s_channel, codebook=codebook, group_size=16,
                                           convrot_groupsize=256, output_dtype=torch.float32)
     torch.testing.assert_close(got.reshape(5, k), ref, rtol=1e-3, atol=1e-3)
+
+
+def test_a_native_backend_without_its_extension_is_not_a_decoder(monkeypatch):
+    """comfy_kitchen's cuda/hip modules import with no extension built (_C is None) and their decoders
+    then fail: they're only offered when the extension loaded, so Triton and eager get their turn."""
+    pytest.importorskip("comfy_kitchen")
+    from comfy_kitchen.backends import cuda, hip
+
+    native = hip if torch.version.hip else cuda
+    monkeypatch.setattr(native, "_EXT_AVAILABLE", False)
+    names = [fn.__module__ for fn in ib._decoders(on_gpu=True)]
+    assert native.__name__ not in names and names[-1] == "comfy_kitchen.backends.eager.w4a8_int8"
+    assert [fn.__module__ for fn in ib._decoders(on_gpu=False)] == ["comfy_kitchen.backends.eager.w4a8_int8"]

@@ -283,12 +283,14 @@ def _decoders(on_gpu: bool) -> list:
     found = []
     try:
         if torch.version.hip:
-            from comfy_kitchen.backends.hip import _dequant_int4_grouped_to_int8 as native
+            from comfy_kitchen.backends import hip as native
         else:
-            from comfy_kitchen.backends.cuda import _dequant_int4_grouped_to_int8 as native
-        found.append(native)
-    except ImportError:  # the native extension isn't built here
-        pass
+            from comfy_kitchen.backends import cuda as native
+    except ImportError:
+        native = None
+    # the module imports without its extension (it sets _C to None), so ask whether it loaded
+    if native is not None and getattr(native, "_EXT_AVAILABLE", False):
+        found.append(native._dequant_int4_grouped_to_int8)
     try:
         from comfy_kitchen.backends.triton.w4a8_int8 import _dequant_int4_grouped_to_int8 as tri
 
