@@ -49,7 +49,7 @@ from ..network import _PassesOn
 
 _mode = ""  # "", "fused" or "w8a8"
 _packed_w8a8 = False  # packed 4/6-bit layers decoded to int8 for the w8a8 kernels (off if the first check fails)
-_packed_checked = False  # the first such layer's gradient was compared with the bf16 one
+_packed_checked: set = set()  # the kinds of packed layer (format, GEMV-packed) whose first gradient was checked
 stats: collections.Counter = collections.Counter()  # which path each backward took (see profile)
 _patched = False
 _warned = False
@@ -68,7 +68,7 @@ def enable(mode: str | bool) -> None:
     global _mode, _packed_w8a8, _packed_checked
     _mode = "fused" if mode is True else (mode or "")
     _packed_w8a8 = _mode == "w8a8"
-    _packed_checked = False
+    _packed_checked = set()
     if _mode:
         _patch()
     if _mode == "w8a8" and torch.cuda.is_available():
@@ -216,11 +216,11 @@ def _patch() -> None:
 # dequantized and both the forward and the input-gradient matmul run in bf16 (profiled on H3 int8:
 # every trained layer). Only grad-free layers hit the int8 kernel. While training, these layers
 # get their own autograd Function instead: the int8 kernel forward, and the input gradient from
-# the W8A8 kernels (mode "w8a8", int8_tensorwise only: they read a tensor-wise int8 qdata) or a
-# dequantized matmul (the packed formats, and every other mode).
+# the W8A8 kernels (mode "w8a8": an int8_tensorwise qdata as it is, a packed layer's codes decoded to
+# that grid first) or a dequantized matmul (every other mode, and a packed layer the decode can't take).
 
 INT8_FORMATS = ("int8_tensorwise",)  # the W8A8 kernels' layout: one scale per output row, int8 qdata
-PACKED_FORMATS = ("asym_w4a8_int8", "w6a8_int8")  # 4/6-bit codes: input gradient from a dequantized weight
+PACKED_FORMATS = ("asym_w4a8_int8", "w6a8_int8")  # 4/6-bit codes: decoded to int8 for the W8A8 kernels
 
 
 def quant_format(m) -> str | None:
@@ -250,15 +250,14 @@ class _Int8Linear(torch.autograd.Function):
 
 # programming errors propagate; anything else from the w8a8 path (NVRTC, Triton, a launch) falls back
 _BUGS = (TypeError, AttributeError, NameError, AssertionError, IndexError, KeyError, ValueError)
-_failed_once = False
+_failed_once: set = set()  # "int8", "packed": which kind of layer's w8a8 failure was reported
 
 
-def _kernel_failed(e: Exception) -> None:
-    global _failed_once
-    if not _failed_once:
-        _failed_once = True
-        logging.warning("[ZenTrainer] the w8a8 input gradient failed (%s: %s): int8 layers use the dequantized "
-                        "matmul instead", type(e).__name__, e)
+def _kernel_failed(e: Exception, kind: str = "int8") -> None:
+    if kind not in _failed_once:
+        _failed_once.add(kind)
+        logging.warning("[ZenTrainer] the w8a8 input gradient failed (%s: %s): %s layers use the dequantized "
+                        "matmul instead", type(e).__name__, e, kind)
 
 
 _fuse_failed_once = False
@@ -342,12 +341,12 @@ def packed_int8(w) -> tuple[torch.Tensor, torch.Tensor, int] | None:
     return q, params.s_channel, int(params.convrot_groupsize)
 
 
-def _check_packed(w, g: torch.Tensor, gi: torch.Tensor, residual: torch.Tensor | None) -> torch.Tensor:
-    """Once, on the first packed layer: its w8a8 input gradient against the dequantized bf16 matmul's.
+def _check_packed(w, g: torch.Tensor, gi: torch.Tensor, residual: torch.Tensor | None, kind: tuple) -> torch.Tensor:
+    """Once per kind of packed layer, on the first: its w8a8 input gradient against the dequantized bf16 matmul's.
     Logs the relative difference (int8 gradient noise: about a percent). A real mismatch (a decode or
     rotation convention that changed in comfy_kitchen) turns the mode off and returns the bf16 one."""
-    global _packed_checked, _packed_w8a8
-    _packed_checked = True
+    global _packed_w8a8
+    _packed_checked.add(kind)
     ref = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
     if residual is not None:
         ref = ref + residual
@@ -355,9 +354,10 @@ def _check_packed(w, g: torch.Tensor, gi: torch.Tensor, residual: torch.Tensor |
     if rel > 0.15:
         _packed_w8a8 = False
         logging.warning("[ZenTrainer] packed w8a8 backward: gradient differs from the bf16 one by %.1f%% on the "
-                        "first layer; turned off, packed layers use the dequantized matmul", rel * 100)
+                        "first %s layer; turned off, packed layers use the dequantized matmul", rel * 100, kind[0])
         return ref
-    logging.info("[ZenTrainer] packed w8a8 backward check: first layer within %.2f%% of the bf16 gradient", rel * 100)
+    logging.info("[ZenTrainer] packed w8a8 backward check: first %s layer within %.2f%% of the bf16 gradient",
+                 kind[0], rel * 100)
     return gi
 
 
@@ -386,8 +386,8 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
                 # same kernels as an int8 ConvRot weight. The decoded copy lives for this call only.
                 try:
                     dec = packed_int8(w)
-                except Exception as e:  # comfy_kitchen's decode refusing this layer: dequantize, whatever it raises
-                    _kernel_failed(e)
+                except (RuntimeError, ValueError) as e:  # comfy_kitchen refusing this layer or device: dequantize
+                    _kernel_failed(e, "packed")  # (a TypeError or AttributeError, a changed signature, propagates)
                     dec = None
                 if dec is not None:
                     q, s_channel, pgroup = dec
@@ -396,11 +396,12 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
                     except _BUGS:
                         raise
                     except Exception as e:
-                        _kernel_failed(e)
+                        _kernel_failed(e, "packed")
                         gi = None
                     del q, dec
-                    if gi is not None and not _packed_checked:
-                        gi = _check_packed(w, g, gi, residual)
+                    kind = (fmt, bool(getattr(params, "mma_packed", False)))
+                    if gi is not None and kind not in _packed_checked:
+                        gi = _check_packed(w, g, gi, residual, kind)
             _count(("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized") if fmt in INT8_FORMATS
                    else f"{fmt}: w8a8 (decoded)" if gi is not None and _packed_w8a8 else f"{fmt}: dequantized")
             if gi is not None:

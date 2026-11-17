@@ -1,12 +1,13 @@
 """Weight-only quantized layers (harness/kernels/int8_backward.py): which formats take the training
-path, and that a packed 4/6-bit weight never reaches the int8 W8A8 kernels.
+path, and that a packed 4/6-bit weight reaches the int8 W8A8 kernels only decoded to int8.
 
 ComfyUI marks both int8_tensorwise and the packed formats (asym_w4a8_int8, w6a8_int8) weight-only: a
 layer whose input needs a gradient runs F.linear on the QuantizedTensor, and autograd's linear
 backward hands the w4a8 mm handler a non-transposed RHS, which it refuses ("W4A8 GEMM expects RHS
-W.T."). install() gives those layers an autograd Function instead. Its input gradient comes from a
-dequantized matmul for a packed weight: the W8A8 kernels read a tensor-wise int8 qdata, and 4/6-bit
-codes with group scales would give a wrong gradient.
+W.T."). install() gives those layers an autograd Function instead. The W8A8 kernels read an int8
+qdata with a scale per output row: a packed layer's 4/6-bit codes and group scales handed over as they
+are would give a wrong gradient, so in "w8a8" they're decoded to the int8 grid the format's forward
+uses first, and every other mode dequantizes.
 """
 
 import sys
@@ -150,7 +151,7 @@ def test_packed_w8a8_hands_the_decoded_int8_to_the_kernel(monkeypatch):
 
     monkeypatch.setattr(ib, "_mode", "w8a8")
     monkeypatch.setattr(ib, "_packed_w8a8", True)
-    monkeypatch.setattr(ib, "_packed_checked", True)  # the first-layer comparison has its own test
+    monkeypatch.setattr(ib, "_packed_checked", {(f, False) for f in ib.PACKED_FORMATS})  # that check has its own test
     monkeypatch.setattr(ib, "_decode_to_int8", lambda qdata, s_rel, codebook, group_size: decoded)
     monkeypatch.setattr(ib, "w8a8_input_grad", kernel)
     for fmt in ib.PACKED_FORMATS:
@@ -182,7 +183,7 @@ def test_packed_w8a8_keeps_the_dequantized_path_where_it_cant_apply(monkeypatch,
     monkeypatch.setattr(ib, "w8a8_input_grad", kernel_should_not_run)
     if variant == "decode fails":
         monkeypatch.setattr(ib, "_decode_to_int8", decode_fails)
-    monkeypatch.setattr(ib, "_failed_once", True)  # no warning noise
+    monkeypatch.setattr(ib, "_failed_once", {"int8", "packed"})  # no warning noise
     ib.stats.clear()
     g = torch.randn(3, 8).as_subclass(CudaGradient)
     got = ib._layer_input_grad(Layer("asym_w4a8_int8", qt), g)
@@ -195,27 +196,41 @@ def test_packed_layers_take_the_w8a8_kernels_only_in_w8a8_mode(monkeypatch):
     monkeypatch.setattr(ib.torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(ib, "_mode", "")  # enable() writes these: monkeypatch puts them back
     monkeypatch.setattr(ib, "_packed_w8a8", False)
-    monkeypatch.setattr(ib, "_packed_checked", True)
+    monkeypatch.setattr(ib, "_packed_checked", {("w6a8_int8", False)})
     ib.enable("w8a8")
-    assert ib._packed_w8a8 and not ib._packed_checked  # a new run checks its first layer again
+    assert ib._packed_w8a8 and not ib._packed_checked  # a new run checks its first layers again
     ib.enable("fused")
     assert not ib._packed_w8a8
     ib.enable("")
     assert not ib._packed_w8a8
 
 
-def test_the_first_packed_layer_is_checked_against_bf16(monkeypatch):
+def test_the_first_packed_layer_of_each_kind_is_checked_against_bf16(monkeypatch):
     torch.manual_seed(0)
     w = torch.randn(8, 32)
     g = torch.randn(3, 8)
     ref = g.bfloat16() @ w.bfloat16()
+    w6, w4_gemv = ("w6a8_int8", False), ("asym_w4a8_int8", True)
     monkeypatch.setattr(ib, "_packed_w8a8", True)
-    monkeypatch.setattr(ib, "_packed_checked", False)
-    assert ib._check_packed(QuantizedTensor(w, None, None), g, ref * 1.01, None).equal(ref * 1.01)  # close: kept
-    assert ib._packed_w8a8 and ib._packed_checked
-    monkeypatch.setattr(ib, "_packed_checked", False)
-    got = ib._check_packed(QuantizedTensor(w, None, None), g, -ref, None)  # wrong: bf16 result, mode off
-    assert got.equal(ref) and not ib._packed_w8a8
+    monkeypatch.setattr(ib, "_packed_checked", set())
+    assert ib._check_packed(QuantizedTensor(w, None, None), g, ref * 1.01, None, w6).equal(ref * 1.01)  # close: kept
+    assert ib._packed_w8a8 and ib._packed_checked == {w6}  # another kind still gets its own check
+    got = ib._check_packed(QuantizedTensor(w, None, None), g, -ref, None, w4_gemv)  # wrong: bf16 result, mode off
+    assert got.equal(ref) and not ib._packed_w8a8 and ib._packed_checked == {w6, w4_gemv}
+
+
+def test_a_changed_decode_signature_is_not_hidden_behind_the_fallback(monkeypatch):
+    fake_comfy(monkeypatch)
+    monkeypatch.setattr(ib, "_mode", "w8a8")
+    monkeypatch.setattr(ib, "_packed_w8a8", True)
+
+    def decode(*args, **kwargs):
+        raise TypeError("_dequant_int4_grouped_to_int8() takes 3 positional arguments but 4 were given")
+
+    monkeypatch.setattr(ib, "_decode_to_int8", decode)
+    g = torch.randn(3, 8).as_subclass(CudaGradient)
+    with pytest.raises(TypeError):
+        ib._layer_input_grad(Layer("w6a8_int8", PackedQuantizedTensor(torch.randn(8, 32))), g)
 
 
 def test_decoded_int8_reproduces_the_dequantized_gradient():
