@@ -22,9 +22,10 @@ and Manager show.
   forward uses and go through the W8A8 kernels, the gradient within about 1% of a dequantized bf16
   one; "fused" and "bf16" dequantize. On an RTX 5090: H3 ref2va w6a8 at 512 px trains 2x as fast as
   with the dequantized backward, MOSS w6a8 at 768 px 1.4x, level with its int8 build with the same
-  loss and a file 1 GB smaller. The first packed layer's gradient is checked against the bf16 one,
-  and a real mismatch falls back to it. The decode to int8 is from BobJohnson24. int8 bases are
-  unchanged.
+  loss and a file 1 GB smaller. On AMD the gain is smaller: on an RX 7800 XT, through Triton, a
+  layer's backward is 1.1-1.6x as fast, and its smallest layers (1024 wide) are a little slower than
+  dequantizing. The first packed layer's gradient is checked against the bf16 one, and a real
+  mismatch falls back to it. The decode to int8 is from BobJohnson24. int8 bases are unchanged.
 - **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
   each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
   One word per folder and one LoRA learns several characters or concepts, each called up by its own
