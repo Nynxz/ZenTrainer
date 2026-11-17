@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Changing the learning rate mid-run works with Automagic.** Automagic keeps its own rate, set
+  once from the run's at its first step, so the run page's learning rate changed nothing it used. Its
+  rate now moves to the one you set, its floor and ceiling with it, and it adapts on from there
+  (a MOSS run at 5.4e-4 set to 1.35e-4 stayed at 1.29-1.36e-4).
 - **Faster, lighter Automagic v3 / v4 optimizer step.** Sign-history bit packing, direction/flip
   voting, weight decay, parameter updates and bf16/fp16 stochastic rounding now run in a single fused
   Triton kernel (CUDA and ROCm) without unpacking the history into an 8x-larger `uint8` buffer, and
