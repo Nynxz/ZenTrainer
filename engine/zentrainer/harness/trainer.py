@@ -341,7 +341,7 @@ class Trainer:
                 # compiled first, so checkpointing wraps the compiled forward
                 m = self.spec.memory
                 skip = m.grad_checkpoint_skip
-                with int8_backward.opaque_w4a8(compile_on and packed), \
+                with int8_backward.opaque_packed(compile_on and packed), \
                         compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
                                                0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:

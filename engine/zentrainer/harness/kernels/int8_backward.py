@@ -451,23 +451,24 @@ def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) 
     return gi if residual is None else gi + residual
 
 
-# ---- the w4a8 forward under torch.compile -----------------------------------------------------------
+# ---- the packed forward under torch.compile -----------------------------------------------------------
 # comfy_kitchen's w4a8 kernels read their tensors' raw data pointers, which a compiled trace's fake
 # tensors don't have ("Cannot access data pointer of Tensor"); its int8 one is an opaque op and traces.
 # While compiled blocks train a packed base, every caller of comfy_kitchen's w4a8_int8_linear (ComfyUI's
 # forward, the fused LoRA one, samples) goes through the op below instead: the same call, made on the
 # real tensors.
 
-_ck_w4a8_linear = None  # comfy_kitchen's own, while opaque_w4a8() routes it
+_ck_w4a8_linear = None  # comfy_kitchen's own, while opaque_packed() routes it
 
 
-@torch.library.custom_op("zentrainer::w4a8_linear", mutates_args=())
-def w4a8_linear(x: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_channel: torch.Tensor,
+@torch.library.custom_op("zentrainer::packed_linear", mutates_args=())
+def packed_linear(x: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_channel: torch.Tensor,
                 codebook: torch.Tensor | None, correction: torch.Tensor | None, bias: torch.Tensor | None,
                 group_size: int, convrot_groupsize: int, out_dtype: torch.dtype, mma_packed: bool,
                 input_act: str | None, input_act_weight: torch.Tensor | None, input_act_eps: float,
                 residual: torch.Tensor | None, residual_scale: torch.Tensor | None) -> torch.Tensor:
-    """comfy_kitchen's w4a8_int8_linear, as one opaque op. A residual its backend can't add in the GEMM's
+    """comfy_kitchen's w4a8_int8_linear, which runs both packed formats (w4a8 and w6a8 share its layout
+    and kernels), as one opaque op. A residual its backend can't add in the GEMM's
     epilogue (_int8_forward's fused LoRA forward, a packed format on a backend without it) is added
     here after the unfused GEMM, the same sum: compiled, _int8_forward's own fallback only ran while
     tracing, so a backend refusing it at run time stopped the step."""
@@ -490,23 +491,23 @@ def w4a8_linear(x: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_cha
     return torch.addcmul(residual.to(out.dtype), out, residual_scale.to(out.dtype))
 
 
-@w4a8_linear.register_fake
+@packed_linear.register_fake
 def _(x, qdata, s_rel, s_channel, codebook, correction, bias, group_size, convrot_groupsize, out_dtype,
       mma_packed, input_act, input_act_weight, input_act_eps, residual, residual_scale):
     return x.new_empty((*x.shape[:-1], s_channel.shape[0]), dtype=out_dtype)
 
 
-def _w4a8_linear_routed(x, qdata, s_rel, s_channel, codebook=None, correction=None, bias=None, group_size=16,
+def _packed_linear_routed(x, qdata, s_rel, s_channel, codebook=None, correction=None, bias=None, group_size=16,
                         convrot_groupsize=256, out_dtype=torch.bfloat16, mma_packed=False, input_act=None,
                         input_act_weight=None, input_act_eps=0.0, residual=None, residual_scale=None):
-    return w4a8_linear(x, qdata, s_rel, s_channel, codebook, correction, bias, group_size, convrot_groupsize,
+    return packed_linear(x, qdata, s_rel, s_channel, codebook, correction, bias, group_size, convrot_groupsize,
                        out_dtype, mma_packed, input_act, input_act_weight, float(input_act_eps), residual,
                        residual_scale)
 
 
 @contextlib.contextmanager
-def opaque_w4a8(on: bool):
-    """Route comfy_kitchen's w4a8 forward through the opaque op while `on` (compiled blocks, a packed base)."""
+def opaque_packed(on: bool):
+    """Route comfy_kitchen's packed forward through the opaque op while `on` (compiled blocks, a packed base)."""
     global _ck_w4a8_linear
     if not on:
         yield
@@ -514,7 +515,7 @@ def opaque_w4a8(on: bool):
     from comfy_kitchen.tensor import w4a8_int8 as ck
 
     _ck_w4a8_linear = ck.w4a8_int8_linear
-    ck.w4a8_int8_linear = _w4a8_linear_routed
+    ck.w4a8_int8_linear = _packed_linear_routed
     try:
         yield
     finally:

@@ -34,7 +34,7 @@ def wanted(setting: bool | str, steps: int, packed: bool = False) -> tuple[bool,
     `packed`: the base has w4a8/w6a8 layers and int8_forward is off, so ComfyUI dequantizes them
     for every matmul through comfy_kitchen, whose w4a8 code reads raw data pointers a compiled
     trace's fake tensors don't have. With int8_forward on their kernels run as opaque ops
-    (int8_backward.opaque_w4a8, packed_input_grad) and compile."""
+    (int8_backward.opaque_packed, packed_input_grad) and compile."""
     if setting == "auto":
         return False, "not compiling: Compile blocks is off unless turned on (Memory), and an older spec's \"auto\" is off"
     if setting and packed:

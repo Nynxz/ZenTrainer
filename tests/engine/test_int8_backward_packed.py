@@ -331,8 +331,9 @@ def test_the_packed_backward_compiles_as_one_op(monkeypatch):
     torch.testing.assert_close(torch.compile(grad, backend="aot_eager", fullgraph=True)(g), grad(g))
 
 
-def test_the_w4a8_forward_compiles_while_routed():
-    """comfy_kitchen's w4a8 forward reads raw data pointers, which fake tensors don't have: opaque_w4a8()
+def test_the_packed_forward_compiles_while_routed():
+    """comfy_kitchen's packed forward (w4a8_int8_linear, a w6a8 weight here) reads raw data pointers, which
+    fake tensors don't have: opaque_packed()
     routes it through an op a compiled block traces whole (fullgraph), with the same result."""
     w = _real_packed()
     x = torch.randn(3, 512, dtype=torch.bfloat16)
@@ -341,7 +342,7 @@ def test_the_w4a8_forward_compiles_while_routed():
         return torch.nn.functional.linear(x, w) * 2
 
     want = forward(x)
-    with ib.opaque_w4a8(True):
+    with ib.opaque_packed(True):
         torch._dynamo.reset()
         got = torch.compile(forward, backend="aot_eager", fullgraph=True)(x)
     from comfy_kitchen.tensor import w4a8_int8
@@ -388,7 +389,7 @@ def test_a_refused_fused_residual_is_added_after_the_gemm(monkeypatch, compiled)
     t = torch.zeros(1)
 
     def forward(x, h):
-        return ib.w4a8_linear(x, t, t, torch.zeros(6), None, None, None, 16, 256, torch.float32, False, None,
+        return ib.packed_linear(x, t, t, torch.zeros(6), None, None, None, 16, 256, torch.float32, False, None,
                               None, 0.0, h, scale)
 
     if compiled:
