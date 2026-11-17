@@ -96,7 +96,13 @@ export function useRun(id: Ref<string>) {
         // a run starting again (resumed, retried) cut its history back to where it goes on from:
         // the rows past it would hold the page on its old last step, so read it afresh
         if (m.data.status === 'loading' && !d.live) void load()
-        d.run.status = m.data.status as RunStatus
+        // this go's start and end, stamped here as the engine stamps them, so Total is right
+        // without a reload (a sample job never trains, so it leaves the run's times alone)
+        const s = m.data.status as RunStatus
+        const going = (x: RunStatus) => ['loading', 'training', 'paused'].includes(x)
+        if (going(s) && !going(d.run.status)) d.run.started = Date.now() / 1000
+        if (going(d.run.status) && ['done', 'stopped', 'error', 'interrupted', 'rejected'].includes(s)) d.run.ended = Date.now() / 1000
+        d.run.status = s
         d.run.message = (m.data.message as string | null) ?? undefined
         d.live = ACTIVE.includes(d.run.status)
       }
