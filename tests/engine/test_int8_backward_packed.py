@@ -367,3 +367,35 @@ def test_the_packed_backward_stays_bf16_with_an_fp16_residual(monkeypatch):
     assert eager.dtype == torch.bfloat16
     torch._dynamo.reset()
     torch.testing.assert_close(torch.compile(grad, backend="aot_eager", fullgraph=True)(g, residual), eager)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_a_refused_fused_residual_is_added_after_the_gemm(monkeypatch, compiled):
+    """A backend without the packed format's fused epilogue: the op adds the residual itself, at run time
+    (compiled, _int8_forward's own fallback only ran while tracing), and stops asking for the fused one."""
+    w = torch.randn(6, 8)
+    calls = []
+
+    def kitchen(x, *args, residual=None, residual_scale=None, out_dtype=torch.float32, **kwargs):
+        calls.append(residual is not None)
+        if residual is not None:
+            raise RuntimeError("no fused epilogue on this backend")
+        return (x @ w.T).to(out_dtype)
+
+    monkeypatch.setattr(ib, "_ck_w4a8_linear", kitchen)
+    monkeypatch.setattr(ib, "_fuse_failed_once", False)
+    x, h, scale = torch.randn(3, 8), torch.randn(3, 6), torch.full((6,), 0.5)
+    t = torch.zeros(1)
+
+    def forward(x, h):
+        return ib.w4a8_linear(x, t, t, torch.zeros(6), None, None, None, 16, 256, torch.float32, False, None,
+                              None, 0.0, h, scale)
+
+    if compiled:
+        torch._dynamo.reset()
+        forward = torch.compile(forward, backend="aot_eager", fullgraph=True)
+    torch.testing.assert_close(forward(x, h), h + scale * (x @ w.T))
+    assert ib._fuse_failed_once and calls[-2:] == [True, False]  # tried fused, then the plain GEMM
+    calls.clear()
+    forward(x, h)
+    assert calls == [False]  # once refused, not asked again this run

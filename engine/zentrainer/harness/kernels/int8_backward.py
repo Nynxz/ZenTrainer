@@ -467,11 +467,27 @@ def w4a8_linear(x: torch.Tensor, qdata: torch.Tensor, s_rel: torch.Tensor, s_cha
                 group_size: int, convrot_groupsize: int, out_dtype: torch.dtype, mma_packed: bool,
                 input_act: str | None, input_act_weight: torch.Tensor | None, input_act_eps: float,
                 residual: torch.Tensor | None, residual_scale: torch.Tensor | None) -> torch.Tensor:
-    """comfy_kitchen's w4a8_int8_linear, as one opaque op."""
-    return _ck_w4a8_linear(x, qdata, s_rel, s_channel, codebook=codebook, correction=correction, bias=bias,
-                           group_size=group_size, convrot_groupsize=convrot_groupsize, out_dtype=out_dtype,
-                           mma_packed=mma_packed, input_act=input_act, input_act_weight=input_act_weight,
-                           input_act_eps=input_act_eps, residual=residual, residual_scale=residual_scale)
+    """comfy_kitchen's w4a8_int8_linear, as one opaque op. A residual its backend can't add in the GEMM's
+    epilogue (_int8_forward's fused LoRA forward, a packed format on a backend without it) is added
+    here after the unfused GEMM, the same sum: compiled, _int8_forward's own fallback only ran while
+    tracing, so a backend refusing it at run time stopped the step."""
+    def linear(residual, residual_scale):
+        return _ck_w4a8_linear(x, qdata, s_rel, s_channel, codebook=codebook, correction=correction, bias=bias,
+                               group_size=group_size, convrot_groupsize=convrot_groupsize, out_dtype=out_dtype,
+                               mma_packed=mma_packed, input_act=input_act, input_act_weight=input_act_weight,
+                               input_act_eps=input_act_eps, residual=residual, residual_scale=residual_scale)
+
+    if residual is None or not _fuse_failed_once:
+        try:
+            return linear(residual, residual_scale)
+        except _BUGS:
+            raise
+        except Exception as e:
+            if residual is None:
+                raise
+            _fuse_failed(e)
+    out = linear(None, None)
+    return torch.addcmul(residual.to(out.dtype), out, residual_scale.to(out.dtype))
 
 
 @w4a8_linear.register_fake
