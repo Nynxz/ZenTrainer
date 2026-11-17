@@ -12,6 +12,7 @@ codes with group scales would give a wrong gradient.
 import sys
 import types
 
+import pytest
 import torch
 
 from zentrainer.harness.kernels import int8_backward as ib
@@ -117,3 +118,125 @@ def test_install_covers_a_packed_layer(monkeypatch):
     assert ib.install(holder) == 1 and "forward" in m.__dict__
     ib.uninstall()
     assert "forward" not in m.__dict__
+
+
+class PackedQuantizedTensor(QuantizedTensor):
+    """A packed layer's weight with the params packed_int8() reads (group scales, s_channel, a codebook)."""
+
+    def __init__(self, weight, correction=None, transposed=False):
+        super().__init__(weight, torch.zeros(weight.shape[0], weight.shape[1] // 2, dtype=torch.int8), torch.ones(weight.shape[0], 1))
+        self._params = types.SimpleNamespace(
+            scale=torch.ones(weight.shape[0], weight.shape[1] // 16), s_channel=torch.full((weight.shape[0],), 0.5),
+            correction=correction, codebook=torch.zeros(16), group_size=16, convrot_groupsize=256,
+            mma_packed=False, transposed=transposed, orig_shape=tuple(weight.shape))
+
+
+PackedQuantizedTensor.__name__ = "QuantizedTensor"  # the layer check reads the class name, as the fake above does
+
+
+class CudaGradient(torch.Tensor):  # the gate is CUDA-only and CI has no GPU: a CPU tensor read as CUDA exercises it
+    is_cuda = True
+
+
+def test_packed_w8a8_hands_the_decoded_int8_to_the_kernel(monkeypatch):
+    fake_comfy(monkeypatch)
+    w = torch.randn(8, 32)
+    decoded = torch.randint(-127, 127, (8, 32), dtype=torch.int8)
+    seen = {}
+
+    def kernel(g, q, scale, group, residual=None):
+        seen.update(q=q, scale=scale, group=group)
+        return torch.full((g.shape[0], q.shape[1]), 7.0)
+
+    monkeypatch.setattr(ib, "_mode", "w8a8")
+    monkeypatch.setattr(ib, "_packed_w8a8", True)
+    monkeypatch.setattr(ib, "_packed_checked", True)  # the first-layer comparison has its own test
+    monkeypatch.setattr(ib, "_decode_to_int8", lambda qdata, s_rel, codebook, group_size: decoded)
+    monkeypatch.setattr(ib, "w8a8_input_grad", kernel)
+    for fmt in ib.PACKED_FORMATS:
+        ib.stats.clear()
+        g = torch.randn(3, 8).as_subclass(CudaGradient)
+        got = ib._layer_input_grad(Layer(fmt, PackedQuantizedTensor(w)), g)
+        assert (got == 7.0).all()
+        assert seen["q"] is decoded and seen["group"] == 256
+        torch.testing.assert_close(seen["scale"], torch.full((8,), 0.5))  # s_channel, the per-row scale
+        assert ib.stats[f"{fmt}: w8a8 (decoded)"] == 1
+
+
+@pytest.mark.parametrize("variant", ["off", "correction", "transposed", "decode fails"])
+def test_packed_w8a8_keeps_the_dequantized_path_where_it_cant_apply(monkeypatch, variant):
+    fake_comfy(monkeypatch)
+    torch.manual_seed(0)
+    w = torch.randn(8, 32)
+    qt = PackedQuantizedTensor(w, correction=torch.zeros(2, 8) if variant == "correction" else None,
+                               transposed=variant == "transposed")
+
+    def kernel_should_not_run(*args, **kwargs):
+        raise AssertionError("the w8a8 kernel ran")
+
+    def decode_fails(*args, **kwargs):
+        raise ValueError("a layout comfy_kitchen refuses")
+
+    monkeypatch.setattr(ib, "_mode", "w8a8")
+    monkeypatch.setattr(ib, "_packed_w8a8", variant != "off")
+    monkeypatch.setattr(ib, "w8a8_input_grad", kernel_should_not_run)
+    if variant == "decode fails":
+        monkeypatch.setattr(ib, "_decode_to_int8", decode_fails)
+    monkeypatch.setattr(ib, "_failed_once", True)  # no warning noise
+    ib.stats.clear()
+    g = torch.randn(3, 8).as_subclass(CudaGradient)
+    got = ib._layer_input_grad(Layer("asym_w4a8_int8", qt), g)
+    torch.testing.assert_close(got.float(), g.float() @ w, rtol=2e-2, atol=5e-2)
+    assert ib.stats["asym_w4a8_int8: dequantized"] == 1
+
+
+def test_packed_layers_take_the_w8a8_kernels_only_in_w8a8_mode(monkeypatch):
+    monkeypatch.setattr(ib, "_patch", lambda: None)
+    monkeypatch.setattr(ib.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(ib, "_mode", "")  # enable() writes these: monkeypatch puts them back
+    monkeypatch.setattr(ib, "_packed_w8a8", False)
+    monkeypatch.setattr(ib, "_packed_checked", True)
+    ib.enable("w8a8")
+    assert ib._packed_w8a8 and not ib._packed_checked  # a new run checks its first layer again
+    ib.enable("fused")
+    assert not ib._packed_w8a8
+    ib.enable("")
+    assert not ib._packed_w8a8
+
+
+def test_the_first_packed_layer_is_checked_against_bf16(monkeypatch):
+    torch.manual_seed(0)
+    w = torch.randn(8, 32)
+    g = torch.randn(3, 8)
+    ref = g.bfloat16() @ w.bfloat16()
+    monkeypatch.setattr(ib, "_packed_w8a8", True)
+    monkeypatch.setattr(ib, "_packed_checked", False)
+    assert ib._check_packed(QuantizedTensor(w, None, None), g, ref * 1.01, None).equal(ref * 1.01)  # close: kept
+    assert ib._packed_w8a8 and ib._packed_checked
+    monkeypatch.setattr(ib, "_packed_checked", False)
+    got = ib._check_packed(QuantizedTensor(w, None, None), g, -ref, None)  # wrong: bf16 result, mode off
+    assert got.equal(ref) and not ib._packed_w8a8
+
+
+def test_decoded_int8_reproduces_the_dequantized_gradient():
+    """The identity the whole mode rests on, against comfy_kitchen itself: for a symmetric packed weight,
+    ((g * s_channel) @ decoded_int8) rotated == g @ dequantize()."""
+    pytest.importorskip("comfy_kitchen")
+    from comfy_kitchen.tensor.w4a8_int8 import dequantize_w4a8_int8_weight, quantize_w4a8_int8_weight
+
+    torch.manual_seed(0)
+    n, k = 64, 512
+    try:
+        qdata, s_rel, s_channel, correction, codebook = quantize_w4a8_int8_weight(torch.randn(n, k), group_size=16,
+                                                                                  convrot_groupsize=256)
+    except Exception as e:  # no backend here that quantizes on this device
+        pytest.skip(f"comfy_kitchen can't quantize here: {e}")
+    assert correction is None
+    q = ib._decode_to_int8(qdata, s_rel, codebook, 16)
+    assert q.dtype == torch.int8 and q.shape == (n, k)
+    g = torch.randn(5, n)
+    h = ib._hadamard(256, g.device, torch.float32)
+    got = ((g * s_channel.float()[None]) @ q.float()).view(5, k // 256, 256) @ h.T
+    ref = g @ dequantize_w4a8_int8_weight(qdata, s_rel, s_channel, codebook=codebook, group_size=16,
+                                          convrot_groupsize=256, output_dtype=torch.float32)
+    torch.testing.assert_close(got.reshape(5, k), ref, rtol=1e-3, atol=1e-3)

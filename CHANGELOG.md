@@ -17,9 +17,14 @@ and Manager show.
 - **Packed 4/6-bit bases train (w4a8, w6a8).** MiniMax H3's smaller quantized files stopped at the
   first backward with "W4A8 GEMM expects RHS W.T.": their layers are weight-only quantized, and the
   weight a LoRA'd linear hands autograd's backward is one the w4a8 matmul refuses. Only
-  `int8_tensorwise` layers had a training path. They now get the same one, with the input gradient
-  from a dequantized weight (the W8A8 kernels read a tensor-wise int8 qdata); int8 bases are
-  unchanged. H3-Image at 512 px: 4.0 s a step, level with the int8 build.
+  `int8_tensorwise` layers had a training path. They now get the same one: with `int8_backward`
+  "w8a8" (the default) each layer's codes are decoded, every backward, to the int8 grid its own
+  forward uses and go through the W8A8 kernels, the gradient within about 1% of a dequantized bf16
+  one; "fused" and "bf16" dequantize. On an RTX 5090: H3 ref2va w6a8 at 512 px trains 2x as fast as
+  with the dequantized backward, MOSS w6a8 at 768 px 1.4x, level with its int8 build with the same
+  loss and a file 1 GB smaller. The first packed layer's gradient is checked against the bf16 one,
+  and a real mismatch falls back to it. The decode to int8 is from BobJohnson24. int8 bases are
+  unchanged.
 - **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
   each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
   One word per folder and one LoRA learns several characters or concepts, each called up by its own

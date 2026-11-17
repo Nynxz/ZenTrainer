@@ -261,12 +261,13 @@ class MemorySpec:
     int8_forward: bool = setting(True, "int8 and packed (w4a8/w6a8) bases (MiniMax H3, Krea 2 int8): trained layers "
                                        "run ComfyUI's quantized kernel forward instead of a dequantized bf16 matmul. "
                                        "Off is slower: for comparing quality.")
-    int8_backward: str = setting("w8a8", 'int8 bases: how the backward gets each frozen layer\'s input gradient. "w8a8": '
-                                         "quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), "
-                                         'for some gradient precision; int8_tensorwise weights only, the packed 4/6-bit '
-                                         'ones (w4a8, w6a8) dequantize. "fused": a fused Triton kernel at full '
-                                         'precision, without rebuilding the layer\'s bf16 weight. "bf16": the weight '
-                                         "rebuilt in bf16 (ComfyUI's way; the slowest).",
+    int8_backward: str = setting("w8a8", 'int8 and packed (w4a8, w6a8) bases: how the backward gets each frozen '
+                                         'layer\'s input gradient. "w8a8": quantized to int8 too, on int8 tensor cores '
+                                         "(about 2x the bf16 backward), for some gradient precision; a packed layer's "
+                                         'codes are decoded to the int8 grid its forward uses first. "fused": a fused '
+                                         "Triton kernel at full precision, without rebuilding the layer's bf16 weight "
+                                         '(int8 bases; packed ones dequantize). "bf16": the weight rebuilt in bf16 '
+                                         "(ComfyUI's way; the slowest).",
                                  choices=("w8a8", "fused", "bf16"))
     fp8_backward: bool = setting(False, "fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). "
                                         "Faster, less precise.")

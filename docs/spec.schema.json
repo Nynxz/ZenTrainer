@@ -765,7 +765,7 @@
         },
         "int8_backward": {
           "type": "string",
-          "description": "int8 bases: how the backward gets each frozen layer's input gradient. \"w8a8\": quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), for some gradient precision; int8_tensorwise weights only, the packed 4/6-bit ones (w4a8, w6a8) dequantize. \"fused\": a fused Triton kernel at full precision, without rebuilding the layer's bf16 weight. \"bf16\": the weight rebuilt in bf16 (ComfyUI's way; the slowest).",
+          "description": "int8 and packed (w4a8, w6a8) bases: how the backward gets each frozen layer's input gradient. \"w8a8\": quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), for some gradient precision; a packed layer's codes are decoded to the int8 grid its forward uses first. \"fused\": a fused Triton kernel at full precision, without rebuilding the layer's bf16 weight (int8 bases; packed ones dequantize). \"bf16\": the weight rebuilt in bf16 (ComfyUI's way; the slowest).",
           "default": "w8a8",
           "enum": [
             "w8a8",
