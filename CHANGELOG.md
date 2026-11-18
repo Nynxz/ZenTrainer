@@ -31,6 +31,10 @@ and Manager show.
   px 1.4x, with the same loss (not with Int8 forward off, or fp16 training on a bf16 file: ComfyUI
   dequantizes those matmuls, which can't compile). The decode to int8 is from BobJohnson24. int8
   bases are unchanged.
+- **A run's Total counts from when it started.** The run page's Total ran from when the run was
+  queued, so a run that waited behind another showed the wait as its own time (11 minutes of
+  training read as 25). It now runs from its start, as the Jobs list's "Ran for" does, and a page
+  left open while the run waits, trains and ends keeps it right without a reload.
 - **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
   each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
   One word per folder and one LoRA learns several characters or concepts, each called up by its own
