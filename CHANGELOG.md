@@ -5,6 +5,32 @@ and Manager show.
 
 ## Unreleased
 
+- **MiniMax H3 samples keep sage attention.** The token refiner's attention received fp32 q/k
+  beside a bf16 v, and no attention override could see it: `preprocess_text_embeds` runs outside
+  `transformer_options`. Sage refused every one of those calls (an "Error running sage attention"
+  line per image) and those passes ran on ComfyUI's slower pytorch attention. q/k are now cast to
+  v's dtype at the model's one attention entry point, which changes nothing when they already agree.
+  Only during a ZenTrainer run and its samples: your own H3 workflows in that ComfyUI run ComfyUI's
+  code as they are, before a run and after one.
+- **A tiny VAE ComfyUI can't load says so in the log.** A `models/vae_approx` file that isn't the
+  TAEHV ComfyUI expects (a bare decoder, no `decoder.*` keys) failed with a traceback while the
+  previewer was built; the run carried on with the latent colours. It's now one line naming the file.
+- **Packed 4/6-bit bases train (w4a8, w6a8).** MiniMax H3's smaller quantized files stopped at the
+  first backward with "W4A8 GEMM expects RHS W.T.": their layers are weight-only quantized, and the
+  weight a LoRA'd linear hands autograd's backward is one the w4a8 matmul refuses. Only
+  `int8_tensorwise` layers had a training path. They now get the same one: with `int8_backward`
+  "w8a8" (the default) each layer's codes are decoded, every backward, to the int8 grid its own
+  forward uses and go through the W8A8 kernels, the gradient within 1-2% of a dequantized bf16 one;
+  "fused" and "bf16" dequantize. On an RTX 5090: H3 ref2va w6a8 at 512 px trains 2x as fast as with
+  the dequantized backward, MOSS w6a8 at 768 px 1.4x, level with its int8 build with the same loss
+  and a file 1 GB smaller. On AMD the gain is smaller: on an RX 7800 XT, through Triton, a layer's
+  backward is 1.1-1.6x as fast, and its smallest layers (1024 wide) are a little slower than
+  dequantizing. The first packed layer of each kind is checked against the bf16 gradient, and a real
+  mismatch falls back to it. They train with Compile blocks too: comfy_kitchen's w4a8 kernels run as
+  opaque ops in a compiled block, H3 w6a8 at 512 px 1.9x as fast as uncompiled and MOSS w6a8 at 768
+  px 1.4x, with the same loss (not with Int8 forward off, or fp16 training on a bf16 file: ComfyUI
+  dequantizes those matmuls, which can't compile). The decode to int8 is from BobJohnson24. int8
+  bases are unchanged.
 - **A run's Total counts from when it started.** The run page's Total ran from when the run was
   queued, so a run that waited behind another showed the wait as its own time (11 minutes of
   training read as 25). It now runs from its start, as the Jobs list's "Ran for" does, and a page

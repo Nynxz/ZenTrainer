@@ -258,21 +258,26 @@ class MemorySpec:
     tread_steps: float = setting(1.0, "The share of clip steps that route; the rest run whole. A dataset of clips only, "
                                       "routed every step, lets the LoRA learn to make up for the routing "
                                       "(over-sharpened samples): below 1 keeps whole steps.", ge=0, le=1)
-    int8_forward: bool = setting(True, "int8 bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's int8 kernel "
-                                       "forward instead of a dequantized bf16 matmul. Off is slower: for comparing "
-                                       "quality.")
-    int8_backward: str = setting("w8a8", 'int8 bases: how the backward gets each frozen layer\'s input gradient. "w8a8": '
-                                         "quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), "
-                                         'for some gradient precision. "fused": a fused Triton kernel at full '
-                                         'precision, without rebuilding the layer\'s bf16 weight. "bf16": the weight '
-                                         "rebuilt in bf16 (ComfyUI's way; the slowest).",
+    int8_forward: bool = setting(True, "int8 and packed (w4a8/w6a8) bases (MiniMax H3, Krea 2 int8): trained layers "
+                                       "run ComfyUI's quantized kernel forward instead of a dequantized bf16 matmul. "
+                                       "Off is slower: for comparing quality.")
+    int8_backward: str = setting("w8a8", 'int8 and packed (w4a8, w6a8) bases: how the backward gets each frozen '
+                                         'layer\'s input gradient. "w8a8": quantized to int8 too, on int8 tensor cores '
+                                         "(about 2x the bf16 backward), for some gradient precision; a packed layer's "
+                                         'codes are decoded to the int8 grid its forward uses first. "fused": a fused '
+                                         "Triton kernel at full precision, without rebuilding the layer's bf16 weight "
+                                         '(int8 bases; packed ones dequantize). "bf16": the weight rebuilt in bf16 '
+                                         "(ComfyUI's way; the slowest).",
                                  choices=("w8a8", "fused", "bf16"))
     fp8_backward: bool = setting(False, "fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). "
                                         "Faster, less precise.")
     compile_blocks: bool | Auto = setting(False, "torch.compile the repeated transformer block, fusing the elementwise "
                                                  "work around the matmuls; the first steps (and first sample) are "
                                                  "slower while it compiles, minutes on ROCm. Off unless turned on: "
-                                                 '"auto" (an older spec\'s) is off too.', choices=("auto", True, False))
+                                                 '"auto" (an older spec\'s) is off too. Packed (w4a8/w6a8) bases '
+                                                 "compile too, except with Int8 forward off or a training dtype other than the file's (fp16 on a "
+                                                 "bf16 file).",
+                                 choices=("auto", True, False))
     fused_qk_rope: bool | Auto = setting("auto", "Krea 2, MOSS, MiniMax H3: the attention's q/k norms and rope as one "
                                                  "op with its own backward (Triton): the same maths, 6-9% a step. "
                                                  '"auto": on while the blocks run uncompiled (compiled ones fuse '
