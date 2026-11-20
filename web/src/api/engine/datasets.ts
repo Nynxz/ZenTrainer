@@ -308,14 +308,23 @@ export const datasetsApi = {
   /** one of its subfolders and everything in it: how many pictures went */
   deleteFolder: (name: string, path: string) =>
     call<{ pictures: number }>(`${dsPath(name)}/folder?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
-  /** files into the dataset, or into its subfolder `into` (made if new) */
-  async upload(name: string, files: File[], into = ''): Promise<{ saved: string[]; errors: string[] }> {
+  /** files into the dataset, or into its subfolder `into` (made if new). saved: new in the
+   * dataset; existing: it had that file already, byte for byte (not written again). onSent hears
+   * how much of the request has gone, 0 to 1: XMLHttpRequest, as fetch can't report an upload's
+   * progress. A fraction, as the request's bytes (multipart framing and all) aren't the files' */
+  upload(name: string, files: File[], into = '', onSent?: (part: number) => void): Promise<{ saved: string[]; existing: string[]; errors: string[] }> {
     const form = new FormData()
     for (const f of files) form.append('file', f, f.name)
     const query = into ? `?folder=${encodeURIComponent(into)}` : ''
-    const res = await fetch(`/zentrainer/api${dsPath(name)}/upload${query}`, { method: 'POST', body: form })
-    if (!res.ok) throw new EngineError(res.statusText, res.status, null)
-    return res.json()
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/zentrainer/api${dsPath(name)}/upload${query}`)
+    xhr.responseType = 'json'
+    if (onSent) xhr.upload.onprogress = (e) => e.lengthComputable && onSent(e.loaded / e.total)
+    return new Promise((resolve, reject) => {
+      xhr.onload = () => (xhr.status < 400 ? resolve(xhr.response) : reject(new EngineError(xhr.statusText, xhr.status, null)))
+      xhr.onerror = () => reject(new Error('The connection to the engine dropped. Drop the files again to add the rest: the ones already in are skipped.'))
+      xhr.send(form)
+    })
   },
   // control sets: edit training's input pictures, a named layer per set
   createControlSet: (name: string, set: string) => call<{ ok: true }>(ctlPath(name, set), { method: 'POST' }),
