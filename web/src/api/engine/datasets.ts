@@ -310,15 +310,16 @@ export const datasetsApi = {
     call<{ pictures: number }>(`${dsPath(name)}/folder?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
   /** files into the dataset, or into its subfolder `into` (made if new). saved: new in the
    * dataset; existing: it had that file already, byte for byte (not written again). onSent hears
-   * the bytes sent so far: XMLHttpRequest, as fetch can't report an upload's progress */
-  upload(name: string, files: File[], into = '', onSent?: (bytes: number) => void): Promise<{ saved: string[]; existing: string[]; errors: string[] }> {
+   * how much of the request has gone, 0 to 1: XMLHttpRequest, as fetch can't report an upload's
+   * progress. A fraction, as the request's bytes (multipart framing and all) aren't the files' */
+  upload(name: string, files: File[], into = '', onSent?: (part: number) => void): Promise<{ saved: string[]; existing: string[]; errors: string[] }> {
     const form = new FormData()
     for (const f of files) form.append('file', f, f.name)
     const query = into ? `?folder=${encodeURIComponent(into)}` : ''
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `/zentrainer/api${dsPath(name)}/upload${query}`)
     xhr.responseType = 'json'
-    if (onSent) xhr.upload.onprogress = (e) => onSent(e.loaded)
+    if (onSent) xhr.upload.onprogress = (e) => e.lengthComputable && onSent(e.loaded / e.total)
     return new Promise((resolve, reject) => {
       xhr.onload = () => (xhr.status < 400 ? resolve(xhr.response) : reject(new EngineError(xhr.statusText, xhr.status, null)))
       xhr.onerror = () => reject(new Error('The connection to the engine dropped. Drop the files again to add the rest: the ones already in are skipped.'))

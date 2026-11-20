@@ -29,6 +29,9 @@ def test_an_upload_never_replaces_a_different_file(ds):
     # the same file again is a no-op (and said to be: not new); another camera's IMG_0001 gets its own name
     assert datasets.save_upload("cats", "IMG_0001.png", _png("red")) == ("IMG_0001.png", False)
     assert datasets.save_upload("cats", "IMG_0001.png", _png("blue")) == ("IMG_0001 (2).png", True)
+    # the same drop again (the connection dropped): the renamed copy is recognised, not made a third time
+    assert datasets.save_upload("cats", "IMG_0001.png", _png("blue")) == ("IMG_0001 (2).png", False)
+    assert datasets.save_upload("cats", "IMG_0001.png", _png("green")) == ("IMG_0001 (3).png", True)
     assert datasets.save_upload("cats", "IMG_0001.txt", b"a dropped caption") == ("IMG_0001 (2).txt", True)
     assert (ds / "IMG_0001.txt").read_text().strip() == "the first cat"
     with Image.open(ds / "IMG_0001.png") as im:

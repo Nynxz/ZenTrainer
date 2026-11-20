@@ -608,12 +608,15 @@ def save_upload(name: str, filename: str, data: bytes, into: str = "") -> tuple[
         target = _inside(d, str(sub.relative_to(d) / "_masks" / f"{stem}{p.suffix.lower()}"))
     else:
         target = _inside(d, str(sub.relative_to(d) / base))
-    if target.exists():
-        if target.is_file() and target.stat().st_size == len(data) and target.read_bytes() == data:
-            return str(target.relative_to(d)), False  # already there
-        target = safeio.free_name(target)
-    safeio.write_bytes(target, data)
-    return str(target.relative_to(d)), True
+    # the same bytes already there, under the name or a numbered one an earlier drop of them got (a
+    # drop again after the connection dropped): not new, not written again. Else the first free name
+    alt, n = target, 2
+    while alt.exists():
+        if alt.is_file() and alt.stat().st_size == len(data) and alt.read_bytes() == data:
+            return str(alt.relative_to(d)), False
+        alt, n = target.with_name(f"{target.stem} ({n}){target.suffix}"), n + 1
+    safeio.write_bytes(alt, data)
+    return str(alt.relative_to(d)), True
 
 
 def save_mask(name: str, rel: str, data_url: str) -> dict:

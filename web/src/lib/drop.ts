@@ -2,6 +2,7 @@
 // target, a cover says what a drop does while files are dragged over it, and a drop's folders count
 // as their files.
 import { onMounted, onUnmounted, ref, type Ref } from 'vue'
+import { tellError } from './ask'
 
 export interface Drop {
   files: File[]
@@ -45,7 +46,8 @@ export function useFileDrop(onDrop: (d: Drop) => void): Ref<boolean> {
       e.preventDefault() // never the browser opening the file instead
       depth = 0
       over.value = false
-      if (fromOutside(e)) dropped(e.dataTransfer!).then(onDrop)
+      // a file or folder the browser can't read (removed or locked mid-drop) says so, not nothing
+      if (fromOutside(e)) dropped(e.dataTransfer!).then(onDrop, (err) => tellError(err, 'Couldn’t read that drop'))
     },
   }
   onMounted(() => Object.entries(on).forEach(([k, f]) => addEventListener(k, f as EventListener)))

@@ -145,10 +145,13 @@ const folderInput = ref<HTMLInputElement | null>(null)
 // was left out before the upload, said with its result
 const BATCH = 48 * 1024 ** 2
 let turn = Promise.resolve()
+// Each goes into the dataset it was dropped on: going to another dataset's page keeps this page
+// (only the name changes), and a drop's later parts mustn't follow it there
 function upload(files: File[], folders: string[] = [], note = '') {
-  turn = turn.then(() => send(files, folders, note))
+  const name = props.name
+  turn = turn.then(() => send(name, files, folders, note))
 }
-async function send(files: File[], folders: string[], note: string) {
+async function send(name: string, files: File[], folders: string[], note: string) {
   if (!files.length) return flash('Nothing to add in that drop')
   uploading.value = true
   sent.value = 0
@@ -174,13 +177,14 @@ async function send(files: File[], folders: string[], note: string) {
         let j = i + 1
         for (let bytes = group[i]!.size; j < group.length && bytes + group[j]!.size <= BATCH; j++) bytes += group[j]!.size
         const part = group.slice(i, j)
-        const r = await engine.upload(props.name, part, into, (bytes) => (sent.value = (done + bytes) / total))
-        done += part.reduce((n, f) => n + f.size, 0)
+        const bytes = part.reduce((n, f) => n + f.size, 0)
+        const r = await engine.upload(name, part, into, (f) => (sent.value = (done + f * bytes) / total))
+        done += bytes
         saved.push(...r.saved)
         existing.push(...r.existing)
         errors.push(...r.errors)
         i = j
-        if (done < total && Date.now() - refreshed > 4000) {
+        if (done < total && name === props.name && Date.now() - refreshed > 4000) {
           refreshed = bust.value = Date.now()
           await load()
         }
@@ -199,7 +203,8 @@ async function send(files: File[], folders: string[], note: string) {
   let said = saved.length || !existing.length ? `${count(saved.length)} added${into}` : `${count(existing.length)} already there`
   if (saved.length && existing.length) said += `, ${existing.length} already there`
   if (errors.length) said += `, ${errors.length} skipped`
-  flash(stopped ? `${count(saved.length)} added, then the upload stopped` : said + (note ? `. ${note}` : ''))
+  const to = name === props.name ? '' : `${name}: ` // finished after going to another dataset's page
+  flash(to + (stopped ? `${count(saved.length)} added, then the upload stopped` : said + (note ? `. ${note}` : '')))
   if (stopped) errors.push(stopped, ...(note ? [note] : []))
   if (errors.length) error.value = errors.join('\n')
 }
