@@ -36,6 +36,8 @@ export interface SpecFields {
     caption_mix: string[]
     trigger: string
     trigger_prepend: boolean
+    folder_triggers: boolean
+    folder_trigger_words: Record<string, string>
     masked_loss: boolean
     unmasked_weight: number
     video_frames: number

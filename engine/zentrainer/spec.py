@@ -105,6 +105,13 @@ class DatasetSpec:
     trigger: str = setting("", '"[trigger]" in captions and sample prompts becomes this, and captions that don\'t '
                                'mention it get it prepended ("ohwx, a photo of ...").')
     trigger_prepend: bool = setting(True, "Prepend the trigger to captions that don't mention it.")
+    folder_triggers: bool = setting(False, "Each top-level subfolder is a class with a trigger of its own: its name, "
+                                           'without a kohya "N_" repeat count, is the trigger for the pictures in it '
+                                           '("3_ohwx" trains ohwx, three times over). Pictures in the dataset folder '
+                                           "itself use `trigger`. Sample prompts name the triggers they want.")
+    folder_trigger_words: dict[str, str] = setting(doc='With folder_triggers: a trigger word in place of a folder\'s name, by '
+                                                       'folder: {"alice": "myalice"}. A folder not in it uses its name.',
+                                                   factory=dict)
     masked_loss: bool = setting(False, "Masked training: pictures with a mask only learn where it's white.")
     unmasked_weight: float = setting(0.0, "Masked training: how much the rest of the picture still trains "
                                           "(0 = not at all, 0.1 = lightly).", ge=0, le=1)
@@ -251,21 +258,26 @@ class MemorySpec:
     tread_steps: float = setting(1.0, "The share of clip steps that route; the rest run whole. A dataset of clips only, "
                                       "routed every step, lets the LoRA learn to make up for the routing "
                                       "(over-sharpened samples): below 1 keeps whole steps.", ge=0, le=1)
-    int8_forward: bool = setting(True, "int8 bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's int8 kernel "
-                                       "forward instead of a dequantized bf16 matmul. Off is slower: for comparing "
-                                       "quality.")
-    int8_backward: str = setting("w8a8", 'int8 bases: how the backward gets each frozen layer\'s input gradient. "w8a8": '
-                                         "quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), "
-                                         'for some gradient precision. "fused": a fused Triton kernel at full '
-                                         'precision, without rebuilding the layer\'s bf16 weight. "bf16": the weight '
-                                         "rebuilt in bf16 (ComfyUI's way; the slowest).",
+    int8_forward: bool = setting(True, "int8 and packed (w4a8/w6a8) bases (MiniMax H3, Krea 2 int8): trained layers "
+                                       "run ComfyUI's quantized kernel forward instead of a dequantized bf16 matmul. "
+                                       "Off is slower: for comparing quality.")
+    int8_backward: str = setting("w8a8", 'int8 and packed (w4a8, w6a8) bases: how the backward gets each frozen '
+                                         'layer\'s input gradient. "w8a8": quantized to int8 too, on int8 tensor cores '
+                                         "(about 2x the bf16 backward), for some gradient precision; a packed layer's "
+                                         'codes are decoded to the int8 grid its forward uses first. "fused": a fused '
+                                         "Triton kernel at full precision, without rebuilding the layer's bf16 weight "
+                                         '(int8 bases; packed ones dequantize). "bf16": the weight rebuilt in bf16 '
+                                         "(ComfyUI's way; the slowest).",
                                  choices=("w8a8", "fused", "bf16"))
     fp8_backward: bool = setting(False, "fp8 bases: the backward's matmuls in fp8 too (ComfyUI's training_fp8_bwd). "
                                         "Faster, less precise.")
     compile_blocks: bool | Auto = setting(False, "torch.compile the repeated transformer block, fusing the elementwise "
                                                  "work around the matmuls; the first steps (and first sample) are "
                                                  "slower while it compiles, minutes on ROCm. Off unless turned on: "
-                                                 '"auto" (an older spec\'s) is off too.', choices=("auto", True, False))
+                                                 '"auto" (an older spec\'s) is off too. Packed (w4a8/w6a8) bases '
+                                                 "compile too, except with Int8 forward off or a training dtype other than the file's (fp16 on a "
+                                                 "bf16 file).",
+                                 choices=("auto", True, False))
     fused_qk_rope: bool | Auto = setting("auto", "Krea 2, MOSS, MiniMax H3: the attention's q/k norms and rope as one "
                                                  "op with its own backward (Triton): the same maths, 6-9% a step. "
                                                  '"auto": on while the blocks run uncompiled (compiled ones fuse '
@@ -470,11 +482,14 @@ class TrainSpec:
             # nothing would train: it failed only once the model had loaded ("no layers matched")
             raise SpecError('network.targets has no patterns: add the layers to train (regexes), or use "attn", '
                             '"mlp", "attn_mlp" or "all"')
+        if not all(isinstance(w, str) and w.strip() for w in self.dataset.folder_trigger_words.values()):
+            raise SpecError('dataset.folder_trigger_words gives each folder a word: {"alice": "myalice"}, none of them empty')
         if self.objective.preserve.strip():
             if not any(w.strip() for w in self.objective.preserve.split(",")):
                 raise SpecError('objective.preserve is class words, comma-separated: e.g. "woman, man, person"')
-            if not self.dataset.trigger.strip():
-                raise SpecError("objective.preserve swaps the trigger for a class word: set dataset.trigger")
+            if not self.dataset.trigger.strip() and not self.dataset.folder_triggers:
+                raise SpecError("objective.preserve swaps the trigger for a class word: set dataset.trigger "
+                                "(or dataset.folder_triggers, with every picture in a folder)")
             if self.slider.kind:
                 raise SpecError("objective.preserve is for adapters with a trigger, not sliders")
             if self.dataset.edit_grounded:
@@ -562,6 +577,8 @@ def _type_name(hint: Any) -> str:
         return " or ".join(json.dumps(a) for a in args)
     if origin is list or hint is list:
         return f"list of {_type_name(args[0])}" if args else "list"
+    if origin is dict:
+        return "object"
     return {bool: "true/false", int: "whole number", float: "number", str: "text", dict: "object",
             type(None): "null"}.get(hint, getattr(hint, "__name__", str(hint)))
 
@@ -855,6 +872,8 @@ def _ts_type(hint: Any) -> str:
     if origin is list or hint is list:
         inner = _ts_type(args[0]) if args else "unknown"
         return f"({inner})[]" if "|" in inner else f"{inner}[]"
+    if origin is dict and args:
+        return f"Record<string, {_ts_type(args[1])}>"
     return {bool: "boolean", int: "number", float: "number", str: "string", dict: "Record<string, unknown>",
             type(None): "null"}.get(hint, "unknown")
 

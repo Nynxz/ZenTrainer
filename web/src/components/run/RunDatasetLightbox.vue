@@ -1,13 +1,14 @@
 <script setup lang="ts">
 // A dataset in the lightbox, read-only: over the run page (the Setup card's Dataset line), or New
 // run's dataset picker. Each picture with its caption in the run's caption set (`start`: the picture
-// it opens on); the dataset page edits them.
+// it opens on, `folder`: only that subfolder's pictures, '' the dataset folder's own); the dataset
+// page edits them.
 import { ZenLightbox, type LightboxItem } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref } from 'vue'
 import { engine, thumbUrl, viewUrl, type DatasetItem } from '@/api/engine'
-import { kb } from '@/components/dataset/context'
+import { folderOf, kb } from '@/components/dataset/context'
 
-const props = defineProps<{ name: string; set: string; start?: string }>()
+const props = defineProps<{ name: string; set: string; start?: string; folder?: string }>()
 const emit = defineEmits<{ close: [] }>()
 
 const items = ref<DatasetItem[]>([])
@@ -15,7 +16,8 @@ const error = ref<string | null>(null)
 const index = ref(0)
 onMounted(async () => {
   try {
-    items.value = (await engine.dataset(props.name)).items
+    const all = (await engine.dataset(props.name)).items
+    items.value = props.folder === undefined ? all : all.filter((it) => folderOf(it) === props.folder)
     if (props.start) index.value = Math.max(0, items.value.findIndex((it) => it.path === props.start))
     if (!items.value.length) error.value = 'This dataset has no pictures now.'
   } catch (e) {

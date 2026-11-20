@@ -258,6 +258,16 @@
           "description": "Prepend the trigger to captions that don't mention it.",
           "default": true
         },
+        "folder_triggers": {
+          "type": "boolean",
+          "description": "Each top-level subfolder is a class with a trigger of its own: its name, without a kohya \"N_\" repeat count, is the trigger for the pictures in it (\"3_ohwx\" trains ohwx, three times over). Pictures in the dataset folder itself use `trigger`. Sample prompts name the triggers they want.",
+          "default": false
+        },
+        "folder_trigger_words": {
+          "type": "object",
+          "description": "With folder_triggers: a trigger word in place of a folder's name, by folder: {\"alice\": \"myalice\"}. A folder not in it uses its name.",
+          "default": {}
+        },
         "masked_loss": {
           "type": "boolean",
           "description": "Masked training: pictures with a mask only learn where it's white.",
@@ -750,12 +760,12 @@
         },
         "int8_forward": {
           "type": "boolean",
-          "description": "int8 bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's int8 kernel forward instead of a dequantized bf16 matmul. Off is slower: for comparing quality.",
+          "description": "int8 and packed (w4a8/w6a8) bases (MiniMax H3, Krea 2 int8): trained layers run ComfyUI's quantized kernel forward instead of a dequantized bf16 matmul. Off is slower: for comparing quality.",
           "default": true
         },
         "int8_backward": {
           "type": "string",
-          "description": "int8 bases: how the backward gets each frozen layer's input gradient. \"w8a8\": quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), for some gradient precision. \"fused\": a fused Triton kernel at full precision, without rebuilding the layer's bf16 weight. \"bf16\": the weight rebuilt in bf16 (ComfyUI's way; the slowest).",
+          "description": "int8 and packed (w4a8, w6a8) bases: how the backward gets each frozen layer's input gradient. \"w8a8\": quantized to int8 too, on int8 tensor cores (about 2x the bf16 backward), for some gradient precision; a packed layer's codes are decoded to the int8 grid its forward uses first. \"fused\": a fused Triton kernel at full precision, without rebuilding the layer's bf16 weight (int8 bases; packed ones dequantize). \"bf16\": the weight rebuilt in bf16 (ComfyUI's way; the slowest).",
           "default": "w8a8",
           "enum": [
             "w8a8",
@@ -779,7 +789,7 @@
               ]
             }
           ],
-          "description": "torch.compile the repeated transformer block, fusing the elementwise work around the matmuls; the first steps (and first sample) are slower while it compiles, minutes on ROCm. Off unless turned on: \"auto\" (an older spec's) is off too.",
+          "description": "torch.compile the repeated transformer block, fusing the elementwise work around the matmuls; the first steps (and first sample) are slower while it compiles, minutes on ROCm. Off unless turned on: \"auto\" (an older spec's) is off too. Packed (w4a8/w6a8) bases compile too, except with Int8 forward off or a training dtype other than the file's (fp16 on a bf16 file).",
           "default": false,
           "enum": [
             "auto",

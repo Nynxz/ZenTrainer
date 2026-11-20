@@ -1,0 +1,59 @@
+{
+  "families": [
+    "minimax-h3-image"
+  ],
+  "status": "recipe",
+  "summary": "MiniMax-H3-Image, the 6-step image build of H3: trained on its six sampling noise levels over Ostris's de-distillation adapter.",
+  "sources": [
+    {
+      "label": "MiniMax-H3-Image in ComfyUI",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image"
+    },
+    {
+      "label": "Ostris's MiniMax H3 training adapters",
+      "url": "https://huggingface.co/ostris/minimax_h3_training_adapter"
+    }
+  ],
+  "train": {
+    "optim": {
+      "batch_size": 1
+    },
+    "objective": {
+      "timesteps": "scheduler",
+      "timestep_scheduler": "simple",
+      "timestep_scheduler_steps": 6,
+      "shift": 0.0
+    },
+    "memory": {
+      "offloading": true,
+      "gradient_checkpointing": true,
+      "int8_backward": "w8a8",
+      "int8_forward": true,
+      "tread": 0.0
+    },
+    "network": {
+      "rank": 16,
+      "alpha": 16,
+      "training_adapter": "training_adapters/minimax_h3_image_training_adapter_v1.safetensors"
+    }
+  },
+  "samples": {
+    "width": 2048,
+    "height": 2048,
+    "steps": 6,
+    "cfg": 1.0,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "negative": ""
+  },
+  "notes": [
+    "The model has one output head per sampling step on its own 6-step grid: sample at 6 steps, simple scheduler, CFG 1 (ComfyUI's template). Other step counts or schedulers blend heads it wasn't distilled for.",
+    "Training draws only those six noise levels, each through its own head (Objective → timesteps “scheduler”, simple, 6); a shift has no meaning here.",
+    "It's step- and guidance-distilled, so it trains over Ostris's de-distillation adapter (Training only): on while training, never in samples or the saved LoRA.",
+    "It's tuned for about 2048×2048 pixels of area and up; lower resolutions show more artifacts, so samples are 2048².",
+    "One image per step: the model takes batch size 1. Use gradient accumulation for a bigger batch.",
+    "The text encoder is the MiniMax H3 one (a 32B vision-language model): captions are encoded once and cached. An H3 install's copy is reused.",
+    "Memory settings are the H3 video ones (same DiT without the audio stream): the int8 build mostly stays in VRAM.",
+    "Learning rates measured here (the recipe leaves it to you): a 37-picture face set barely learned at 1e-4 and looked like the person at 1e-3 over about 2000 steps, with gradient accumulation 4, spread noise levels and a low-noise lean of 1.5. An 8-picture style overcooked at 5e-4 and up (blotchy texture, the dataset's characters leaking in) and stayed clean at 2e-4 for 750 to 1000 steps."
+  ]
+}

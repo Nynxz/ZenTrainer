@@ -38,7 +38,7 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
     { k: 'Model', v: model.replace(/\.safetensors$/, ''), title: model },
     {
       k: 'Dataset',
-      v: [sp.dataset.folder, sp.dataset.caption_set && sp.dataset.caption_set !== 'default' ? sp.dataset.caption_set : '', sp.dataset.trigger ? `“${sp.dataset.trigger}”` : ''].filter(Boolean).join(' · '),
+      v: [sp.dataset.folder, sp.dataset.caption_set && sp.dataset.caption_set !== 'default' ? sp.dataset.caption_set : '', sp.dataset.folder_triggers ? 'a trigger per folder' : sp.dataset.trigger ? `“${sp.dataset.trigger}”` : ''].filter(Boolean).join(' · '),
       lead: sp.dataset.folder,
       open: datasetOpen(sp.dataset.folder, sp.dataset.caption_set),
     },

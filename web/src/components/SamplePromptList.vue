@@ -13,6 +13,8 @@ const props = defineProps<{
   frames: number
   video: boolean
   trigger: string
+  /** with a trigger per folder: the folders' words, which a prompt names to show that folder */
+  words?: string[]
   /** edit runs: the dataset's input pictures to pick from (each sample edits one) */
   controls?: { value: string; thumb: string }[]
 }>()
@@ -107,7 +109,8 @@ function setSize(i: number, v: string | number) {
       </div>
     </div>
     <button class="add" @click="add"><i class="mdi mdi-plus" /> Add a sample</button>
-    <span class="hint muted">[trigger] becomes {{ trigger ? `“${trigger}”` : 'your trigger word' }}.</span>
+    <span v-if="words?.length" class="hint muted">A prompt shows a folder by naming its word: {{ words.join(', ') }}. [trigger] becomes {{ trigger ? `“${trigger}”` : 'nothing' }}.</span>
+    <span v-else class="hint muted">[trigger] becomes {{ trigger ? `“${trigger}”` : 'your trigger word' }}.</span>
   </div>
 </template>
 

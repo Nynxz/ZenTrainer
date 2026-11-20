@@ -24,6 +24,7 @@ VERSION = 1
 # this install's own: never exported, chosen again on import
 LOCAL = {
     "dataset.folder": "the dataset",
+    "dataset.folder_trigger_words": "the trigger words typed for the dataset's folders",
     "validation.dataset": "the dataset validation holds out",
     "output.lora_dir": "where LoRAs are saved",
     "network.init_from": "a LoRA to continue from",
@@ -62,7 +63,7 @@ def _pop(d: dict, path: str) -> bool:
         d = d.get(k) if isinstance(d, dict) else None
         if not isinstance(d, dict):
             return False
-    return d.pop(last, None) not in (None, "")
+    return d.pop(last, None) not in (None, "", {})
 
 
 def export(spec: dict[str, Any]) -> dict[str, Any]:

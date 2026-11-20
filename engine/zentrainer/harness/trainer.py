@@ -28,6 +28,7 @@ from ..spec import TrainSpec, slugify
 from . import control as control_mod
 from . import data, models, optim
 from .callbacks import Callback, Checkpoints, Keep, Metrics, Samples, Validation, write_metadata
+from .quiet import quiet_reloads
 from . import compat
 from .data.streams import Streams
 from .denoiser import Denoiser
@@ -67,6 +68,39 @@ def _release_frames(e: BaseException) -> None:
         if e.__traceback__ is not None:
             traceback.clear_frames(e.__traceback__)
         e = e.__cause__ or e.__context__
+
+
+def _ours_outside_torch(device=None) -> int:
+    """VRAM this process holds that torch's allocator does not count: ComfyUI stages model weights
+    ("Model storage policy: fast_disk", comfy-aimdo) into its own VBAR/buffer pool, outside
+    `torch.cuda.memory_reserved()`. A measurement that only subtracts torch's share reads our own
+    staged text encoder (9.3 GB here) as "the desktop and other programs", and caps the process below
+    what the model needs — the load then dies a few hundred MB short with the card nearly idle.
+    ComfyUI itself adds these back when it asks for free memory (`model_patcher.py`)."""
+    index = getattr(device, "index", None)
+    ours = 0
+    try:
+        import comfy_aimdo.model_vbar as vbar
+
+        ours = max(ours, int(vbar.vbars_analyze(index)))
+    except (ImportError, AttributeError, RuntimeError):  # no aimdo in this build, or not initialised yet
+        pass
+    try:
+        import comfy_aimdo.control as aimdo
+
+        if aimdo.lib is None:
+            raise RuntimeError("comfy-aimdo is not initialised")
+        device_id = torch.cuda.current_device() if index is None else index
+        # this device only: control.get_total_vram_usage() sums every initialised device, so on a
+        # multi-GPU box another card's aimdo usage would count as ours and loosen this cap.
+        # Its counter can also include what torch allocated through aimdo's hooks, which
+        # memory_reserved() already reports: that would take those bytes off free VRAM twice.
+        counted_twice = torch.cuda.memory_reserved(device)
+        staged = int(aimdo.lib.get_total_vram_usage(aimdo.get_devctx(device_id))) - counted_twice
+        ours = max(ours, staged)
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+    return max(0, ours)
 
 
 def _oom_advice(spec: TrainSpec, step: int) -> str:
@@ -268,7 +302,16 @@ class Trainer:
     # ---- lifecycle -------------------------------------------------------------
 
     def run(self) -> str:
-        """Train to completion (or stop). Returns the final status."""
+        """Train to completion (or stop), or sample a finished run (sample_job). Returns the final
+        status. compat.in_run is set for all of it: the ComfyUI patches that change sampling too act
+        on this run's renders only, never on the user's own workflows after it."""
+        compat.in_run = True
+        try:
+            return self._run()
+        finally:
+            compat.in_run = False
+
+    def _run(self) -> str:
         import comfy.model_management as mm
 
         if self.sample_job:
@@ -283,7 +326,12 @@ class Trainer:
                 from .kernels.compile import compiled_blocks, wanted
 
                 dm = self.models.patcher.model.diffusion_model
-                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps)
+                from .kernels import int8_backward
+
+                packed = int8_backward.has_packed(dm)
+                dequantized = packed and (not self.spec.memory.int8_forward or int8_backward.packed_dequantized(
+                    dm, _DTYPES[self.spec.memory.training_dtype]))
+                compile_on, why = wanted(self.spec.memory.compile_blocks, self.spec.optim.steps, dequantized=dequantized)
                 if why:
                     logging.info("[ZenTrainer] %s", why)
                 if compile_on and compat.fused_qk_rope:
@@ -294,7 +342,8 @@ class Trainer:
                 # compiled first, so checkpointing wraps the compiled forward
                 m = self.spec.memory
                 skip = m.grad_checkpoint_skip
-                with compiled_blocks(dm, compile_on) as self._compiled, \
+                with int8_backward.opaque_packed(compile_on and packed), \
+                        compiled_blocks(dm, compile_on) as self._compiled, \
                         gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
                                                0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:
                     self._input_grad = ckpt.input_grad
@@ -457,9 +506,9 @@ class Trainer:
         if s.memory.int8_forward:
             n8 = int8_backward.install(patcher.model)
             if n8:
-                logging.info("[ZenTrainer] int8 training path on %d layers", n8)
+                logging.info("[ZenTrainer] quantized training path on %d layers", n8)
         elif n8 := int8_backward.weight_only(patcher.model):
-            logging.info("[ZenTrainer] int8 weights dequantized to bf16 for every matmul on %d layers", n8)
+            logging.info("[ZenTrainer] quantized weights dequantized to bf16 for every matmul on %d layers", n8)
         self.device = patcher.load_device
         if torch.cuda.is_available():
             self._card()  # Windows: the allocator's cap, before anything loads or encodes
@@ -472,9 +521,10 @@ class Trainer:
         self.h3 = is_h3(patcher.model)
         if s.dataset.video_keyframes and not self.h3:
             raise ValueError("keyframes (image-to-video training) are for MiniMax H3's fl2va model")
-        self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root, cache,
-                                  encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
-                                  audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
+        with quiet_reloads():
+            self.dataset = data.build(self._data_spec(s.dataset), _Lazy(lambda: self.models.clip), self.models.vae, root,
+                                      cache, encoder_id, progress=lambda i, n, msg: self._status("loading", message=f"{msg} ({i}/{n})"),
+                                      audio_vae=self.models.audio_vae, h3=self.h3, preserve=self._classes())
         if s.slider.kind == "pairs":
             self._keep_pairs(self.dataset)
         if self._classes() and any(sm.has_cond if isinstance(sm, data.DiskSample) else sm.cond is not None
@@ -486,10 +536,11 @@ class Trainer:
         if s.validation.every and s.validation.dataset:
             from dataclasses import replace
 
-            self.val_dataset = data.build(
-                self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
-                self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
-                h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
+            with quiet_reloads():
+                self.val_dataset = data.build(
+                    self._data_spec(replace(s.dataset, folder=s.validation.dataset, stages=[])), _Lazy(lambda: self.models.clip),
+                    self.models.vae, paths.find_dataset(s.validation.dataset), cache, encoder_id, audio_vae=self.models.audio_vae,
+                    h3=self.h3, progress=lambda i, n, msg: self._status("loading", message=f"validation set: {msg} ({i}/{n})"))
             if not self.val_dataset.samples:
                 raise ValueError(f"the validation dataset {s.validation.dataset} has no pictures")
             logging.info("[ZenTrainer] validation on %s: %d pictures held out", s.validation.dataset,
@@ -566,10 +617,11 @@ class Trainer:
         self._stages = []
         for st in s.dataset.stages:
             res = int(st["resolution"])
-            ds = data.build(self._data_spec(replace(s.dataset, resolution=res, stages=[])), _Lazy(lambda: self.models.clip),
-                            self.models.vae, root, cache, encoder_id, audio_vae=self.models.audio_vae, h3=self.h3,
-                            preserve=self._classes(),
-                            progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
+            with quiet_reloads():
+                ds = data.build(self._data_spec(replace(s.dataset, resolution=res, stages=[])), _Lazy(lambda: self.models.clip),
+                                self.models.vae, root, cache, encoder_id, audio_vae=self.models.audio_vae, h3=self.h3,
+                                preserve=self._classes(),
+                                progress=lambda i, n, msg, r=res: self._status("loading", message=f"{msg} at {r} px ({i}/{n})"))
             if s.slider.kind == "pairs":
                 self._keep_pairs(ds)
             self._stages.append((float(st["until"]), res, ds, data.Batches(ds, st.get("batch_size") or s.optim.batch_size, s.seed + res)))
@@ -752,29 +804,42 @@ class Trainer:
         if text is None:
             return
         texts = data.TextCache(self.cache_dir, self.encoder_id)
-        todo = [c for c in data.caption_texts(d, root, self._classes()) if not texts.has(c)]
+        captions = data.caption_texts(d, root, self._classes())
         if s.validation.every and s.validation.dataset:
-            todo += [c for c in data.caption_texts(dataclasses.replace(d, folder=s.validation.dataset, stages=[]),
-                                                    paths.find_dataset(s.validation.dataset)) if not texts.has(c)]
+            captions += data.caption_texts(dataclasses.replace(d, folder=s.validation.dataset, stages=[]),
+                                           paths.find_dataset(s.validation.dataset))
         if s.slider.kind == "text":
-            todo += [t for t in self._slider_prompts().values() if not texts.has(t)]
-        todo = list(dict.fromkeys(todo))
+            captions += list(self._slider_prompts().values())
+        captions = list(dict.fromkeys(captions))
+        todo = [c for c in captions if not texts.has(c)]
+        if todo:
+            reused = f" ({len(captions) - len(todo)} reused from the cache)" if len(todo) < len(captions) else ""
+            logging.info("[ZenTrainer] encoding %d captions%s…", len(todo), reused)
+        started, prompts = time.monotonic(), False
         self.models = text
         try:
-            with torch.no_grad():
+            with torch.no_grad(), quiet_reloads():
                 for n, c in enumerate(todo):
                     clip = self.models.clip
                     texts.put(c, data._to_cpu(clip.encode_from_tokens_scheduled(clip.tokenize(c))))
                     self._status("loading", message=f"encoding captions ({n + 1}/{len(todo)})")
                 if self._samples is not None:  # on_start encodes them even unscheduled: cached for it
-                    self._samples.encode_prompts(self)
+                    prompts = self._samples.encode_prompts(self)
         finally:
-            if self.models._clip is not None:
+            loaded = self.models._clip is not None
+            if loaded:
                 self.models.release_clip()
                 mm.cleanup_models_gc()
                 mm.soft_empty_cache()
-                logging.info("[ZenTrainer] text encoded before the model loads (%d captions); text encoder released", len(todo))
             self.models = None
+        prompts = prompts and bool(s.samples.prompts)  # with none, only the negative: not worth a mention
+        done = " and ".join(x for x in (f"{len(todo)} captions" if todo else "", "the sample prompts" if prompts else "") if x)
+        if done:
+            logging.info("[ZenTrainer] encoded %s in %.0f s%s", done, time.monotonic() - started,
+                         "; text encoder released" if loaded else "")
+        else:
+            logging.info("[ZenTrainer] reusing cached encodings: %d captions%s", len(captions),
+                         " and the sample prompts" if self._samples is not None and s.samples.prompts else "")
 
     def _drop_text_encoder(self) -> None:
         """Captions are encoded into the dataset cache and the sample prompts at on_start: past
@@ -832,6 +897,7 @@ class Trainer:
         import comfy.model_management as mm
 
         patcher = self.models.patcher
+        ours = [lm for lm in mm.current_loaded_models if lm.model is patcher]
         if self.spec.memory.offloading:
             from .memory.offload import watch_pins
 
@@ -847,19 +913,27 @@ class Trainer:
             # everything else out, then as much of the model as fits beside training stays in
             # VRAM; only the rest streams. (Asking for "all the memory" here, as before, left a
             # weight budget of nothing: every layer crossed PCIe twice a step.)
-            ours = [lm for lm in mm.current_loaded_models if lm.model is patcher]
             mm.free_memory(1e30, self.device, keep_loaded=ours)
             # back from samples, the cache is in the sampler's fragments: weights loaded between
             # them left too little room for the step that fit before (Krea 2 int8: out of VRAM on
             # the first step after every sample pass, until the retries ran out)
             torch.cuda.empty_cache()
             logging.info("[ZenTrainer] keeping %.1f GB of VRAM free for training beside the model", self.headroom / 1024 ** 3)
+            if torch.cuda.is_available():
+                # measured after the others left: setup() measured the card as it found it, and what
+                # free_memory gave back is above that cap, so the load runs out a few MB short with
+                # the card nearly empty (4.4 GB allowed of 16 GB, 10.8 GB free)
+                self._card()
             mm.load_models_gpu([patcher], memory_required=self.headroom, force_full_load=False)
             self._fit_weights()
             self._pin_offloaded()
             if not getattr(self, "_first_resident", None):
                 self._first_resident = patcher.loaded_size()  # the safe estimate's load, to return to
         else:
+            mm.free_memory(1e30, self.device, keep_loaded=ours)  # out first: the cap below is measured after
+            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                self._card()  # the same, on the card as this load finds it
             mm.load_models_gpu([patcher], memory_required=1e20, force_full_load=True)
         patcher.model.requires_grad_(False)
         patcher.model.train()
@@ -1060,10 +1134,29 @@ class Trainer:
         (PyTorch keeps a cap once set). Linux drivers have no such fallback: a step there runs out
         by itself."""
         free, total = vram.mem_get_info()
-        others = max(0, total - free - torch.cuda.memory_reserved())
+        reserved = torch.cuda.memory_reserved()
+        our_own = _ours_outside_torch(self.device)  # staged weights: VRAM on the card, not in torch's allocator
+        others = max(0, total - free - reserved - our_own)
         if os.name == "nt" and self.device.type == "cuda":
-            torch.cuda.set_per_process_memory_fraction((total - others) / total, self.device)
+            allowed = total - others
+            gb = 1024 ** 3
+            model = self.models.patcher.model_size()
+            # with weights offloaded the model isn't meant to fit: the cap is what makes a step run out
+            if not self.spec.memory.offloading and allowed < model + 256 * 1024 ** 2:
+                # The measurement says we may not even hold the weights. Either something else really
+                # owns the card, or what looks foreign is our own staging that this API can't report:
+                # capping then fails the load for the wrong reason, so let the allocator decide and say
+                # so (an actual shortage still raises OutOfMemoryError, a few lines later).
+                allowed = total
+                logging.warning("[ZenTrainer] the VRAM measurement allows %.2f GB but the model alone is %.2f GB "
+                                "(%.2f free right now, %.2f ours in torch, %.2f ours elsewhere): not capping this "
+                                "load — if the card really is short it will run out of VRAM instead",
+                                (total - others) / gb, model / gb, free / gb, reserved / gb, our_own / gb)
+            torch.cuda.set_per_process_memory_fraction(allowed / total, self.device)
             self._capped = True
+            logging.info("[ZenTrainer] VRAM cap: %.2f GB of %.2f free right now, %.2f ours in torch, %.2f ours "
+                         "staged elsewhere, %.2f held by others -> this process may use %.2f GB",
+                         free / gb, total / gb, reserved / gb, our_own / gb, others / gb, allowed / gb)
         return total, others
 
     def _tighten(self) -> None:
@@ -1569,7 +1662,8 @@ class Trainer:
         if plain:
             return self._prepared(i, index[data.plain_class(word)], x0, shapes)
         cap = random.choice(sample.variants) if len(sample.variants) > 1 else sample.caption
-        return self._prepared(i, index[data.as_class(ds.captions[cap], self.spec.dataset.trigger, word)], x0, shapes)
+        trigger = ds.triggers[i] if ds.triggers else self.spec.dataset.trigger
+        return self._prepared(i, index[data.as_class(ds.captions[cap], trigger, word)], x0, shapes)
 
     def _preserve_loss(self, idx: list, x0: torch.Tensor, shapes: list | None, x_t: torch.Tensor,
                        sigma: torch.Tensor, noise: torch.Tensor, acc: int) -> torch.Tensor | None:
@@ -1731,7 +1825,8 @@ class Trainer:
         _room_for(folder, sum(t.numel() * t.element_size() for t in weights.values()))
         # written beside it under a name ComfyUI doesn't list, flushed, then swapped in: a full disk,
         # a kill or a power cut mid-save leaves no half-written LoRA in the loras folder
-        meta = write_metadata(self.spec.to_dict(), self.step)
+        words = sorted({w for w in self.dataset.triggers if w}) if self.spec.dataset.folder_triggers else []
+        meta = write_metadata(self.spec.to_dict(), self.step, words)
         safeio.write_to_path(path, lambda tmp: sft.save_file(weights, tmp, metadata=meta))
         # safetensors writes owner-only (0600); a LoRA is an output like ComfyUI's images, readable
         # by whatever else serves or syncs the folder (Docker, a share, another user's ComfyUI)

@@ -72,6 +72,9 @@ def _catalog() -> dict:
 # text encoder files that aren't the text encoder (Flux 3 Klein's prompt upsampler, Qwen-Image 2.1's
 # prompt enhancer "_pe_"): the catalog's text_encoder_skip
 NOT_TE = re.compile("|".join(_catalog().get("text_encoder_skip") or ["upsampl"]), re.I)
+# templates of models we don't train that load another family's diffusion model with their own text
+# encoder and VAE: the catalog's template_skip
+SKIP_TEMPLATES = re.compile("|".join(_catalog().get("template_skip") or ["^$"]))
 
 
 def correction(fid: str) -> dict:
@@ -154,6 +157,24 @@ def _nodes(w: dict) -> list[dict]:
     return out
 
 
+def _prompt_writers(w: dict) -> set[int]:
+    """CLIPLoaders whose model only feeds text generation, as id() of their nodes: an LLM that
+    rewrites the prompt, not the text encoder. MiniMax-H3-Image's template loads Qwen3.5 9B for
+    that, which is MOSS Image's text encoder, so the file name can't tell."""
+    out = set()
+    for g in [w] + w.get("definitions", {}).get("subgraphs", []):
+        types = {n.get("id"): n.get("type", "") for n in g.get("nodes", [])}
+        target = {}
+        for link in g.get("links", []):
+            lid, to = (link[0], link[3]) if isinstance(link, list) else (link.get("id"), link.get("target_id"))
+            target[lid] = types.get(to, "")
+        for n in g.get("nodes", []):
+            fed = [target.get(i, "") for o in n.get("outputs", []) for i in (o.get("links") or [])]
+            if n.get("type") == "CLIPLoader" and fed and all(t.startswith("TextGenerate") for t in fed):
+                out.add(id(n))
+    return out
+
+
 def _model_urls(o: Any, out: dict[str, dict]) -> None:
     """Every {name, url, directory} a template's nodes declare under properties.models."""
     if isinstance(o, dict):
@@ -209,7 +230,7 @@ def _from_templates() -> dict[str, Family]:
             tags = t.get("tags", [])
             image = t.get("mediaType") == "image" and "Text to Image" in tags
             video = bool(TRAINABLE_VIDEO.search(t["name"])) and "Text to Video" in tags
-            if t["name"].startswith("api_") or not (image or video):
+            if t["name"].startswith("api_") or not (image or video) or SKIP_TEMPLATES.search(t["name"]):
                 continue
             rec = _read_template(root, t, freq)
             if rec is None:
@@ -289,7 +310,9 @@ def _read_template(root: Path, t: dict, freq: dict[str, int]) -> dict | None:
     first = lambda nodes: {n["widgets_values"][0] for n in nodes if n.get("widgets_values")}
     unets, clips, vaes, ckpts = (by_type.get(k, []) for k in ("UNETLoader", "CLIPLoader", "VAELoader", "CheckpointLoaderSimple"))
     # a prompt-upsampler LLM loads through CLIPLoader too (Flux 3 Klein): not the text encoder
-    clips = [n for n in clips if not (n.get("widgets_values") and NOT_TE.search(str(n["widgets_values"][0])))]
+    writers = _prompt_writers(w)
+    clips = [n for n in clips if id(n) not in writers
+             and not (n.get("widgets_values") and NOT_TE.search(str(n["widgets_values"][0])))]
     if ckpts and not unets and not clips and len(first(ckpts)) == 1:
         kind, clip_type = "checkpoint", None
         picks = [("checkpoints", ckpts[0]["widgets_values"][0])]

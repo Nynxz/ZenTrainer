@@ -6,9 +6,8 @@ and Manager show.
 ## Unreleased
 
 - **Drop a folder to make a dataset.** On the Datasets page, a dropped folder becomes a dataset
-  named after it (rename it first if you like); on a dataset's page, a dropped folder's pictures,
-  captions and masks go in, subfolders and all. A folder used to land as one empty file and be
-  refused.
+  named after it (rename it first if you like), its subfolders the dataset's folders. A folder used
+  to land as one empty file and be refused.
 - **Big drops go in as you watch.** Files go up in parts, a progress bar floating over the page while
   they do and the pictures appearing as they land, instead of nothing happening for minutes; what's
   landed stays if the connection drops. Drops onto a dataset that stopped working until the page
@@ -18,8 +17,91 @@ and Manager show.
 - **Messages float over the page.** "12 files added", "3 captions updated" and the like float over
   the bottom of a dataset page, above the selection's actions, instead of pushing the pictures down
   for a moment.
+- **MiniMax H3 samples keep sage attention.** The token refiner's attention received fp32 q/k
+  beside a bf16 v, and no attention override could see it: `preprocess_text_embeds` runs outside
+  `transformer_options`. Sage refused every one of those calls (an "Error running sage attention"
+  line per image) and those passes ran on ComfyUI's slower pytorch attention. q/k are now cast to
+  v's dtype at the model's one attention entry point, which changes nothing when they already agree.
+  Only during a ZenTrainer run and its samples: your own H3 workflows in that ComfyUI run ComfyUI's
+  code as they are, before a run and after one.
+- **A tiny VAE ComfyUI can't load says so in the log.** A `models/vae_approx` file that isn't the
+  TAEHV ComfyUI expects (a bare decoder, no `decoder.*` keys) failed with a traceback while the
+  previewer was built; the run carried on with the latent colours. It's now one line naming the file.
+- **Packed 4/6-bit bases train (w4a8, w6a8).** MiniMax H3's smaller quantized files stopped at the
+  first backward with "W4A8 GEMM expects RHS W.T.": their layers are weight-only quantized, and the
+  weight a LoRA'd linear hands autograd's backward is one the w4a8 matmul refuses. Only
+  `int8_tensorwise` layers had a training path. They now get the same one: with `int8_backward`
+  "w8a8" (the default) each layer's codes are decoded, every backward, to the int8 grid its own
+  forward uses and go through the W8A8 kernels, the gradient within 1-2% of a dequantized bf16 one;
+  "fused" and "bf16" dequantize. On an RTX 5090: H3 ref2va w6a8 at 512 px trains 2x as fast as with
+  the dequantized backward, MOSS w6a8 at 768 px 1.4x, level with its int8 build with the same loss
+  and a file 1 GB smaller. On AMD the gain is smaller: on an RX 7800 XT, through Triton, a layer's
+  backward is 1.1-1.6x as fast, and its smallest layers (1024 wide) are a little slower than
+  dequantizing. The first packed layer of each kind is checked against the bf16 gradient, and a real
+  mismatch falls back to it. They train with Compile blocks too: comfy_kitchen's w4a8 kernels run as
+  opaque ops in a compiled block, H3 w6a8 at 512 px 1.9x as fast as uncompiled and MOSS w6a8 at 768
+  px 1.4x, with the same loss (not with Int8 forward off, or fp16 training on a bf16 file: ComfyUI
+  dequantizes those matmuls, which can't compile). The decode to int8 is from BobJohnson24. int8
+  bases are unchanged.
+- **A run's Total counts from when it started.** The run page's Total ran from when the run was
+  queued, so a run that waited behind another showed the wait as its own time (11 minutes of
+  training read as 25). It now runs from its start, as the Jobs list's "Ran for" does, and a page
+  left open while the run waits, trains and ends keeps it right without a reload.
+- **A trigger per folder.** A dataset with subfolders lists them in a new run's Dataset section,
+  each with a picture, its count and its trigger word: its name, or one typed beside it. Choose
+  One word per folder and one LoRA learns several characters or concepts, each called up by its own
+  word. `[trigger]` in a folder's captions becomes that word, a `3_` in front of the name still sets
+  repeats (now for the pictures in its subfolders too), and your caption files stay as they are.
+  A folder's picture opens its pictures, its count is the pictures the run trains (muted ones sit
+  out), and a folder that's all muted is left out of the words. The summary lists the words, a run
+  with no sample prompts gets a portrait of each of the first four folders, and the saved LoRA
+  lists its words in its trigger phrase.
+- A dataset's cover takes its pictures from each of its folders in turn, and the dataset in a new
+  run shows four of them.
+- **Add folder**, beside Add files on a dataset, or drop a folder on the page: it comes in as a
+  subfolder of the same name, with its own subfolders, captions and masks. With One word per folder,
+  adding each character's folder is all a collection takes. Adding files says how many it's adding
+  straight away, and says so when a folder has nothing in it to add or the upload fails.
+- **A dataset's folders show.** In name order each subfolder's pictures sit under its name and
+  count, and a folder menu beside the filter shows one folder at a time. A folder's ⋯ menu mutes
+  or unmutes all its pictures in the caption set shown, and its header says how many are muted.
+- **Delete a dataset, or one of its folders.** Delete dataset is in a dataset's Settings (type its
+  name to confirm), and Delete folder is in each folder's ⋯ menu. Their files go for good, with a
+  deleted dataset's face data; the folders they were added from stay. Neither is done while a run
+  or a caption job is using the dataset.
+- **A new dataset shows up while it's still empty.** It used to stay out of the list until a
+  picture was in it, with its name taken, so there was no page to add the first files on. One
+  stuck like that comes back by making a dataset of the same name again.
+- **MiniMax-H3-Image.** MiniMax's own image build of H3 (6 steps, no CFG) is in the model list,
+  with a recipe: it trains on the model's six sampling noise levels, each through the output head
+  it has for that step, over Ostris's de-distillation adapter, which the recipe picks for you
+  (download it from the Training only row if you don't have it). Samples are 2048², 6 steps,
+  CFG 1. Needs ComfyUI v0.45.0, which `zt update` now installs.
+- **MiniMax H3's text encoder and VAE choices no longer include another model's.** One of ComfyUI's
+  newer templates loads a different model through H3's diffusion model, which put its own encoder
+  and VAE in H3's lists.
+- **Templates that rewrite the prompt with a second LLM load right.** A text encoder that only feeds
+  text generation is told apart by what it's wired to, so models like ERNIE-Image and HiDream O1
+  show up too.
+- **The New run page fits a phone with a recipe picked.** A recipe's one-line summary stretched the
+  form past the screen's edge.
+- **A load no longer runs out of VRAM with most of the card free.** On Windows ZenTrainer caps the
+  allocator at the card bar what other models and programs hold, so a step can't spill into slow
+  system RAM. That cap was measured while the run was still preparing, before it had freed the card
+  of the other models: what they released stayed above the cap, and the model's own load could stop
+  a few MB short with the card nearly empty. It is measured again just before each load.
+- **The cap no longer counts ZenTrainer's own staged weights as another program's.** ComfyUI stages
+  model weights outside torch's allocator (fast_disk, comfy-aimdo), so the card's used memory minus
+  torch's share still held gigabytes of this process's own text encoder; the cap came out below the
+  diffusion model itself (4.61 GB allowed for a 5.04 GB model) and its load died with ~4 GB free on
+  the card. The measurement now subtracts what the process holds outside torch, and if the allowance
+  still can't hold a model that loads whole the cap is skipped and logged rather than failing the load
+  for the wrong reason. The log line now names each part: free, ours in torch, ours staged, held elsewhere.
 - **Tidewater, a teal theme.** Cold teal on ink, light and dark, in Appearance's theme packs: the
   first accent between Hacker's greens and Ghost Circuit's cyan.
+- The log says once that the text encoder and the VAE are loaded while a run prepares its dataset
+  or renders samples, not once for every caption and picture. It says when encoding starts and
+  how long it took, and how much it reused from the cache instead.
 - **See a job go through the pictures.** While auto-captioning runs (a try-on too), every picture
   it has still to do shows a spinner, brighter on the one it's on.
 - **A changed mask shows without refreshing the page.** The grid and lightbox kept showing a

@@ -2,6 +2,7 @@
 a tiny fake templates folder stands in for the comfyui_workflow_templates package."""
 
 import json
+import re
 
 import pytest
 
@@ -184,6 +185,48 @@ def test_flux3_template_with_prompt_upsampler(tmp_path, monkeypatch):
     rec = families.recommend(fam)
     assert rec["train"]["diffusion_models"] == "flux3-image-klein-base-int8-convrot.safetensors"  # the template's precision
     assert rec["sample"]["model"] == "flux3-image-klein-int8-convrot.safetensors"
+
+
+def test_a_prompt_rewriter_is_told_by_its_wiring(tmp_path, monkeypatch):
+    # MiniMax-H3-Image's template loads Qwen3.5 9B to rewrite the prompt (into TextGenerateV2), the
+    # file MOSS uses as its text encoder: the wiring tells them apart, not the name. A template
+    # that loads H3's diffusion model with its own text encoder and VAE is left out (template_skip)
+    def tmpl(repo, unet, clip, vae, rewriter=None):
+        hf = lambda folder, name: {"name": name, "directory": folder, "url": f"https://huggingface.co/{repo}/resolve/main/{folder}/{name}"}
+        nodes = [{"id": 1, "type": "UNETLoader", "widgets_values": [unet, "default"], "properties": {"models": [hf("diffusion_models", unet)]}},
+                 {"id": 2, "type": "CLIPLoader", "widgets_values": [clip, "minimax", "default"], "properties": {"models": [hf("text_encoders", clip)]},
+                  "outputs": [{"links": [10]}]},
+                 {"id": 3, "type": "VAELoader", "widgets_values": [vae], "properties": {"models": [hf("vae", vae)]}},
+                 {"id": 4, "type": "MiniMaxH3ImageConditioning"}]
+        links = [[10, 2, 0, 4, 0, "CLIP"]]
+        if rewriter:
+            nodes += [{"id": 5, "type": "CLIPLoader", "widgets_values": [rewriter, "minimax", "default"],
+                       "properties": {"models": [hf("text_encoders", rewriter)]}, "outputs": [{"links": [11]}]},
+                      {"id": 6, "type": "TextGenerateV2"}]
+            links.append([11, 5, 0, 6, 0, "CLIP"])
+        return {"nodes": nodes, "links": links}
+    root = tmp_path / "templates"
+    root.mkdir()
+    entries = {
+        "image_minimax_h3_image_t2i": (["MiniMax H3 Image"], tmpl("Comfy-Org/MiniMax-H3-Image", "minimax_h3_image_pruned_int8_convrot.safetensors",
+                                                                  "qwen3vl_32b_minimax_h3_int8_convrot.safetensors", "minimax_h3_image_vae_fp16.safetensors",
+                                                                  rewriter="qwen3.5_9b_w4a8_gptq.safetensors")),
+        "image_minimax_h3_t2i": (["MiniMax H3"], tmpl("Comfy-Org/MiniMax-H3", "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                                                      "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "minimax_h3_video_vae_fp16.safetensors")),
+        "image_other_t2i": (["Other Image", "MiniMax H3"], tmpl("Comfy-Org/MiniMax-H3", "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                                                                "other_text_encoder.safetensors", "other_vae.safetensors")),
+    }
+    (root / "index.json").write_text(json.dumps([{"templates": [
+        {"name": k, "mediaType": "image", "tags": ["Text to Image"], "models": m} for k, (m, _) in entries.items()]}]))
+    for k, (_, w) in entries.items():
+        (root / f"{k}.json").write_text(json.dumps(w))
+    monkeypatch.setattr(families, "_templates_dir", lambda: root)
+    monkeypatch.setattr(families, "SKIP_TEMPLATES", re.compile("^image_other_"))
+    fams = families._from_templates()
+    assert [f.name for f in fams["minimax-h3-image"].files["text_encoders"]] == ["qwen3vl_32b_minimax_h3_int8_convrot.safetensors"]
+    h3 = fams["minimax-h3"]
+    assert h3.templates == ["image_minimax_h3_t2i"]
+    assert [f.name for f in h3.files["vae"]] == ["minimax_h3_video_vae_fp16.safetensors"]
 
 
 def test_profiles_load_and_validate(tmp_path):

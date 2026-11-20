@@ -23,7 +23,7 @@ const router = useRouter()
 
 const ds = useDataset(() => props.name)
 provide(DATASET, ds)
-const { view, zoom, fit, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, query, selected, boxing, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
+const { view, zoom, fit, sideOpen, items, sets, activeSet, controlSets, activeControl, loading, error, notice, bust, load, filter, folder, folders, query, selected, boxing, reviewing, counts, setMuted, faces, flash, removeMany, menu, menuItems, allShownSelected, toggleAll, layout, lightbox, lbItems, shown } = ds
 
 // In a narrow window the panel would land under every picture, out of reach: there it's a drawer
 // over the right edge instead, opened by the same button, closed on its own (not remembered)
@@ -97,6 +97,16 @@ const filterItems = computed(() => [
   { value: 'faces', label: `Face issues · ${faces.value?.items ? counts.value.faceIssues : '–'}` },
   ...(controlSets.value.length ? [{ value: 'pairs', label: `With a “${activeControl.value}” input · ${counts.value.pairs}` }] : []),
 ])
+// the folder menu: every subfolder, and the dataset folder's own pictures where it has any
+// '/' (all of them) and '.' (the dataset folder's own) are values no folder can be named
+const folderItems = computed(() => [
+  { value: '/', label: `All folders · ${items.value.length}` },
+  ...folders.value.map((f) => ({ value: f.name || '.', label: `${f.name || props.name} · ${f.count}` })),
+])
+const folderPick = computed({
+  get: () => (folder.value === null ? '/' : folder.value || '.'),
+  set: (v: string) => (folder.value = v === '/' ? null : v === '.' ? '' : v),
+})
 function onEsc(e: KeyboardEvent) {
   // Escape in a dialog or menu (a ZenKit layer) is that one's: cancelling "Delete these?" keeps them selected
   if ((e.target as HTMLElement).closest?.('[data-zen-layer]')) return
@@ -122,22 +132,35 @@ function openMasks() {
 const uploading = ref(false)
 const sent = ref(0) // of the drop's bytes, 0 to 1: the toast's bar
 const fileInput = ref<HTMLInputElement | null>(null)
-const dragging = useFileDrop(({ files }) => upload(files))
+// a drop with folders in it keeps them (addFolder); loose files go in as they are, the server saying
+// why it refuses any
+const take = (files: File[], paths: string[] | null) => (paths ? addFolder(files.map((f, i): [File, string] => [f, paths[i]!])) : upload(files))
+const dragging = useFileDrop(({ files, paths }) => take(files, paths))
+const folderInput = ref<HTMLInputElement | null>(null)
 // A drop or pick goes up in requests of about 48 MB (a tunnel or proxy on the way won't take a
-// gigabyte in one; what's landed stays when one fails), the pictures showing as they come. The
-// toast's bar fills by bytes, so it moves inside a part on a slow link.
-// Drops take turns: a second during the first waits for it
+// gigabyte in one; what's landed stays when one fails), each into one folder, the pictures showing
+// as they come. The toast's bar fills by bytes, so it moves inside a part on a slow link.
+// Drops take turns: a second during the first waits for it.
+// `folders[i]` is the subfolder files[i] goes into ('' or none: the dataset itself); `note`: what
+// was left out before the upload, said with its result
 const BATCH = 48 * 1024 ** 2
 let turn = Promise.resolve()
-function upload(files: File[]) {
-  turn = turn.then(() => send(files))
+function upload(files: File[], folders: string[] = [], note = '') {
+  turn = turn.then(() => send(files, folders, note))
 }
-async function send(files: File[]) {
+async function send(files: File[], folders: string[], note: string) {
   if (!files.length) return flash('Nothing to add in that drop')
   uploading.value = true
   sent.value = 0
   const total = files.reduce((n, f) => n + f.size, 0) || 1
   let done = 0
+  const groups = new Map<string, File[]>()
+  for (const [i, f] of files.entries()) {
+    const into = folders[i] ?? ''
+    let group = groups.get(into)
+    if (!group) groups.set(into, (group = []))
+    group.push(f)
+  }
   const saved: string[] = []
   const existing: string[] = []
   const errors: string[] = []
@@ -146,19 +169,21 @@ async function send(files: File[]) {
   // the same words throughout, so the toast holds its width while its bar fills
   notice.value = `Adding ${files.length.toLocaleString()} file${files.length === 1 ? '' : 's'}…`
   try {
-    for (let i = 0; i < files.length; ) {
-      let j = i + 1
-      for (let bytes = files[i]!.size; j < files.length && bytes + files[j]!.size <= BATCH; j++) bytes += files[j]!.size
-      const part = files.slice(i, j)
-      const r = await engine.upload(props.name, part, (bytes) => (sent.value = (done + bytes) / total))
-      done += part.reduce((n, f) => n + f.size, 0)
-      saved.push(...r.saved)
-      existing.push(...r.existing)
-      errors.push(...r.errors)
-      i = j
-      if (i < files.length && Date.now() - refreshed > 4000) {
-        refreshed = bust.value = Date.now()
-        await load()
+    for (const [into, group] of groups) {
+      for (let i = 0; i < group.length; ) {
+        let j = i + 1
+        for (let bytes = group[i]!.size; j < group.length && bytes + group[j]!.size <= BATCH; j++) bytes += group[j]!.size
+        const part = group.slice(i, j)
+        const r = await engine.upload(props.name, part, into, (bytes) => (sent.value = (done + bytes) / total))
+        done += part.reduce((n, f) => n + f.size, 0)
+        saved.push(...r.saved)
+        existing.push(...r.existing)
+        errors.push(...r.errors)
+        i = j
+        if (done < total && Date.now() - refreshed > 4000) {
+          refreshed = bust.value = Date.now()
+          await load()
+        }
       }
     }
   } catch (e) {
@@ -169,17 +194,69 @@ async function send(files: File[]) {
   bust.value = Date.now()
   await load() // clears `error`: what was skipped, and why, goes up after it
   const count = (k: number) => `${k} file${k === 1 ? '' : 's'}`
-  let said = saved.length || !existing.length ? `${count(saved.length)} added` : `${count(existing.length)} already there`
+  // the folders, when all of it went into some (a folder dropped or picked onto the page)
+  const into = groups.has('') ? '' : ` into ${[...groups.keys()].join(', ')}`
+  let said = saved.length || !existing.length ? `${count(saved.length)} added${into}` : `${count(existing.length)} already there`
   if (saved.length && existing.length) said += `, ${existing.length} already there`
   if (errors.length) said += `, ${errors.length} skipped`
-  flash(stopped ? `${count(saved.length)} added, then the upload stopped` : said)
-  if (stopped) errors.push(stopped)
+  flash(stopped ? `${count(saved.length)} added, then the upload stopped` : said + (note ? `. ${note}` : ''))
+  if (stopped) errors.push(stopped, ...(note ? [note] : []))
   if (errors.length) error.value = errors.join('\n')
+}
+// what the server takes: pictures, videos and .txt captions (the engine's IMAGE_EXTS and VIDEO_EXTS)
+const TAKES = /\.(png|jpe?g|webp|bmp|mp4|webm|mov|mkv|avi|m4v|txt)$/i
+// a folder (picked, or dropped) comes in as a subfolder of the same name, its own subfolders kept:
+// each a class with Trigger per folder. `picked` is each file with its path from the folder's name
+// ("alice/a.png"). Masks (_masks/<name>) go in as <name>-masklabel beside their pictures. Edit inputs
+// (_controls/<set>/) are left out and counted: Edit inputs adds them. Anything else in a "." or "_"
+// folder is left out, as training skips it.
+function addFolder(picked: [File, string][]) {
+  const files: File[] = []
+  const folders: string[] = []
+  let inputs = 0
+  let hidden = 0
+  for (const [f, rel] of picked) {
+    if (f.name.startsWith('.')) continue
+    const dirs = rel.split('/').slice(0, -1)
+    if (dirs.includes('_controls')) {
+      inputs++
+      continue
+    }
+    if (!TAKES.test(f.name)) continue
+    let file = f
+    if (dirs[dirs.length - 1] === '_masks' && !f.name.endsWith('.txt')) {
+      dirs.pop()
+      const dot = f.name.lastIndexOf('.')
+      file = new File([f], `${f.name.slice(0, dot)}-masklabel${f.name.slice(dot)}`, { type: f.type })
+    }
+    if (dirs.some((d) => d.startsWith('.') || d.startsWith('_'))) {
+      hidden++
+      continue
+    }
+    files.push(file)
+    folders.push(dirs.join('/'))
+  }
+  const note = inputs ? `${inputs} edit input${inputs === 1 ? '' : 's'} left out: add them in Edit inputs` : ''
+  if (!files.length) {
+    const name = picked[0]?.[1].split('/')[0]
+    error.value = [
+      hidden && !inputs
+        ? `Nothing to add from “${name}”: folders starting with . or _ don't train`
+        : `Nothing to add${name ? ` from “${name}”` : ''}: no pictures, videos or .txt captions in it`,
+      ...(note ? [note] : []),
+    ].join('\n')
+    return
+  }
+  return upload(files, folders, note)
 }
 onMounted(() => {
   addEventListener('keydown', onEsc)
   // dropped on the Datasets page, which made this dataset for them
-  if (handoff.name === props.name && handoff.files.length) upload(handoff.files.splice(0))
+  if (handoff.name === props.name && handoff.files.length) {
+    const paths = handoff.paths
+    handoff.paths = null
+    take(handoff.files.splice(0), paths)
+  }
 })
 onUnmounted(() => removeEventListener('keydown', onEsc))
 </script>
@@ -197,8 +274,10 @@ onUnmounted(() => removeEventListener('keydown', onEsc))
       </div>
       <ZenButton size="sm" icon="mdi mdi-vector-selection" :disabled="!maskStart" title="Paint or find (SAM3) where each picture trains; ←/→ moves between pictures" @click="openMasks">Mask editor</ZenButton>
       <ZenButton size="sm" icon="mdi mdi-upload" :disabled="uploading" @click="fileInput?.click()">Add files</ZenButton>
+      <ZenButton size="sm" icon="mdi mdi-folder-upload-outline" :disabled="uploading" title="Copy a folder in as a subfolder of the same name, its pictures, captions and masks with it: with One word per folder, its name is its trigger word" @click="folderInput?.click()">Add folder</ZenButton>
       <ZenButton size="sm" variant="primary" icon="mdi mdi-play" @click="router.push({ path: '/runs/new', query: { dataset: name } })">Train on this</ZenButton>
       <input ref="fileInput" type="file" multiple accept="image/*,video/*,.txt" hidden @change="upload([...(($event.target as HTMLInputElement).files ?? [])])" />
+      <input ref="folderInput" type="file" webkitdirectory hidden @change="addFolder([...(($event.target as HTMLInputElement).files ?? [])].map((f) => [f, f.webkitRelativePath])); ($event.target as HTMLInputElement).value = ''" />
     </div>
 
     <div v-if="error" class="card err mono">{{ error }}</div>
@@ -223,6 +302,10 @@ onUnmounted(() => removeEventListener('keydown', onEsc))
         <i class="mdi mdi-filter-variant" />
         <ZenCombo v-model="filter" :items="filterItems" :sorted="false" :searchable="false" size="sm" />
       </div>
+      <div v-if="folders.length" class="tb-field" title="Show one folder's pictures">
+        <i class="mdi mdi-folder-outline" />
+        <ZenCombo v-model="folderPick" :items="folderItems" :sorted="false" :searchable="false" size="sm" />
+      </div>
       <div class="search"><ZenInput v-model="query" placeholder="Search captions or names" size="sm" /></div>
       <button class="icon-btn" :class="{ on: panelShown }" :title="panelShown ? 'Hide the side panel' : 'Show the side panel: health, faces, auto-caption, bulk edit, display'" @click="toggleSide">
         <i class="mdi mdi-dock-right" />
@@ -239,7 +322,7 @@ onUnmounted(() => removeEventListener('keydown', onEsc))
     </div>
 
     <ZenEmpty v-if="!loading && !items.length" title="Empty dataset" icon="mdi mdi-image-plus-outline">
-      Drop images, videos, same-name .txt captions and masks (<span class="mono">name-masklabel.png</span>) anywhere on this page.
+      Drop images, videos, same-name .txt captions and masks (<span class="mono">name-masklabel.png</span>) anywhere on this page, or whole folders: each comes in as a folder of its own.
     </ZenEmpty>
 
     <DatasetGrid v-else-if="layout === 'grid'" />
@@ -515,6 +598,21 @@ onUnmounted(() => removeEventListener('keydown', onEsc))
   .page-toolbar .zoom,
   .tb-field > .mdi {
     display: none;
+  }
+}
+/* a phone: the menus share a row, and the search has one of its own beside the panel button */
+@media (max-width: 640px) {
+  .tb-field {
+    flex: 1 1 130px;
+    min-width: 0;
+  }
+  .tb-field :deep(.zen-combo) {
+    width: 100%;
+    min-width: 0;
+  }
+  .search {
+    flex: 1 1 calc(100% - 56px);
+    min-width: 0;
   }
 }
 </style>

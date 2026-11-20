@@ -60,7 +60,7 @@ async function create() {
 // Drop a folder on this page for a dataset of it, named after the folder unless renamed first;
 // loose files ask for a name. The files go in on the dataset's page, which opens on them
 const NAME = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$/ // the engine's rule (datasets/folders.py)
-const dragging = useFileDrop(async ({ files, folder }) => {
+const dragging = useFileDrop(async ({ files, paths, folder }) => {
   if (!files.length) return
   const name = await askText({
     title: 'New dataset',
@@ -76,6 +76,8 @@ const dragging = useFileDrop(async ({ files, folder }) => {
   }
   handoff.name = name
   handoff.files = files
+  // the dropped folder is the dataset: what's in it goes in as it was laid out there
+  handoff.paths = folder && paths ? paths.map((p) => p.slice(folder.length + 1)) : paths
   router.push(`/datasets/${encodeURIComponent(name)}`)
 })
 
@@ -161,7 +163,7 @@ const link = (d: DatasetInfo) => `/datasets/${encodeURIComponent(d.folder)}`
 const thumb = (d: DatasetInfo, t: DatasetInfo['thumbs'][number], size = 256) =>
   thumbUrl(d.folder, t.path ?? t.subfolder.split('/').slice(1).concat(t.filename).join('/'), size)
 const pics = (d: DatasetInfo) => d.thumbs.slice(0, 4)
-const fmtBytes = (b?: number) => (b == null ? '' : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`)
+const fmtBytes = (b?: number) => (!b ? '' : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`)
 const ago = (t?: number) => {
   if (!t) return ''
   const s = Date.now() / 1000 - t

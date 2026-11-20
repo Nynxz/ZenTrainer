@@ -22,6 +22,7 @@ from .. import events, paths
 from . import optim
 from .data import checked_encoding, finite
 from .data.streams import first_stream
+from .quiet import quiet_reloads
 
 # a slider's samples: each prompt at these strengths, one strip (spec.slider; harness/slider.py)
 SLIDER_SWEEP = (-1.0, -0.5, 0.0, 0.5, 1.0)
@@ -172,10 +173,12 @@ class Samples(Callback):
         if self._liker:
             self._liker.submit(row)
 
-    def encode_prompts(self, t) -> None:
-        """The sample prompts' encodings, into their cache (Trainer._text_first, before the model loads)."""
+    def encode_prompts(self, t) -> bool:
+        """The sample prompts' encodings, into their cache (Trainer._text_first, before the model loads).
+        True when they were encoded, False when the cache had them."""
         with torch.no_grad():
             self._encode(t, t.spec.samples)
+        return not self._from_cache
 
     def on_start(self, t):
         s = t.spec.samples
@@ -374,10 +377,12 @@ class Samples(Callback):
                 negs = cached.get("negatives") or [None] * len(prompts)
                 out = [(c, n if n is not None else cached["negative"]) for c, n in zip(cached["prompts"], negs)]
                 if finite(out):
+                    self._from_cache = True
                     return out
                 logging.warning("[ZenTrainer] the sample prompts' cached encodings hold NaN/inf; encoding them again")
             except Exception:
                 pass
+        self._from_cache = False
         clip = t.models.clip
         neg = checked_encoding(clip.encode_from_tokens_scheduled(clip.tokenize(negative)), negative)
         conds = []
@@ -522,7 +527,7 @@ class Samples(Callback):
         t.network.assist = False  # samples show the LoRA on the real model, not the training adapter
         t.network.turbo = s.turbo_strength  # a try's own, or the run's (changeable while it trains)
         try:
-            with torch.no_grad():
+            with torch.no_grad(), quiet_reloads():
                 model = self._sampling_model(t)
                 guided = self._guided_options(model, s)
                 plain_options = model.model_options
@@ -888,6 +893,9 @@ def _tiny_previewer(t, fmt):
             from comfy.sd import VAE
 
             vae = VAE(comfy.utils.load_torch_file(path))
+            if vae.first_stage_model is None:  # not a VAE ComfyUI detects (a bare decoder, no decoder.* keys)
+                logging.warning("[ZenTrainer] %s isn't a tiny VAE ComfyUI can load; previews use the latent colours", file)
+                return None
             vae.first_stage_model.show_progress_bar = False
             return _video_tae_previewer(vae, t.device)
         from comfy.taesd.taesd import TAESD
@@ -917,14 +925,17 @@ def _preview_url(previewer, x0) -> str | None:
         return None
 
 
-def write_metadata(spec_dict: dict, step: int) -> dict[str, str]:
+def write_metadata(spec_dict: dict, step: int, triggers: list[str] | None = None) -> dict[str, str]:
     """A LoRA file's metadata: its run's settings, as the share export has them (sharing.export):
     without what only means something on this machine (the dataset folder, which can be a person's
     name, the folders LoRAs go in, a LoRA to continue from, edit samples' pictures). A shared LoRA
-    carries how it was trained, not where."""
+    carries how it was trained, not where. `triggers`: a run with a trigger per folder trains words
+    its settings don't spell out (folder names), so they're written out for whatever loads it."""
     from .. import sharing
 
     meta = {"zentrainer.spec": json.dumps(sharing.export(spec_dict)["spec"]), "zentrainer.step": str(step)}
+    if triggers:
+        meta["modelspec.trigger_phrase"] = ", ".join(triggers)
     net = spec_dict.get("network") or {}
     if net.get("base_lora"):  # trained on top of it: it belongs beside this LoRA wherever it's used
         meta["zentrainer.base_lora"] = net["base_lora"]

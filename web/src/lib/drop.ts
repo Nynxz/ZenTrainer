@@ -5,12 +5,16 @@ import { onMounted, onUnmounted, ref, type Ref } from 'vue'
 
 export interface Drop {
   files: File[]
+  /** with a folder in the drop: each file's path from the dropped folder's name ("alice/a.png"; a
+   * loose file's is its name). None for loose files only */
+  paths: string[] | null
   /** the folder's name when the drop was one folder: a dataset's name, say */
   folder: string | null
 }
 
-/** Files for a dataset's page to add as it opens: dropped on the Datasets page, which made the dataset. */
-export const handoff: { name: string; files: File[] } = { name: '', files: [] }
+/** Files for a dataset's page to add as it opens: dropped on the Datasets page, which made the dataset.
+ * `paths` as a Drop's, from inside the dropped folder: its subfolders become the dataset's */
+export const handoff: { name: string; files: File[]; paths: string[] | null } = { name: '', files: [], paths: null }
 
 // A drag that starts on this page (a thumbnail, selected text) carries this mark: only files from
 // elsewhere are taken. The mark rides on the drag itself, so it can't go stale the way a flag set
@@ -49,21 +53,21 @@ export function useFileDrop(onDrop: (d: Drop) => void): Ref<boolean> {
   return over
 }
 
-// What a drop holds: its files, and those in any dropped folder (however deep) by their names,
-// where the browser alone gives a folder as one empty, extensionless "file". A ZenTrainer dataset
-// folder comes through as itself: _masks/<stem>.png is <stem>-masklabel.png again, which the
-// upload puts back; _controls (an input set: those are added from the side panel) and hidden files
-// (.DS_Store) stay out. The items and files are read before the first await: the browser empties
-// them when the drop event ends
+// What a drop holds: its files, and those in any dropped folder (however deep) with their paths,
+// where the browser alone gives a folder as one empty, extensionless "file". Hidden files and
+// folders (.DS_Store, .git) aren't read; what the page does with _masks and _controls is its own.
+// The items and files are read before the first await: the browser empties them when the drop
+// event ends
 async function dropped(dt: DataTransfer): Promise<Drop> {
   const entries = [...dt.items].map((i) => i.webkitGetAsEntry?.() ?? null).filter((e): e is FileSystemEntry => !!e)
-  if (!entries.some((e) => e.isDirectory)) return { files: [...dt.files], folder: null }
+  if (!entries.some((e) => e.isDirectory)) return { files: [...dt.files], paths: null, folder: null }
   const files: File[] = []
+  const paths: string[] = []
   const walk = async (e: FileSystemEntry) => {
-    if (e.name.startsWith('.') || e.name === '_controls') return
+    if (e.name.startsWith('.')) return
     if (e.isFile) {
-      const f = await new Promise<File>((ok, no) => (e as FileSystemFileEntry).file(ok, no))
-      files.push(e.fullPath.includes('/_masks/') ? new File([f], f.name.replace(/\.[^.]+$/, '-masklabel$&'), { type: f.type }) : f)
+      files.push(await new Promise<File>((ok, no) => (e as FileSystemFileEntry).file(ok, no)))
+      paths.push(e.fullPath.replace(/^\//, ''))
       return
     }
     const reader = (e as FileSystemDirectoryEntry).createReader()
@@ -74,5 +78,5 @@ async function dropped(dt: DataTransfer): Promise<Drop> {
     }
   }
   for (const e of entries) await walk(e)
-  return { files, folder: entries.length === 1 && entries[0]!.isDirectory ? entries[0]!.name : null }
+  return { files, paths, folder: entries.length === 1 && entries[0]!.isDirectory ? entries[0]!.name : null }
 }

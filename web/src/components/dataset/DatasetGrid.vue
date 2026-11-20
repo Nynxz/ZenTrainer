@@ -1,13 +1,22 @@
 <script setup lang="ts">
 // The dataset as a grid of uniform cards (zoomable): the picture with its badges (mask, video,
 // repeats, image and face issues, no caption), mute and select on hover, the caption below.
-import { ZenTip } from '@nynxz/zenkit-ui'
-import { onMounted, onUnmounted, ref } from 'vue'
-import { fileInfo, pct, secs, useDatasetContext } from './context'
+import { ZenMenuItem, ZenMenuSeparator, ZenPopover, ZenTip } from '@nynxz/zenkit-ui'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { fileInfo, folderOf, pct, secs, useDatasetContext } from './context'
 import MoreRows from './MoreRows.vue'
 import { zoomOf } from '@/lib/zoom'
 
-const { zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, maskThumb, working, thumbSize, boxing, maskHighVis } = useDatasetContext()
+const { name, items, zoom, inputs, fit, showMasks, activeSet, cap, selected, isMuted, setMuted, imageFlags, faceOf, faceIssue, faceNote, shown, visible, more, toggleSelect, onItemClick, onItemMenu, full, thumb, maskThumb, working, thumbSize, boxing, maskHighVis, folder, folders, sortKey, deleteFolder } = useDatasetContext()
+
+// a subfolder's name above its pictures, while they're together: one folder shown, or name order.
+// The dataset folder's own pictures come first, under the dataset's name
+const grouped = computed(() => folders.value.length > 0 && (folder.value !== null || sortKey.value === 'name'))
+const headAt = (i: number) => grouped.value && (i === 0 || folderOf(visible.value[i]!) !== folderOf(visible.value[i - 1]!))
+const countOf = (name: string) => folders.value.find((f) => f.name === name)?.count ?? 0
+// a folder's pictures, and how many are muted in the caption set shown: its menu mutes them all at once
+const pathsIn = (name: string) => items.value.filter((it) => folderOf(it) === name).map((it) => it.path)
+const mutedIn = (name: string) => items.value.filter((it) => folderOf(it) === name && isMuted(it)).length
 
 // drag to select a box of cards (mouse and pen; touch scrolls), starting on a card or in the empty
 // space around them: the page's margins, gaps and below the last row. A plain drag starts a new
@@ -136,9 +145,32 @@ onUnmounted(() => {
     @click.capture="onClickCapture"
   >
     <div v-if="box" class="marquee" :style="{ left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` }" />
+    <template v-for="(it, i) in visible" :key="it.path">
+    <div v-if="headAt(i)" class="folder-head">
+      <i class="mdi mdi-folder-outline" /> <span>{{ folderOf(it) || name() }}</span>
+      <span class="folder-count">{{ countOf(folderOf(it)) }} picture{{ countOf(folderOf(it)) === 1 ? '' : 's' }}<template v-if="mutedIn(folderOf(it))"> · {{ mutedIn(folderOf(it)) }} muted</template></span>
+      <span class="folder-menu">
+      <ZenPopover placement="bottom-end">
+        <template #trigger="{ toggle }">
+          <button type="button" class="folder-more" :title="folderOf(it) ? `Mute or delete “${folderOf(it)}”` : `Mute the pictures in “${name()}” itself`" @click="toggle"><i class="mdi mdi-dots-horizontal" /></button>
+        </template>
+        <template #default="{ close }">
+          <ZenMenuItem v-if="mutedIn(folderOf(it)) < countOf(folderOf(it))" icon="mdi mdi-eye-off-outline" @select="setMuted(pathsIn(folderOf(it)), true); close()">
+            Mute in “{{ activeSet }}”
+            <template #hint>kept, but not trained on</template>
+          </ZenMenuItem>
+          <ZenMenuItem v-if="mutedIn(folderOf(it))" icon="mdi mdi-eye-outline" @select="setMuted(pathsIn(folderOf(it)), false); close()">
+            Unmute in “{{ activeSet }}”
+          </ZenMenuItem>
+          <template v-if="folderOf(it)">
+            <ZenMenuSeparator />
+            <ZenMenuItem icon="mdi mdi-delete-outline" danger @select="close(); deleteFolder(folderOf(it))">Delete folder…</ZenMenuItem>
+          </template>
+        </template>
+      </ZenPopover>
+      </span>
+    </div>
     <article
-      v-for="(it, i) in visible"
-      :key="it.path"
       :data-path="it.path"
       class="card-item"
       :class="{ sel: selected.has(it.path), muted: isMuted(it) }"
@@ -190,6 +222,7 @@ onUnmounted(() => {
         <span class="cap-text" :class="{ empty: !cap(it) }">{{ cap(it) || 'No caption' }}</span>
       </button>
     </article>
+    </template>
     <MoreRows v-if="visible.length < shown.length" @more="more" />
   </div>
 </template>
@@ -203,6 +236,52 @@ onUnmounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(var(--card), 1fr));
   gap: 12px;
   align-items: start;
+}
+/* a subfolder's name across the whole row, above its pictures */
+.folder-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px 4px;
+  border-bottom: 1px solid var(--zen-border);
+  color: var(--zen-text);
+  font-weight: 600;
+}
+.folder-count {
+  font-weight: 400;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+.folder-menu {
+  margin-left: auto;
+  display: flex;
+}
+/* quiet until hovered, so the header reads as a label */
+.folder-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--zen-muted);
+  font-size: 18px;
+  cursor: pointer;
+}
+/* the glyph's own line box, not the font's, or the dots sit off centre */
+.folder-more i,
+.folder-more i::before {
+  line-height: 1;
+}
+.folder-more:hover,
+.folder-more:focus-visible,
+.folder-more[aria-expanded='true'] {
+  color: var(--zen-text);
+  background: var(--zen-surface);
 }
 .grid.boxing {
   user-select: none;
