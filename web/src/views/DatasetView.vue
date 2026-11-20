@@ -120,11 +120,13 @@ function openMasks() {
 
 // ---- upload -------------------------------------------------------------------------------
 const uploading = ref(false)
+const sent = ref(0) // of the drop's bytes, 0 to 1: the toast's bar
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = useFileDrop(({ files }) => upload(files))
 // A drop or pick goes up in requests of about 48 MB (a tunnel or proxy on the way won't take a
-// gigabyte in one; what's landed stays when one fails), the toast counting them in and the
-// pictures showing as they come. Drops take turns: a second during the first waits for it
+// gigabyte in one; what's landed stays when one fails), the pictures showing as they come. The
+// toast's bar fills by bytes, so it moves inside a part on a slow link.
+// Drops take turns: a second during the first waits for it
 const BATCH = 48 * 1024 ** 2
 let turn = Promise.resolve()
 function upload(files: File[]) {
@@ -133,17 +135,23 @@ function upload(files: File[]) {
 async function send(files: File[]) {
   if (!files.length) return flash('Nothing to add in that drop')
   uploading.value = true
+  sent.value = 0
+  const total = files.reduce((n, f) => n + f.size, 0) || 1
+  let done = 0
   const saved: string[] = []
   const existing: string[] = []
   const errors: string[] = []
   let stopped: string | null = null
   let refreshed = Date.now()
+  // the same words throughout, so the toast holds its width while its bar fills
+  notice.value = `Adding ${files.length.toLocaleString()} file${files.length === 1 ? '' : 's'}…`
   try {
     for (let i = 0; i < files.length; ) {
-      notice.value = `Adding files… ${i.toLocaleString()} of ${files.length.toLocaleString()}`
       let j = i + 1
       for (let bytes = files[i]!.size; j < files.length && bytes + files[j]!.size <= BATCH; j++) bytes += files[j]!.size
-      const r = await engine.upload(props.name, files.slice(i, j))
+      const part = files.slice(i, j)
+      const r = await engine.upload(props.name, part, (bytes) => (sent.value = (done + bytes) / total))
+      done += part.reduce((n, f) => n + f.size, 0)
       saved.push(...r.saved)
       existing.push(...r.existing)
       errors.push(...r.errors)
@@ -246,7 +254,13 @@ onUnmounted(() => removeEventListener('keydown', onEsc))
     <!-- a message and the selection's actions float over the bottom of the page: neither moves anything -->
     <div class="float">
       <Transition name="float">
-        <div v-if="notice" class="notice zen-surface"><i v-if="uploading" class="mdi mdi-loading mdi-spin" />{{ notice }}</div>
+        <div v-if="notice" class="notice zen-surface" :class="{ busy: uploading }">
+          <i v-if="uploading" class="mdi mdi-loading mdi-spin" />{{ notice }}
+          <template v-if="uploading">
+            <b class="pct"><span>{{ Math.floor(sent * 100) }}%</span></b>
+            <span class="bar" :style="{ transform: `scaleX(${sent})` }" />
+          </template>
+        </div>
       </Transition>
       <Transition name="float">
         <div v-if="selected.size || boxing" class="sel-bar zen-surface">
@@ -426,6 +440,42 @@ onUnmounted(() => removeEventListener('keydown', onEsc))
   max-width: calc(100vw / var(--zen-page-zoom) - 32px);
   padding: 6px 14px;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+/* an upload's toast: the bar fills along its bottom edge, inside it, so nothing grows or moves */
+.notice.busy {
+  position: relative;
+  overflow: hidden;
+  padding-left: 10.5px;
+}
+/* the spinner sits midway between the border and the words */
+.notice.busy > .mdi {
+  margin-right: 3px;
+}
+/* as wide as "100%" from the start: the toast doesn't grow as it gets there */
+.notice .pct {
+  display: grid;
+  justify-items: end;
+  color: var(--zen-muted);
+  font-weight: 500;
+}
+.notice .pct::before {
+  content: '100%';
+  visibility: hidden;
+}
+.notice .pct::before,
+.notice .pct > span {
+  grid-area: 1 / 1;
+}
+.notice .bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--zen-accent);
+  transform-origin: left;
+  transition: transform 0.2s linear;
 }
 .sel-bar {
   display: flex;

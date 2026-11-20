@@ -300,13 +300,20 @@ export const datasetsApi = {
     call<{ job: CaptionJob; restored?: number }>(`/caption/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
   deleteItem: (name: string, path: string) =>
     call<{ ok: true }>(`${dsPath(name)}/item?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
-  /** saved: new in the dataset; existing: it had that file already, byte for byte (not written again) */
-  async upload(name: string, files: File[]): Promise<{ saved: string[]; existing: string[]; errors: string[] }> {
+  /** saved: new in the dataset; existing: it had that file already, byte for byte (not written again).
+   * onSent hears the bytes sent so far: XMLHttpRequest, as fetch can't report an upload's progress */
+  upload(name: string, files: File[], onSent?: (bytes: number) => void): Promise<{ saved: string[]; existing: string[]; errors: string[] }> {
     const form = new FormData()
     for (const f of files) form.append('file', f, f.name)
-    const res = await fetch(`/zentrainer/api${dsPath(name)}/upload`, { method: 'POST', body: form })
-    if (!res.ok) throw new EngineError(res.statusText, res.status, null)
-    return res.json()
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/zentrainer/api${dsPath(name)}/upload`)
+    xhr.responseType = 'json'
+    if (onSent) xhr.upload.onprogress = (e) => onSent(e.loaded)
+    return new Promise((resolve, reject) => {
+      xhr.onload = () => (xhr.status < 400 ? resolve(xhr.response) : reject(new EngineError(xhr.statusText, xhr.status, null)))
+      xhr.onerror = () => reject(new Error('The connection to the engine dropped. Drop the files again to add the rest: the ones already in are skipped.'))
+      xhr.send(form)
+    })
   },
   // control sets: edit training's input pictures, a named layer per set
   createControlSet: (name: string, set: string) => call<{ ok: true }>(ctlPath(name, set), { method: 'POST' }),

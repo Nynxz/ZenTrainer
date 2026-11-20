@@ -9,8 +9,8 @@ and Manager show.
   named after it (rename it first if you like); on a dataset's page, a dropped folder's pictures,
   captions and masks go in, subfolders and all. A folder used to land as one empty file and be
   refused.
-- **Big drops go in as you watch.** Files go up in parts, a count floating over the page while they
-  do and the pictures appearing as they land, instead of nothing happening for minutes; what's
+- **Big drops go in as you watch.** Files go up in parts, a progress bar floating over the page while
+  they do and the pictures appearing as they land, instead of nothing happening for minutes; what's
   landed stays if the connection drops. Drops onto a dataset that stopped working until the page
   was reopened (after dragging one of its own pictures) work again, the reasons for skipped files
   show instead of vanishing, and a file the dataset already has says "already there" instead of
