@@ -14,7 +14,7 @@ import logging
 import threading
 from pathlib import Path
 
-from .. import state
+from .. import events, state
 
 TERMINAL = {"done", "stopped", "error", "interrupted", "rejected"}
 _lock = threading.Lock()
@@ -42,6 +42,12 @@ class Queue:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2))
         tmp.replace(self.path)
+        events.emit(events.QUEUE, {})
+
+    def _set_current(self, run_id: str | None) -> None:
+        if self.current != run_id:
+            self.current = run_id
+            events.emit(events.QUEUE, {})
 
     def snapshot(self) -> dict:
         with _lock:
@@ -53,7 +59,7 @@ class Queue:
         requeue it first, and the worker then waited on it for good (it showed twice, as running
         and as waiting). Nothing starts early: the worker still waits for no run to be active."""
         if self.current == run_id:
-            self.current = None
+            self._set_current(None)
 
     def add(self, run_id: str, front: bool = False) -> None:
         with _lock:
@@ -152,11 +158,11 @@ async def worker(dispatch, swapped=None, parked=None, interval: float = 1.5) -> 
                         await swapped(q.current)
                     elif meta.get("park") and parked is not None:
                         await parked(q.current)
-                    q.current = None
+                    q._set_current(None)
             if q.current is None and not control.active() and not q.parked:
                 run_id = q.pop_next()
                 if run_id is not None:
-                    q.current = run_id
+                    q._set_current(run_id)
                     try:
                         await dispatch(run_id)
                     except Exception:

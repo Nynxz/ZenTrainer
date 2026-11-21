@@ -1,28 +1,22 @@
-// The models ComfyUI holds right now (engine/zentrainer/models/residency.py), polled while anything
-// shows them: the sidebar, a run's page, the log drawer.
+// The models ComfyUI holds right now (engine/zentrainer/models/residency.py), for everything that
+// shows them: the sidebar, a run's page, the log drawer. The engine sends the list when it changes,
+// to the tabs that take its memory stats (system.ts); read every few seconds when it doesn't.
 
 import { computed, ref } from 'vue'
-import { engine, type LoadedModel } from '@/api/engine'
+import { onComfyMessage } from '@/api/comfy'
+import { EVENTS, engine, type LoadedModel } from '@/api/engine'
+import { noPushes, startSystemSync } from './system'
 
 export const loadedModels = ref<LoadedModel[]>([])
-let users = 0
-let timer: ReturnType<typeof setTimeout> | undefined
 
-async function poll() {
-  try {
-    loadedModels.value = (await engine.loadedModels()).filter((m) => m.bytes > 0)
-  } catch {
-    // engine away: keep the last list
-  }
-  if (users > 0) timer = setTimeout(poll, 3000)
-}
-
-/** start polling; returns the stop for onUnmounted */
-export function watchLoaded(): () => void {
-  if (users++ === 0) poll()
-  return () => {
-    if (--users === 0) clearTimeout(timer)
-  }
+let started = false
+export function startLoadedSync(): void {
+  if (started) return
+  started = true
+  const take = (models: LoadedModel[]) => (loadedModels.value = models.filter((x) => x.bytes > 0))
+  onComfyMessage((m) => m.type === EVENTS.loaded && take(m.data.models as LoadedModel[]))
+  startSystemSync()
+  setInterval(() => noPushes.value && engine.loadedModels().then(take, () => {}), 3000)
 }
 
 export const loadedVram = computed(() => loadedModels.value.reduce((n, m) => n + m.vram, 0))

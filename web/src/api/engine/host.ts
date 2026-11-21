@@ -125,7 +125,8 @@ export interface EngineSettings {
 
 export const hostApi = {
   health: () => call<Health>('/health'),
-  system: (since = 0) => call<{ interval: number; samples: MemSample[] }>(`/system?since=${since}`),
+  /** with `client` (this tab's socket id) the engine pushes new samples and loaded models to it */
+  system: (since = 0, client = '') => call<{ interval: number; samples: MemSample[] }>(`/system?since=${since}${client ? `&client=${client}` : ''}`),
   storage: () => call<StorageReport>('/storage'),
   disks: () => call<Pick<StorageReport, 'disks'>>('/storage?disks=1').then((r) => r.disks),
   cleanStorage: (body: { kind: 'states'; run_id: string } | { kind: 'states_all'; only: string[] } | { kind: 'cache'; folder: string } | { kind: 'cache_all'; only: (string | null)[] }) =>

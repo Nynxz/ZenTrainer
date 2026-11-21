@@ -2,25 +2,12 @@
 // The models ComfyUI holds right now and how much of each sits in VRAM: one strip per numbered
 // list of blocks (blocks.N, double_blocks.N, layers.N, ...), one cell per block filled by its
 // share on the GPU, then the weights outside any list (embeddings, heads). With offloading
-// you see blocks stream in and out. Polls while shown.
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { engine, type LoadedModel } from '@/api/engine'
+// you see blocks stream in and out.
+import { computed } from 'vue'
+import { loadedModels as models, startLoadedSync } from '@/stores/loaded'
 import { gb } from '@/stores/system'
 
-const models = ref<LoadedModel[]>([])
-const error = ref<string | null>(null)
-let timer: ReturnType<typeof setTimeout> | undefined
-async function poll() {
-  try {
-    models.value = await engine.loadedModels()
-    error.value = null
-  } catch (e) {
-    error.value = String((e as Error).message ?? e)
-  }
-  timer = setTimeout(poll, 1500)
-}
-onMounted(poll)
-onUnmounted(() => clearTimeout(timer))
+startLoadedSync()
 
 const BLOCK = /^(?:(.*)\.)?([^.]+)\.(\d+)$/ // "....visual.blocks.3" -> prefix, list, index
 const rows = computed(() =>
@@ -64,8 +51,7 @@ const pct = (v: number, b: number) => (b ? Math.round((v / b) * 100) : 0)
       <span class="eyebrow">Loaded models</span>
       <span class="muted small">filled cells are in VRAM</span>
     </div>
-    <div v-if="error" class="muted small">{{ error }}</div>
-    <div v-else-if="!rows.length" class="muted small">Nothing loaded.</div>
+    <div v-if="!rows.length" class="muted small">Nothing loaded.</div>
     <div v-for="m in rows" :key="m.name" class="model">
       <div class="line">
         <b class="ellipsis" :title="m.file ?? m.name">{{ m.file ?? m.name }}</b>

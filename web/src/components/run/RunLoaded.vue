@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // The rail's In VRAM card, while the run is live: the run's own models among what ComfyUI
 // holds (matched by file), and how much of each is on the GPU.
-import { computed, onMounted, onUnmounted } from 'vue'
-import { loadedModels, watchLoaded } from '@/stores/loaded'
+import { computed } from 'vue'
+import { loadedModels, startLoadedSync } from '@/stores/loaded'
 import { gb } from '@/stores/system'
 import { isCollapsed, toggleCollapsed } from './collapse'
 import { useRunContext } from './context'
@@ -19,9 +19,7 @@ const runLoaded = computed(() => {
   )
   return loadedModels.value.filter((x) => x.file && x.file.split(' + ').some((f) => files.has(f)))
 })
-let stopLoaded = () => {}
-onMounted(() => (stopLoaded = watchLoaded()))
-onUnmounted(() => stopLoaded())
+startLoadedSync()
 </script>
 
 <template>

@@ -4,6 +4,10 @@ a chart opened mid-run still has history.
 VRAM  device used/total (all processes, from the driver), PyTorch allocated/reserved
       in this process, and comfy_aimdo's own usage when dynamic VRAM is active.
 RAM   system used/total, and this ComfyUI process's resident size.
+
+Tabs that ask (`watch`) are sent each sample, and the loaded models when they change, on ComfyUI's
+socket rather than polling for them. Only those: every other socket (ComfyUI's own tabs) would get
+a message a second it has no use for.
 """
 
 from __future__ import annotations
@@ -15,6 +19,8 @@ from collections import deque
 
 INTERVAL = 1.0
 _samples: deque[dict] = deque(maxlen=900)
+_watchers: set[str] = set()  # websocket client ids
+_loaded: list[dict] | None = None  # the models last sent
 
 
 def sample() -> dict:
@@ -56,10 +62,43 @@ def history(since: float = 0.0) -> list[dict]:
     return [x for x in list(_samples) if x["t"] > since]
 
 
+def watch(sid: str) -> None:
+    """Send this tab the samples and loaded models until its socket closes. It asks again when it
+    reconnects, so a restart (which forgets) costs it nothing."""
+    global _loaded
+    # ComfyUI's status, on which tabs ask, also comes with every prompt queued or finished: only a
+    # tab new to the list needs the models sent again
+    if sid not in _watchers:
+        _watchers.add(sid)
+        _loaded = None
+
+
 async def sampler() -> None:
+    from server import PromptServer
+
+    from .. import events
+    from ..models import residency
+
+    global _loaded
+    seen = None  # residency.fingerprint() when the models were last read
     while True:
         try:
-            _samples.append(await asyncio.to_thread(sample))
+            s = await asyncio.to_thread(sample)
+            _samples.append(s)
+            _watchers.intersection_update(PromptServer.instance.sockets)
+            for sid in _watchers:
+                events.emit(events.SYSTEM, s, sid)
+            # the full report walks every layer of every model: only when the cheap fingerprint
+            # says something loaded, unloaded or streamed (or a tab is new)
+            if _watchers:
+                now = await asyncio.to_thread(residency.fingerprint)
+                if now != seen or _loaded is None:
+                    seen = now
+                    models = await asyncio.to_thread(residency.report)
+                    if models != _loaded:
+                        _loaded = models
+                        for sid in _watchers:
+                            events.emit(events.LOADED, {"models": models}, sid)
         except Exception:
             logging.debug("[ZenTrainer] memory sample failed", exc_info=True)
         await asyncio.sleep(INTERVAL)

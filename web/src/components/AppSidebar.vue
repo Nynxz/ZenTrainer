@@ -14,7 +14,8 @@ import { comfyBehind, comfyOld, engineStale, restartEngine, restarting, startSta
 import { activeDownloads, fmtBytes, startDownloadSync } from '@/stores/downloads'
 import { disks, gb, memLatest, startSystemSync } from '@/stores/system'
 import { drawerOpen, toggleDrawer, unseenErrors } from '@/stores/logs'
-import { engine, type LoadedModel } from '@/api/engine'
+import { engine } from '@/api/engine'
+import { loadedModels, startLoadedSync } from '@/stores/loaded'
 import { ask, tellError } from '@/lib/ask'
 
 const props = defineProps<{ collapsed: boolean; mobileOpen: boolean }>()
@@ -155,19 +156,10 @@ function onKey(e: KeyboardEvent) {
 }
 
 // ---- what ComfyUI holds right now, on every page: a training model, the captioner, SAM3 while it
-// loads for a mask... (each by its file and how much of it is in VRAM). Read every few seconds while
-// the sidebar is open and the page is on screen
-const loaded = ref<LoadedModel[]>([])
-let loadedTimer: ReturnType<typeof setTimeout> | undefined
-async function pollLoaded() {
-  if (!props.collapsed || props.mobileOpen) {
-    if (document.visibilityState === 'visible') loaded.value = (await engine.loadedModels().catch(() => loaded.value)).filter((m) => m.bytes > 0)
-  }
-  loadedTimer = setTimeout(pollLoaded, 3000)
-}
+// loads for a mask... (each by its file and how much of it is in VRAM)
 const KIND_ICON: Record<string, string> = { 'diffusion model': 'mdi-cube-outline', 'text encoder': 'mdi-format-text', vae: 'mdi-image-filter-center-focus' }
 const loadedRows = computed(() => {
-  const rows = [...loaded.value]
+  const rows = [...loadedModels.value]
     .sort((a, b) => b.vram - a.vram)
     .map((m) => {
       const file = (m.file ?? m.name).split(' + ')[0]!.split(/[\\/]/).pop()!.replace(/\.(safetensors|sft|ckpt|pt|pth|bin)$/, '')
@@ -180,15 +172,13 @@ const loadedRows = computed(() => {
   return rows.map((r) => (seen.get(r.label)! > 1 ? { ...r, label: `${r.kind} · ${r.label}` } : r))
 })
 onMounted(() => {
-  pollLoaded()
-  startSystemSync()
+  startLoadedSync()
   startDownloadSync()
   startCaptionSync()
   startStatusSync()
   addEventListener('keydown', onKey)
 })
 onUnmounted(() => {
-  clearTimeout(loadedTimer)
   removeEventListener('keydown', onKey)
 })
 </script>

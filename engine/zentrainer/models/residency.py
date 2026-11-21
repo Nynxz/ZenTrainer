@@ -35,6 +35,25 @@ def report() -> list[dict]:
     return out
 
 
+def fingerprint() -> tuple:
+    """What changes when `report` would: which models are loaded, how much of each, and which of
+    a dynamic one's pages are in VRAM. One call into comfy_aimdo a model, where `report` walks every
+    layer, so a caller can ask often and report only when this moves."""
+    import comfy.model_management as mm
+
+    out = []
+    for lm in list(mm.current_loaded_models):
+        patcher = lm.model
+        if patcher is None:
+            continue
+        try:
+            vbar = patcher._vbar_get() if patcher.is_dynamic() else None
+            out.append((id(patcher), patcher.loaded_size(), bytes(vbar.get_residency()) if vbar is not None else None))
+        except Exception:  # mid-load or mid-unload: differs from anything, so it's reported
+            out.append((id(patcher), object()))
+    return tuple(out)
+
+
 def _model(patcher) -> dict:
     model = patcher.model
     vbar = patcher._vbar_get() if patcher.is_dynamic() else None

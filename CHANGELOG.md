@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **The app stops polling the engine.** The training queue, memory stats and what's loaded in VRAM
+  are pushed to the app on ComfyUI's socket as they change, rather than each asked for every few
+  seconds (three loops asked for the loaded models alone). An idle page went from about 35
+  requests every 30 seconds to 2. ComfyUI's own tabs aren't sent any of it.
 - **Drop a folder to make a dataset.** On the Datasets page, a dropped folder becomes a dataset
   named after it (rename it first if you like), its subfolders the dataset's folders. A folder used
   to land as one empty file and be refused.
