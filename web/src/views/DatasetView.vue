@@ -135,7 +135,12 @@ const fileInput = ref<HTMLInputElement | null>(null)
 // a drop with folders in it keeps them (addFolder); loose files go in as they are, the server saying
 // why it refuses any
 const take = (files: File[], paths: string[] | null) => (paths ? addFolder(files.map((f, i): [File, string] => [f, paths[i]!])) : upload(files))
-const dragging = useFileDrop(({ files, paths }) => take(files, paths))
+// a folder named like this dataset is the one it was made from (the Datasets page lays its contents
+// out at the top): dropped again it goes in the same way, so what's there is skipped rather than
+// copied into a subfolder of the dataset's own name
+const dragging = useFileDrop(({ files, paths, folder }) =>
+  take(files, folder === props.name && paths ? paths.map((p) => p.slice(folder.length + 1)) : paths),
+)
 const folderInput = ref<HTMLInputElement | null>(null)
 // A drop or pick goes up in requests of about 48 MB (a tunnel or proxy on the way won't take a
 // gigabyte in one; what's landed stays when one fails), each into one folder, the pictures showing
