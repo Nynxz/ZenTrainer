@@ -60,3 +60,79 @@ def test_quantized_weights_copy_their_storage():
     c = offload._own(q)
     assert type(c) is type(q) and c._qdata.data_ptr() != q._qdata.data_ptr()
     assert torch.equal(c.dequantize(), q.dequantize())
+
+
+def test_skip_guard_avoids_clone_during_checkpoint_forward(comfy_ops):
+    offload.guard_backward(True)
+    w, b = torch.ones(2, 2), torch.ones(2)
+    comfy_ops.result = (w, b, ("offload-stream", w, b))
+    with offload.skip_guard():
+        weight, bias, _ = comfy_ops.cast_bias_weight("layer", offloadable=True)
+        assert weight is w and bias is b
+    # outside skip_guard (recompute): cloned again
+    weight, bias, _ = comfy_ops.cast_bias_weight("layer", offloadable=True)
+    assert weight is not w and bias is not b
+
+
+def test_recompute_cache_stashes_and_pops_streamed_quantized_weights(comfy_ops):
+    class QuantizedTensor:
+        def __init__(self, qdata):
+            self._qdata = qdata
+
+        def _copy_with(self, qdata=None):
+            return QuantizedTensor(qdata if qdata is not None else self._qdata.clone())
+
+    m = torch.nn.Module()
+    m.quant_format = "int8_tensorwise"
+    w = QuantizedTensor(torch.zeros(64, 64, dtype=torch.int8))
+    offload.guard_backward(True)
+    comfy_ops.result = (w, None, ("offload-stream", w, None))
+    with offload.recompute_scope():
+        with torch.no_grad():
+            comfy_ops.cast_bias_weight(m, offloadable=True)
+    got = offload.pop_recompute_weight(m)
+    assert got is not None and got is not w and got._qdata.data_ptr() != w._qdata.data_ptr()
+    assert offload.pop_recompute_weight(m) is None  # popped once, freed immediately
+    offload.clear_recompute_weights()
+
+
+def test_keep_small_resident_promotes_only_tiny_offloaded_modules(monkeypatch):
+    mm = types.ModuleType("comfy.model_management")
+    mm.module_size = lambda mod: sum(p.nbytes for p in mod.parameters(recurse=False))
+    comfy = types.ModuleType("comfy")
+    comfy.model_management = mm
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(64)  # 512 B -> promoted
+            self.big = torch.nn.Linear(512, 512, bias=False)  # 1 MB -> stays offloaded
+            self.norm.comfy_cast_weights = True
+            self.norm.prev_comfy_cast_weights = False
+            self.model_lowvram = True
+            self.model_loaded_weight_memory = 0
+
+    model = TinyModel()
+    moved = []
+
+    def fake_to(self, dev):
+        moved.append(self)
+        return self
+
+    monkeypatch.setattr(torch.nn.Module, "to", fake_to)
+    unpinned = []
+    patcher = types.SimpleNamespace(
+        model=model,
+        load_device=torch.device("cuda", 0),
+        unpin_weight=lambda k: unpinned.append(k),
+    )
+    n, nbytes = offload.keep_small_resident(patcher, max_bytes=4096)
+    assert n == 1 and nbytes == 512
+    assert moved == [model.norm]
+    assert model.norm.comfy_patched_weights is True
+    assert model.norm.comfy_cast_weights is False and not hasattr(model.norm, "prev_comfy_cast_weights")
+    assert not getattr(model.big, "comfy_patched_weights", False)
+    assert set(unpinned) == {"norm.weight", "norm.bias"}
+    assert model.model_loaded_weight_memory == 512

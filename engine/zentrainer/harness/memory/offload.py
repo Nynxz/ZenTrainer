@@ -60,6 +60,88 @@ def overlap(on: bool) -> None:
 # stream: autograd keeps the copy, freed in the compute stream's order. (record_stream on the
 # original also orders it, but holds every block's weights until the GPU catches up: out of VRAM.)
 _cast = None
+_skip_guard = 0  # >0 during a checkpointed block's forward pass (saved tensors are discarded)
+_recompute_active = False  # True during a checkpointed block's recompute forward pass
+_recompute_cache: dict[int, tuple[object, int]] = {}  # id(module) -> (gpu weight, nbytes)
+_recompute_bytes = 0
+# Cap the one-block recompute cache so a huge block can never take too much VRAM (512 MB covers
+# one block of Krea 2 / MOSS / MiniMax H3 int8 or packed w4a8/w6a8, saving one full PCIe pass).
+RECOMPUTE_CACHE_MAX_BYTES = 512 * 1024 ** 2
+_RECOMPUTE_FORMATS = ("int8_tensorwise", "asym_w4a8_int8", "w6a8_int8")
+
+
+def skip_guard():
+    """Context manager: inside a checkpointed block's forward pass, autograd discards saved tensors,
+    so streamed weights don't need a compute-stream clone."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        global _skip_guard
+        _skip_guard += 1
+        try:
+            yield
+        finally:
+            _skip_guard -= 1
+
+    return _ctx()
+
+
+def recompute_scope():
+    """Context manager around a checkpointed block's recompute forward pass: offloaded int8/packed
+    weights streamed for recompute stay on the GPU for the block's immediately-following backward,
+    cutting offloaded int8/packed PCIe traffic from 3 passes per step to 2."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        global _recompute_active
+        clear_recompute_weights()
+        prev = _recompute_active
+        _recompute_active = True
+        try:
+            yield
+        finally:
+            _recompute_active = prev
+
+    return _ctx()
+
+
+def _weight_nbytes(w) -> int:
+    qdata = getattr(w, "_qdata", None)
+    if qdata is not None and hasattr(qdata, "nbytes"):
+        return int(qdata.nbytes)
+    return int(getattr(w, "nbytes", 0))
+
+
+def stash_recompute_weight(module, weight) -> bool:
+    """Keep a streamed quantized weight for the block's backward (bounded by RECOMPUTE_CACHE_MAX_BYTES)."""
+    global _recompute_bytes
+    nbytes = _weight_nbytes(weight)
+    key = id(module)
+    if key in _recompute_cache or nbytes <= 0 or _recompute_bytes + nbytes > RECOMPUTE_CACHE_MAX_BYTES:
+        return False
+    _recompute_cache[key] = (_own(weight), nbytes)
+    _recompute_bytes += nbytes
+    return True
+
+
+def pop_recompute_weight(module):
+    """Pop and return the cached recompute GPU weight for `module`, or None on miss."""
+    global _recompute_bytes
+    entry = _recompute_cache.pop(id(module), None)
+    if entry is None:
+        return None
+    weight, nbytes = entry
+    _recompute_bytes = max(0, _recompute_bytes - nbytes)
+    return weight
+
+
+def clear_recompute_weights() -> None:
+    """Drop any cached recompute weights immediately (e.g. after backward or on error)."""
+    global _recompute_bytes
+    _recompute_cache.clear()
+    _recompute_bytes = 0
 
 
 def _own(t):
@@ -75,15 +157,19 @@ def _guarded_cast(*args, **kwargs):
     import torch
 
     out = _cast(*args, **kwargs)
-    if len(out) == 3 and out[2] is not None and out[2][0] is not None and torch.is_grad_enabled() \
-            and not torch.compiler.is_compiling():
+    if len(out) == 3 and out[2] is not None and out[2][0] is not None and not torch.compiler.is_compiling():
         weight, bias, state = out
         _, weight_a, bias_a = state
-        if weight is not None and weight is weight_a:
-            weight = _own(weight)
-        if bias is not None and bias is bias_a:
-            bias = _own(bias)
-        out = (weight, bias, state)
+        if torch.is_grad_enabled():
+            if _skip_guard == 0:
+                if weight is not None and weight is weight_a:
+                    weight = _own(weight)
+                if bias is not None and bias is bias_a:
+                    bias = _own(bias)
+                out = (weight, bias, state)
+        elif _recompute_active and args and weight is not None and type(weight).__name__ == "QuantizedTensor" \
+                and getattr(args[0], "quant_format", None) in _RECOMPUTE_FORMATS:
+            stash_recompute_weight(args[0], weight)
     return out
 
 
@@ -96,6 +182,52 @@ def guard_backward(on: bool) -> None:
         _cast, comfy.ops.cast_bias_weight = comfy.ops.cast_bias_weight, _guarded_cast
     elif not on and _cast is not None:
         comfy.ops.cast_bias_weight, _cast = _cast, None
+        clear_recompute_weights()
+
+
+# ComfyUI's non-dynamic ModelPatcher loads largest weights first, so norms, q/k norms, biases and
+# tiny modulations are the very first modules left on CPU when offloading. Streaming them causes
+# synchronous H2D stalls (e.g. mm.cast_to on q_norm/k_norm) and breaks 2-stream overlap between big
+# layers, for only ~5-25 MB of VRAM across the whole model. Keep modules up to this size resident.
+SMALL_WEIGHT_MAX_BYTES = 256 * 1024
+
+
+def keep_small_resident(patcher, max_bytes: int = SMALL_WEIGHT_MAX_BYTES) -> tuple[int, int]:
+    """Promote tiny offloaded leaf modules (norms, biases, small modulations <= max_bytes) onto
+    the GPU so they never stall async weight streaming. Returns (modules, bytes) promoted."""
+    import comfy.model_management as mm
+
+    model = patcher.model
+    device = getattr(patcher, "load_device", None)
+    if not getattr(model, "model_lowvram", False) or device is None or device.type == "cpu":
+        return 0, 0
+    promoted, total_bytes = 0, 0
+    for name, m in model.named_modules():
+        if getattr(m, "comfy_patched_weights", False):
+            continue
+        params = dict(m.named_parameters(recurse=False))
+        if not params or any(True for _ in m.children()):
+            continue
+        if all(p.device == device for p in params.values()):
+            continue
+        # leave modules with LowVramPatch alone (their weights patch on the fly)
+        fns = list(getattr(m, "weight_function", []) or []) + list(getattr(m, "bias_function", []) or [])
+        if any(getattr(f, "is_lowvram_patch", False) or type(f).__name__ == "LowVramPatch" for f in fns):
+            continue
+        size = mm.module_size(m)
+        if size <= 0 or size > max_bytes:
+            continue
+        for pname in params:
+            patcher.unpin_weight(f"{name}.{pname}" if name else pname)
+        m.to(device)
+        if hasattr(m, "prev_comfy_cast_weights"):
+            m.comfy_cast_weights = m.prev_comfy_cast_weights
+            del m.prev_comfy_cast_weights
+        m.comfy_patched_weights = True
+        model.model_loaded_weight_memory = getattr(model, "model_loaded_weight_memory", 0) + size
+        promoted += 1
+        total_bytes += size
+    return promoted, total_bytes
 
 
 # ComfyUI logs a bare "Pin error." when it can't pin an offloaded weight (and drops CUDA's code).
