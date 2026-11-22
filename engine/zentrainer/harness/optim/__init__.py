@@ -182,7 +182,7 @@ def _automagic4(p, s):
 def _lotus(p, s):
     from .lotus import Lotus
 
-    return Lotus(p, lr=s.learning_rate, weight_decay=s.weight_decay,
+    return Lotus(p, lr=s.learning_rate, weight_decay=s.weight_decay, auto_lr=s.lotus_auto_lr,
                  **({"lr_min_mult": s.lr_floor} if s.lr_floor > 0 else {}))
 
 
@@ -252,13 +252,13 @@ OPTIMIZERS: dict[str, OptimizerDef] = {d.id: d for d in [
                  note="Ostris's v4, experimental: v3 whose LR settles at a level instead of sinking once "
                       "the trend is learned, and whose most sensitive weights take smaller steps. Start "
                       "near 1e-4; the schedule and warmup are ignored."),
-    OptimizerDef("Lotus", "Lotus (LoRA-native)",
+    OptimizerDef("Lotus", "Lotus (adapter-native)",
                  _lotus,
                  lr_hint="1e-4",
-                 note="Built for diffusion LoRAs: Riemannian (down, up) rank preconditioning for fuller rank "
-                      "use, bf16 momentum + factored second moments (~3x less memory than AdamW, stochastic "
-                      "rounding for bf16 LoRAs), spike-safe RMS clipping, and a bounded self-regulating LR "
-                      "(0.5x–2.5x) that still honours your warmup and schedule."),
+                 note="Built for diffusion LoRAs & LoKrs: Riemannian (down, up) rank preconditioning and "
+                      "Kronecker (w1, w2) scale balancing, bf16 momentum + factored second moments (~3x less "
+                      "memory than AdamW, stochastic rounding for bf16), spike-safe RMS clipping, and an "
+                      "optional per-layer SNR adaptive LR toggle (0.25x–4x)."),
     OptimizerDef("Prodigy", "Prodigy (auto LR)",
                  _prodigy,
                  package="prodigyopt", pip="prodigyopt", lr_hint="1.0",

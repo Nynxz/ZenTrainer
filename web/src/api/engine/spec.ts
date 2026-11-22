@@ -96,8 +96,10 @@ export interface TrainSpec {
     /** LoRA+: up matrices learn this many times faster (0 = off) */
     lora_plus?: number
     ema?: number
-    /** Automagic v3's and v4's lowest LR, as a fraction of the start LR; 0 = none */
+    /** Automagic v3's/v4's and Lotus adaptive LR's lowest LR, as a fraction of the start LR; 0 = default */
     lr_floor?: number
+    /** Lotus: per-layer SNR adaptive LR (0.25x-4x); false = scheduled LR */
+    lotus_auto_lr?: boolean
   }
   objective: {
     loss: 'mse' | 'l1' | 'huber' | 'smooth_l1'

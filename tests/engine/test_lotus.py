@@ -56,56 +56,60 @@ def test_lotus_resumes_state_and_adaptive_multiplier_cleanly():
             with torch.no_grad():
                 for p, q in zip(params, init_params):
                     p.copy_(q)
-        opt = Lotus(params, lr=1e-3, weight_decay=0.01)
+        opt = Lotus(params, lr=1e-3, weight_decay=0.01, auto_lr=True)
         if saved is not None:
             opt.load_state_dict(saved)
         for sd in seed_list:
             g = torch.Generator().manual_seed(sd)
-            for _ in range(6):
+            for _ in range(16):  # > 10 steps so per-tensor SNR multiplier warms up and moves
                 for p in params:
-                    # Consistent trend so lr_mult actually moves away from 1.0
+                    # Consistent trend so lr_mult actually climbs away from 1.0
                     p.grad = torch.ones_like(p) * 0.2 + torch.randn(p.shape, generator=g) * 0.02
                 opt.step()
         return params, opt
 
     a_params, a_opt = run_from([1, 2])
     b_params, b_opt = run_from([1])
-    assert b_opt.get_avg_learning_rate() > 1e-3  # steady trend grew lr_mult
+    assert b_opt.get_avg_learning_rate() > 1.05e-3  # steady trend grew per-layer lr_mult
     sd = b_opt.state_dict()
     c_params, c_opt = run_from([2], saved=sd, init_params=b_params)
 
-    # bf16 momentum stochastic rounding adds tiny O(1e-3) variance across RNG streams,
-    # while weights and effective LR stay tightly aligned
     for pa, pc in zip(a_params, c_params):
         torch.testing.assert_close(pc, pa, atol=2e-3, rtol=2e-2)
     assert c_opt.get_avg_learning_rate() == pytest.approx(a_opt.get_avg_learning_rate(), rel=2e-2)
 
 
-def test_lotus_bounded_auto_lr_holds_steady_at_noisy_optimum_and_climbs_on_trend():
-    # At optimum + noise: stays calm near 1.0 (neither sinks like Automagic3 nor blows up like Automagic4)
+def test_lotus_per_layer_snr_auto_lr_climbs_brakes_and_holds_steady():
+    # Default (auto_lr=False): AdamW-killer scheduled mode never mutates LR multiplier
+    w_sched = nn.Parameter(torch.zeros(32, 32))
+    opt_sched, _ = optim.build([w_sched], OptimSpec(optimizer="Lotus", learning_rate=1e-4, lotus_auto_lr=False))
+    for _ in range(30):
+        w_sched.grad = torch.ones_like(w_sched) * 0.1
+        opt_sched.step()
+    assert opt_sched.get_avg_learning_rate() == pytest.approx(1e-4)
+
+    # auto_lr=True: two layers in the same optimizer adapt INDEPENDENTLY (trending layer climbs, oscillating layer brakes)
     torch.manual_seed(0)
-    w = nn.Parameter(torch.zeros(32, 32))
-    opt = Lotus([w], lr=1e-3)
+    w_trend = nn.Parameter(torch.zeros(64, 64))
+    w_osc = nn.Parameter(torch.zeros(64, 64))
+    opt_mix, _ = optim.build([w_trend, w_osc], OptimSpec(optimizer="Lotus", learning_rate=1e-4, lotus_auto_lr=True))
+    for i in range(80):
+        w_trend.grad = torch.ones_like(w_trend) * 0.1 + 0.05 * torch.randn_like(w_trend)
+        w_osc.grad = torch.ones_like(w_osc) * (0.1 if i % 2 == 0 else -0.1)
+        opt_mix.step()
+    m_trend = float(opt_mix.state[w_trend]["lr_ctrl"][0])
+    m_osc = float(opt_mix.state[w_osc]["lr_ctrl"][0])
+    assert 2.0 < m_trend <= 4.0 + 1e-6
+    assert 0.25 - 1e-6 <= m_osc < 0.7
+
+    # Pure zero-mean diffusion noise at optimum: holds steady (no Automagic3 decay stall, no runaway)
+    torch.manual_seed(1)
+    w_noise = nn.Parameter(torch.zeros(64, 64))
+    opt_noise = Lotus([w_noise], lr=1e-3, auto_lr=True)
     for _ in range(150):
-        w.grad = w.detach() + 0.1 * torch.randn_like(w)
-        opt.step()
-    assert 0.8e-3 <= opt.get_avg_learning_rate() <= 1.2e-3
-
-    # Persistent trend: climbs cleanly up to the lr_max_mult rail (2.5x), never beyond
-    w2 = nn.Parameter(torch.zeros(32, 32))
-    opt2 = Lotus([w2], lr=1e-4, lr_max_mult=2.5)
-    for _ in range(120):
-        w2.grad = torch.ones_like(w2) * 0.1
-        opt2.step()
-    assert 1.5e-4 < opt2.get_avg_learning_rate() <= 2.5e-4 + 1e-9
-
-    # Persistent overshoot (alternating signs): backs off cleanly down to lr_min_mult (0.5x), never below
-    w3 = nn.Parameter(torch.zeros(32, 32))
-    opt3 = Lotus([w3], lr=1e-4, lr_min_mult=0.5)
-    for i in range(120):
-        w3.grad = torch.ones_like(w3) * (0.1 if i % 2 == 0 else -0.1)
-        opt3.step()
-    assert 0.5e-4 - 1e-9 <= opt3.get_avg_learning_rate() < 0.85e-4
+        w_noise.grad = w_noise.detach() * 0.1 + 0.5 * torch.randn_like(w_noise)
+        opt_noise.step()
+    assert 0.7e-3 <= opt_noise.get_avg_learning_rate() <= 1.4e-3
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -205,12 +209,12 @@ def test_lotus_cuda_triton_matches_cpu_fallback(dtype):
 
     pa = [p for ab in pairs_a for p in ab] + extra_a
     pb = [p for ab in pairs_b for p in ab] + extra_b
-    opt_tri = Lotus(pa, lr=1e-3, weight_decay=0.01)
-    opt_ref = Lotus(pb, lr=1e-3, weight_decay=0.01)
+    opt_tri = Lotus(pa, lr=1e-3, weight_decay=0.01, auto_lr=True)
+    opt_ref = Lotus(pb, lr=1e-3, weight_decay=0.01, auto_lr=True)
 
     g = torch.Generator(device="cpu").manual_seed(77)
     orig = _lotus_triton.supported
-    for step in range(10):
+    for step in range(15):
         grads = [torch.randn(p.shape, generator=g).to(device=dev, dtype=dtype) * 0.2 + 0.05 for p in pa]
         for p, gr in zip(pa, grads):
             p.grad = gr.clone()

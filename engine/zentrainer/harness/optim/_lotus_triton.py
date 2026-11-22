@@ -46,7 +46,7 @@ def _get_momentum_kernel():
         gh_ptr,        # (N, numel) fp32 normalized & clipped gradient
         m_ptr,         # (N, numel) bf16 or fp32 momentum (updated in place)
         u_ptr,         # (N, numel) fp32 output update (pre-cautious-norm)
-        align_ptr,     # (3,) fp32 [dot, m2, g2] atomically accumulated when DO_ALIGN
+        align_ptr,     # (N, 3) fp32 per-row [dot, m2, g2] atomically accumulated when DO_ALIGN
         msq_ptr,       # (N,) fp32 sum(mask^2) per row when DO_CAUTIOUS
         b1,            # float32 beta1
         inv_bc1,       # float32 1 / (1 - beta1^step)
@@ -68,9 +68,9 @@ def _get_momentum_kernel():
         mp = tl.load(m_ptr + base, mask=mask, other=0.0).to(tl.float32)
 
         if DO_ALIGN:
-            tl.atomic_add(align_ptr + 0, tl.sum(mp * gh))
-            tl.atomic_add(align_ptr + 1, tl.sum(mp * mp))
-            tl.atomic_add(align_ptr + 2, tl.sum(gh * gh))
+            tl.atomic_add(align_ptr + row * 3 + 0, tl.sum(mp * gh))
+            tl.atomic_add(align_ptr + row * 3 + 1, tl.sum(mp * mp))
+            tl.atomic_add(align_ptr + row * 3 + 2, tl.sum(gh * gh))
 
         mn = mp * b1 + gh * (1.0 - b1)
         if M_BF16:
@@ -104,11 +104,12 @@ def _get_apply_kernel():
     def _lotus_apply_kernel(
         u_ptr,         # (N, numel) fp32 final update
         p_ptr,         # (N, numel) fp32/bf16/fp16 params (updated in place)
-        mult_ptr,      # (1,) fp32 on-device group lr_mult (zero GPU->CPU sync)
+        mult_ptr,      # (N,) fp32 on-device per-tensor lr_mult when HAS_MULT (zero GPU->CPU sync)
         lr_base,       # float32 scheduled group["lr"]
         wd,            # float32 decoupled weight decay
         numel,         # int32 elements per tensor
         seed,          # int32 Philox seed for bf16/fp16 stochastic rounding
+        HAS_MULT: tl.constexpr,
         HAS_WD: tl.constexpr,
         OUT_DTYPE: tl.constexpr,  # 0=fp32, 1=bf16, 2=fp16
         BLOCK: tl.constexpr,
@@ -121,7 +122,7 @@ def _get_apply_kernel():
 
         u = tl.load(u_ptr + base, mask=mask, other=0.0).to(tl.float32)
         p = tl.load(p_ptr + base, mask=mask, other=0.0).to(tl.float32)
-        lr = lr_base * tl.load(mult_ptr).to(tl.float32)
+        lr = lr_base * tl.load(mult_ptr + row).to(tl.float32) if HAS_MULT else lr_base
         if HAS_WD:
             u = u + wd * p
         new_p = p - lr * u
@@ -145,13 +146,12 @@ def _get_apply_kernel():
 def momentum_step(
     gh: torch.Tensor,
     ms: list[torch.Tensor],
-    align_buf: torch.Tensor,
     b1: float,
     inv_bc1: float,
     cautious_min: float,
     do_align: bool,
-) -> torch.Tensor:
-    """Update stacked momentum tensors in place and return (N, *shape) fp32 update tensor."""
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Update stacked momentum tensors in place and return ((N, *shape) fp32 update, (N, 3) align or None)."""
     import triton
 
     n = len(ms)
@@ -162,7 +162,8 @@ def momentum_step(
     m_stack = torch.stack(ms).reshape(n, numel).contiguous()
     u2 = torch.empty((n, numel), dtype=torch.float32, device=dev)
     do_caut = cautious_min < 1.0
-    msq = torch.zeros((n,), dtype=torch.float32, device=dev) if do_caut else align_buf
+    align_buf = torch.zeros((n, 3), dtype=torch.float32, device=dev) if do_align else u2
+    msq = torch.zeros((n,), dtype=torch.float32, device=dev) if do_caut else u2
     m_bf16 = ms[0].dtype == torch.bfloat16
     seed = int(torch.randint(0, 1 << 30, (), device="cpu").item()) if m_bf16 else 0
 
@@ -181,18 +182,18 @@ def momentum_step(
     if do_caut:
         # Preserve L2 step norm without amplifying noise on surviving coordinates
         u2.mul_((msq / numel).clamp_min(0.1).rsqrt().unsqueeze(1))
-    return u2.view((n,) + shape)
+    return u2.view((n,) + shape), (align_buf if do_align else None)
 
 
 def apply_step(
     u: torch.Tensor,
     ps: list[torch.Tensor],
-    lr_mult: torch.Tensor,
+    lr_mults: torch.Tensor | None,
     lr_base: float,
     wd: float,
     p_stack: torch.Tensor | None = None,
 ) -> None:
-    """Apply decoupled weight decay, effective LR, and stochastic rounding in place."""
+    """Apply decoupled weight decay, effective LR (optionally per-tensor), and stochastic rounding."""
     import triton
 
     n = len(ps)
@@ -202,11 +203,14 @@ def apply_step(
     p_buf = (p_stack if p_stack is not None else torch.stack(ps)).reshape(n, numel).contiguous()
     out_dtype = _DTYPE_CODE[ps[0].dtype]
     seed = int(torch.randint(0, 1 << 30, (), device="cpu").item()) if out_dtype != 0 else 0
+    has_mult = lr_mults is not None
+    mult_buf = lr_mults.reshape(n).contiguous() if has_mult else u2
 
     BLOCK = 1024
     grid = (n, triton.cdiv(numel, BLOCK))
     _get_apply_kernel()[grid](
-        u2, p_buf, lr_mult.reshape(1), float(lr_base), float(wd), numel, seed,
+        u2, p_buf, mult_buf, float(lr_base), float(wd), numel, seed,
+        HAS_MULT=has_mult,
         HAS_WD=(wd != 0.0),
         OUT_DTYPE=out_dtype,
         BLOCK=BLOCK,

@@ -202,6 +202,12 @@ const patterns = computed({
     <ZenField label="Learning rate" stack>
       <ZenNumber v-model="spec.optim.learning_rate" :min="0" :step="0.00001" :precision="6" />
     </ZenField>
+    <ZenField v-if="spec.optim.optimizer === 'Lotus'" label="Adaptive LR" stack tip="Off: follows your LR and schedule directly (AdamW-style). On: each layer tunes its own LR within 0.25×–4× from gradient-momentum SNR (Automagic-style), climbing on steady trends, relaxing as trends fade, and braking on overshoot">
+      <div class="sw-row">
+        <ZenSwitch :model-value="!!spec.optim.lotus_auto_lr" @update:model-value="spec.optim.lotus_auto_lr = $event" />
+        <span class="sw-state">{{ spec.optim.lotus_auto_lr ? 'Per-layer auto (0.25×–4×)' : 'Scheduled' }}</span>
+      </div>
+    </ZenField>
     <!-- what trains and its size together: the rank means a different thing for each -->
     <ZenField label="Adapter" stack :tip="resuming ? 'Kept from the run it resumes: its saved state is this adapter at this rank' : 'LoRA, or LoKr (smaller files, often as good). Rank: 8–16 for a character, 16–32 for a style as a LoRA; 4–8 as a LoKr'">
       <div class="adapter-row" :class="{ locked: resuming }">
@@ -284,7 +290,7 @@ const patterns = computed({
             <span v-else class="sw-state">Off</span>
           </div>
         </ZenField>
-        <ZenField v-if="spec.optim.optimizer === 'Automagic3' || spec.optim.optimizer === 'Automagic4'" label="LR floor (%)" stack tip="Automagic never lowers its learning rate below this share of the start LR. v3 can talk itself down to almost nothing once the trend is learned (50% kept likeness climbing on MOSS); v4 settles on its own, so it rarely needs one. 0 = no floor">
+        <ZenField v-if="spec.optim.optimizer === 'Automagic3' || spec.optim.optimizer === 'Automagic4' || (spec.optim.optimizer === 'Lotus' && spec.optim.lotus_auto_lr)" label="LR floor (%)" stack tip="Adaptive LR never drops below this share of the start LR. Automagic v3 can talk itself down to almost nothing once the trend is learned (50% kept likeness climbing on MOSS); Lotus defaults to 25%. 0 = default floor">
           <ZenNumber :model-value="Math.round((spec.optim.lr_floor ?? 0) * 100)" :min="0" :max="100" :step="5" :precision="0" @update:model-value="spec.optim.lr_floor = $event / 100" />
         </ZenField>
         <ZenField label="Weight decay" stack><ZenNumber v-model="spec.optim.weight_decay" :min="0" :step="0.001" :precision="4" /></ZenField>

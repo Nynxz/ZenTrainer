@@ -178,8 +178,12 @@ class OptimSpec:
                                     "0 or 1 = off.", ge=0)
     ema: float = setting(0.0, "Weight averaging: checkpoints, samples and the saved LoRA use a running average of the "
                               "adapter (0.98 = roughly the last 50 steps). 0 = off.", ge=0, lt=1)
-    lr_floor: float = setting(0.0, "Automagic v3/v4: the adaptive rate never drops below this fraction of its start "
-                                   "(v3's decays and can stall under-strength). 0 = no floor.", ge=0, le=1)
+    lr_floor: float = setting(0.0, "Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this "
+                                   "fraction of its start (v3's decays and can stall under-strength). 0 = default floor.",
+                              ge=0, le=1)
+    lotus_auto_lr: bool = setting(False, "Lotus: per-layer SNR adaptive learning rate (0.25x-4x) instead of following "
+                                         "the schedule directly. Off = predictable AdamW-style scheduled LR; On = "
+                                         "Automagic-style self-tuning LR per layer.")
 
 
 @dataclass

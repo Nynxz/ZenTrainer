@@ -10,9 +10,11 @@ and Manager show.
   decomposed LoKr and LoHa; bounded Riemannian Kronecker `(lokr_w1, lokr_w2)` scale balancing with
   exact fp32 moments on tiny high-leverage factors; bf16 momentum + factored second moments (~3x
   less memory than AdamW, with stochastic rounding for bf16/fp16 adapters); pre-momentum update-RMS
-  spike protection + norm-preserving cautious gating; and a bounded self-regulating LR (0.5x–2.5x)
-  driven by momentum-gradient alignment that still honours warmup and LR schedules. Batched across
-  shapes with fused Triton kernels for CUDA and ROCm.
+  spike protection + norm-preserving cautious gating; and an **Adaptive LR** toggle (`optim.lotus_auto_lr`)
+  switching between predictable scheduled LR (AdamW replacement) and per-layer SNR-normalized
+  adaptive LR in `0.25x–4x` (Automagic replacement that climbs on real trends, relaxes toward `1x`
+  as trends fade, holds steady on noise, and brakes on overshoot). Batched across shapes with fused
+  Triton kernels for CUDA and ROCm.
 - **Dramatically faster `torch.compile` startup and zero un-checkpointing recompile waves.**
   - Shared per-class `torch.compile` wrappers (`compile.py`, `memory/__init__.py`) and shared bound
     methods in `int8_backward.install()` and `SwiGLU` let identical transformer blocks share one
