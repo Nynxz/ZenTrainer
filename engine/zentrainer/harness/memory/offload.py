@@ -129,6 +129,8 @@ def stash_recompute_weight(module, weight) -> bool:
 def pop_recompute_weight(module):
     """Pop and return the cached recompute GPU weight for `module`, or None on miss."""
     global _recompute_bytes
+    if not _recompute_cache:
+        return None  # skip id(module) when empty so torch.compile shares one graph across blocks
     entry = _recompute_cache.pop(id(module), None)
     if entry is None:
         return None

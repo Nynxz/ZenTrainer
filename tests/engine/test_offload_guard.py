@@ -96,6 +96,32 @@ def test_recompute_cache_stashes_and_pops_streamed_quantized_weights(comfy_ops):
     offload.clear_recompute_weights()
 
 
+def test_pop_recompute_weight_does_not_guard_module_id_under_compile():
+    """Empty recompute cache must not emit ___check_obj_id guards across compiled blocks."""
+    from torch._dynamo.testing import CompileCounter
+
+    offload.clear_recompute_weights()
+    torch._dynamo.reset()
+
+    class _Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.randn(4, 4))
+
+        def forward(self, x):
+            cached = offload.pop_recompute_weight(self)
+            return x @ (cached if cached is not None else self.w)
+
+    blocks = [_Block() for _ in range(4)]
+    x = torch.randn(2, 4)
+    counter = CompileCounter()
+    compiled = torch.compile(_Block.forward, backend=counter)
+    for b in blocks:
+        compiled(b, x)
+    assert counter.frame_count == 1
+    torch._dynamo.reset()
+
+
 def test_keep_small_resident_promotes_only_tiny_offloaded_modules(monkeypatch):
     mm = types.ModuleType("comfy.model_management")
     mm.module_size = lambda mod: sum(p.nbytes for p in mod.parameters(recurse=False))
