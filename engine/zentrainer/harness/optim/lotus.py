@@ -26,6 +26,11 @@ from collections import defaultdict
 import torch
 
 CHUNK = 1 << 24  # max elements per shape stack (bounds peak transient memory)
+EXACT_MAX_NUMEL = 1024  # tiny high-leverage matrices (e.g. lokr_w1 4x4..32x32) keep exact fp32 moments
+
+
+def _is_exact(p: torch.Tensor) -> bool:
+    return p.dim() < 2 or p.numel() <= EXACT_MAX_NUMEL
 
 
 def _sr_truncate_(dst: torch.Tensor, src_fp32: torch.Tensor) -> None:
@@ -63,6 +68,31 @@ def _discover_pairs(param_groups: list[dict], explicit_pairs=None) -> list[tuple
             continue
         key = (id(p), id(partner))
         if key not in seen and p.ndim == 2 and partner.ndim == 2 and p.shape[0] == partner.shape[1]:
+            seen.add(key)
+            pairs.append((p, partner))
+    return pairs
+
+
+def _discover_kron_pairs(param_groups: list[dict], explicit_kron_pairs=None) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Find direct Kronecker (lokr_w1, lokr_w2) pairs from explicit pairs or Network._own weakref tags."""
+    seen: set[tuple[int, int]] = set()
+    pairs: list[tuple[torch.Tensor, torch.Tensor]] = []
+    if explicit_kron_pairs:
+        for w1, w2 in explicit_kron_pairs:
+            key = (id(w1), id(w2))
+            if key not in seen:
+                seen.add(key)
+                pairs.append((w1, w2))
+    all_params = {id(p): p for g in param_groups for p in g["params"]}
+    for p in all_params.values():
+        if getattr(p, "_zt_kron_side", None) != "w1":
+            continue
+        ref = getattr(p, "_zt_kron_partner", None)
+        partner = ref() if callable(ref) else ref
+        if partner is None or id(partner) not in all_params:
+            continue
+        key = (id(p), id(partner))
+        if key not in seen:
             seen.add(key)
             pairs.append((p, partner))
     return pairs
@@ -109,6 +139,7 @@ class Lotus(torch.optim.Optimizer):
         lr_beta: float = 0.85,
         lr_rate: float = 0.20,
         lora_pairs=None,
+        kron_pairs=None,
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -130,22 +161,24 @@ class Lotus(torch.optim.Optimizer):
         )
         super().__init__(params, defaults)
         self._explicit_pairs = lora_pairs
+        self._explicit_kron_pairs = kron_pairs
         self._pairs = _discover_pairs(self.param_groups, lora_pairs)
+        self._kron_pairs = _discover_kron_pairs(self.param_groups, kron_pairs)
         self._group_mult: list[torch.Tensor | None] = [None] * len(self.param_groups)
         self._group_cos: list[torch.Tensor | None] = [None] * len(self.param_groups)
 
     def _init_state(self, p: torch.Tensor) -> dict:
         st = self.state[p]
         st["step"] = 0
-        # Store momentum in bf16 on CUDA/CPU (with stochastic rounding) to halve optimizer VRAM;
-        # fp16 weights still keep bf16 momentum (same exponent range as fp32, no underflow).
-        m_dtype = torch.bfloat16 if p.dim() >= 2 else torch.float32
-        st["exp_avg"] = torch.zeros_like(p, dtype=m_dtype)
-        if p.dim() >= 2:
+        # Store momentum in bf16 (with stochastic rounding) + factored second moments for large 2D+
+        # weights; 1D and tiny high-leverage matrices (e.g. lokr_w1) keep exact fp32 moments.
+        exact = _is_exact(p)
+        st["exp_avg"] = torch.zeros_like(p, dtype=torch.float32 if exact else torch.bfloat16)
+        if exact:
+            st["exp_avg_sq"] = torch.zeros_like(p, dtype=torch.float32)
+        else:
             st["exp_avg_sq_row"] = torch.zeros(p.shape[:-1], dtype=torch.float32, device=p.device)
             st["exp_avg_sq_col"] = torch.zeros(p.shape[:-2] + p.shape[-1:], dtype=torch.float32, device=p.device)
-        else:
-            st["exp_avg_sq"] = torch.zeros_like(p, dtype=torch.float32)
         return st
 
     def _ensure_group_ctrl(self, gi: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
@@ -186,7 +219,7 @@ class Lotus(torch.optim.Optimizer):
                 if gi not in align_bufs:
                     self._ensure_group_ctrl(gi, p.device)
                     align_bufs[gi] = torch.zeros((3,), dtype=torch.float32, device=p.device)
-                if p.dim() < 2:
+                if "exp_avg_sq" in st:
                     ones.append((gi, p))
                 else:
                     key = (gi, tuple(p.shape), p.dtype, p.grad.dtype, st["exp_avg"].dtype, st["step"], p.device)
@@ -229,9 +262,10 @@ class Lotus(torch.optim.Optimizer):
             new_mult = (mult * torch.exp(group["lr_rate"] * adj)).clamp(group["lr_min_mult"], group["lr_max_mult"])
             mult.copy_(torch.where(valid, new_mult, mult))
 
-        # 4. Batched Riemannian LoRA preconditioning across (A=down, B=up) pairs (updates u_stack in place)
+        # 4. Batched Riemannian preconditioning: Gram whitening on (A, B) pairs and scale balancing on (w1, w2) Kronecker pairs
         p_stacks: dict[int, torch.Tensor] = {}
         self._precondition_pairs(updates, group_of, chunk_records, p_stacks)
+        self._precondition_kron_pairs(updates, group_of)
 
         # 5. Apply decoupled weight decay, effective LR, and stochastic rounding
         for ci, (gi, chunk, u_stack) in enumerate(chunk_records):
@@ -452,6 +486,38 @@ class Lotus(torch.optim.Optimizer):
                     for (a, _), u in zip(as_, ua_p.unbind(0)):
                         updates[a].copy_(u)
 
+    def _precondition_kron_pairs(
+        self,
+        updates: dict[torch.Tensor, torch.Tensor],
+        group_of: dict[torch.Tensor, int],
+    ) -> None:
+        """Bounded Riemannian scale balancing for direct Kronecker (lokr_w1, lokr_w2) pairs.
+
+        For dW = W1 kron W2, ||u1 kron W2||_F / ||W1 kron u2||_F = rms(W2) / rms(W1) regardless of
+        tensor shapes. Scaling u1 by s1 = clamp(sqrt(rms(W1) / rms(W2)), 0.5, 2.0) and u2 by 1/s1
+        preserves geometric-mean LR (s1 * s2 = 1) while letting the large expressive W2 factor
+        adapt immediately instead of lagging behind zero-initialized W1 early in training.
+        """
+        if not self._kron_pairs:
+            return
+        buckets: dict[tuple, list[tuple[torch.Tensor, torch.Tensor]]] = defaultdict(list)
+        for w1, w2 in self._kron_pairs:
+            if w1 not in updates or w2 not in updates:
+                continue
+            if self.param_groups[group_of[w1]]["precond_damp"] <= 0.0:
+                continue
+            buckets[(w1.device, tuple(w1.shape), tuple(w2.shape))].append((w1, w2))
+        for (dev, s1_shape, s2_shape), pairs in buckets.items():
+            W1 = torch.stack([w1.detach() for w1, _ in pairs]).to(torch.float32)
+            W2 = torch.stack([w2.detach() for _, w2 in pairs]).to(torch.float32)
+            r1 = torch.linalg.vector_norm(W1.flatten(1), dim=1) / math.sqrt(W1[0].numel())
+            r2 = torch.linalg.vector_norm(W2.flatten(1), dim=1) / math.sqrt(W2[0].numel())
+            valid = (r1 > 1e-6) & (r2 > 1e-6)
+            sc1 = torch.where(valid, (r1 / r2.clamp_min(1e-12)).sqrt().clamp(0.5, 2.0), torch.ones_like(r1))
+            sc2 = 1.0 / sc1
+            torch._foreach_mul_([updates[w1] for w1, _ in pairs], list(sc1.view(-1, *([1] * len(s1_shape))).unbind(0)))
+            torch._foreach_mul_([updates[w2] for _, w2 in pairs], list(sc2.view(-1, *([1] * len(s2_shape))).unbind(0)))
+
     def get_avg_learning_rate(self) -> float:
         """Effective learning rate (scheduled group LR * bounded self-regulating multiplier)."""
         vals = []
@@ -479,10 +545,11 @@ class Lotus(torch.optim.Optimizer):
                 if not st:
                     continue
                 if "exp_avg" in st:
-                    st["exp_avg"] = st["exp_avg"].to(torch.bfloat16 if p.dim() >= 2 else torch.float32)
+                    st["exp_avg"] = st["exp_avg"].to(torch.float32 if "exp_avg_sq" in st else torch.bfloat16)
                 for k in ("exp_avg_sq_row", "exp_avg_sq_col", "exp_avg_sq"):
                     if k in st:
                         st[k] = st[k].to(torch.float32)
         self._pairs = _discover_pairs(self.param_groups, self._explicit_pairs)
+        self._kron_pairs = _discover_kron_pairs(self.param_groups, self._explicit_kron_pairs)
         self._group_mult = [None] * len(self.param_groups)
         self._group_cos = [None] * len(self.param_groups)

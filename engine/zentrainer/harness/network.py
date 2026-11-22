@@ -448,14 +448,29 @@ class Network:
         self.modules.append(adapter)
         for pname, p in adapter.named_parameters():
             self.params[f"{name}.{pname}"] = p
-        # Tag plain 2-D LoRA (down, up) pairs with weakrefs so pair-aware optimizers (Lotus)
-        # can precondition their bilinear product without holding extra references or changing state_dict.
-        down = getattr(getattr(adapter, "lora_down", None), "weight", None)
-        up = getattr(getattr(adapter, "lora_up", None), "weight", None)
-        if (isinstance(down, torch.nn.Parameter) and isinstance(up, torch.nn.Parameter)
-                and down.ndim == 2 and up.ndim == 2 and down.shape[0] == up.shape[1]):
-            down._zt_lora_side, down._zt_lora_partner = "down", weakref.ref(up)
-            up._zt_lora_side, up._zt_lora_partner = "up", weakref.ref(down)
+        # Tag bilinear (down, up) pairs with weakrefs so pair-aware optimizers (Lotus) can
+        # precondition their product without holding extra references or changing state_dict:
+        # plain LoRA, decomposed LoKr (lokr_w*_a @ lokr_w*_b), and LoHa (hada_w*_a @ hada_w*_b).
+        tucker = getattr(adapter, "use_tucker", False)
+        bilinear = (
+            (getattr(getattr(adapter, "lora_down", None), "weight", None),
+             getattr(getattr(adapter, "lora_up", None), "weight", None)),
+            (getattr(adapter, "lokr_w1_b", None), getattr(adapter, "lokr_w1_a", None)),
+            (None if tucker else getattr(adapter, "lokr_w2_b", None),
+             None if tucker else getattr(adapter, "lokr_w2_a", None)),
+            (getattr(adapter, "hada_w1_b", None), getattr(adapter, "hada_w1_a", None)),
+            (getattr(adapter, "hada_w2_b", None), getattr(adapter, "hada_w2_a", None)),
+        )
+        for down, up in bilinear:
+            if (isinstance(down, torch.nn.Parameter) and isinstance(up, torch.nn.Parameter)
+                    and down.ndim == 2 and up.ndim == 2 and down.shape[0] == up.shape[1]):
+                down._zt_lora_side, down._zt_lora_partner = "down", weakref.ref(up)
+                up._zt_lora_side, up._zt_lora_partner = "up", weakref.ref(down)
+        # Tag direct Kronecker (lokr_w1, lokr_w2) pairs for Riemannian Kronecker scale balancing.
+        w1, w2 = getattr(adapter, "lokr_w1", None), getattr(adapter, "lokr_w2", None)
+        if isinstance(w1, torch.nn.Parameter) and isinstance(w2, torch.nn.Parameter):
+            w1._zt_kron_side, w1._zt_kron_partner = "w1", weakref.ref(w2)
+            w2._zt_kron_side, w2._zt_kron_partner = "w2", weakref.ref(w1)
 
     def _own_delta(self, patcher, key: str, param_name: str, shape, device) -> None:
         mod = _BiasDiff(shape, self.dtype, self._switch if self.scalable else None).to(device).train()

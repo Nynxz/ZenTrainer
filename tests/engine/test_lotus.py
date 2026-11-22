@@ -133,15 +133,69 @@ def test_lotus_preconditioner_is_rank_independent_even_on_rank1_collapse():
     assert evals.min() > 0.15 and (evals.max() / evals.min()).item() <= 5.1
 
 
+def test_lotus_lokr_exact_moments_and_kronecker_scale_balancing():
+    # Direct LoKr: tiny zero-init w1 (4x4) and large Kaiming-init w2 (64x64) combined via kron(w1, w2).
+    torch.manual_seed(0)
+    w1 = nn.Parameter(torch.zeros(4, 4))
+    w2 = nn.Parameter(torch.randn(64, 64) / math.sqrt(64))
+    w1._zt_kron_side, w1._zt_kron_partner = "w1", weakref.ref(w2)
+    w2._zt_kron_side, w2._zt_kron_partner = "w2", weakref.ref(w1)
+
+    # Kronecker-structured target so global optimum is 0: compare balanced vs unpaired Lotus
+    target = torch.kron(torch.randn(4, 4) * 0.2, torch.randn(64, 64) / math.sqrt(64))
+    w1_u, w2_u = nn.Parameter(w1.detach().clone()), nn.Parameter(w2.detach().clone())
+    opt_u = Lotus([w1_u, w2_u], lr=2e-3, auto_lr=False)
+    opt = Lotus([w1, w2], lr=2e-3, auto_lr=False)
+    assert len(opt._kron_pairs) == 1 and len(opt_u._kron_pairs) == 0
+
+    losses, losses_u = [], []
+    for _ in range(80):
+        loss = (torch.kron(w1, w2) - target).pow(2).mean()
+        loss.backward()
+        opt.step()
+        losses.append(loss.item())
+
+        loss_u = (torch.kron(w1_u, w2_u) - target).pow(2).mean()
+        loss_u.backward()
+        opt_u.step()
+        losses_u.append(loss_u.item())
+
+    # Tiny w1 keeps exact fp32 moments; large w2 uses factored bf16 momentum + row/col variance
+    assert "exp_avg_sq" in opt.state[w1] and opt.state[w1]["exp_avg"].dtype == torch.float32
+    assert "exp_avg_sq_row" in opt.state[w2] and opt.state[w2]["exp_avg"].dtype == torch.bfloat16
+    # Kronecker scale balancing converges substantially lower than unbalanced Lotus
+    assert losses[-1] < losses[0] * 0.25 and losses[-1] < losses_u[-1] * 0.5
+
+    # Verify scale balancing actively boosts w2 relative to w1 while rms(w1) < rms(w2)
+    with torch.no_grad():
+        w1_a, w2_a = nn.Parameter(torch.full((4, 4), 1e-3)), nn.Parameter(torch.full((64, 64), 4e-2))
+        w1_b, w2_b = nn.Parameter(w1_a.clone()), nn.Parameter(w2_a.clone())
+    w1_a._zt_kron_side, w1_a._zt_kron_partner = "w1", weakref.ref(w2_a)
+    w2_a._zt_kron_side, w2_a._zt_kron_partner = "w2", weakref.ref(w1_a)
+    oa = Lotus([w1_a, w2_a], lr=1e-3, auto_lr=False)
+    ob = Lotus([w1_b, w2_b], lr=1e-3, auto_lr=False)  # unpaired baseline
+    for p in (w1_a, w2_a, w1_b, w2_b):
+        p.grad = torch.ones_like(p) * 0.1
+    oa.step()
+    ob.step()
+    # Balanced step moves w1 half as far (0.5x) and w2 twice as far (2.0x) when rms(w1) << rms(w2)
+    dw1_a = (w1_a - 1e-3).abs().mean().item()
+    dw1_b = (w1_b - 1e-3).abs().mean().item()
+    dw2_a = (w2_a - 4e-2).abs().mean().item()
+    dw2_b = (w2_b - 4e-2).abs().mean().item()
+    assert dw1_a == pytest.approx(dw1_b * 0.5, rel=1e-2)
+    assert dw2_a == pytest.approx(dw2_b * 2.0, rel=1e-2)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
 def test_lotus_cuda_triton_matches_cpu_fallback(dtype):
     from zentrainer.harness.optim import _lotus_triton
 
     dev = torch.device("cuda")
-    # Include both paired LoRAs and odd-shaped unpaired 2D + 1D tensors
-    pairs_a = _make_lora_pairs(2, 64, 64, 8, device=dev, dtype=dtype)
-    pairs_b = _make_lora_pairs(2, 64, 64, 8, device=dev, dtype=dtype)
+    # Include both large Triton-stacked LoRA pairs (>1024 numel), small exact 2D, and 1D tensors
+    pairs_a = _make_lora_pairs(2, 192, 192, 8, device=dev, dtype=dtype)
+    pairs_b = _make_lora_pairs(2, 192, 192, 8, device=dev, dtype=dtype)
     extra_a = [nn.Parameter(torch.randn(7, 13, device=dev, dtype=dtype)), nn.Parameter(torch.randn(19, device=dev, dtype=dtype))]
     extra_b = [nn.Parameter(t.detach().clone()) for t in extra_a]
     with torch.no_grad():

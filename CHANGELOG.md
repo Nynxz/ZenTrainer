@@ -5,13 +5,14 @@ and Manager show.
 
 ## Unreleased
 
-- **Lotus: a new LoRA-native optimizer.** Built specifically for diffusion LoRAs: scale-normalized
-  Riemannian `(lora_down, lora_up)` rank preconditioning for fuller rank use without manual LoRA+
-  tuning, bf16 momentum + factored second moments (~3x less memory than AdamW, with stochastic
-  rounding for bf16/fp16 LoRAs), pre-momentum update-RMS spike protection + norm-preserving cautious
-  gating, and a bounded self-regulating LR (0.5x–2.5x) driven by momentum-gradient alignment that
-  still honours warmup and LR schedules. Batched across shapes with fused Triton kernels for CUDA
-  and ROCm.
+- **Lotus: a new adapter-native optimizer for LoRA, LoKr and LoHa.** Built specifically for
+  diffusion adapters: scale-normalized Riemannian `(down, up)` Gram preconditioning for LoRA,
+  decomposed LoKr and LoHa; bounded Riemannian Kronecker `(lokr_w1, lokr_w2)` scale balancing with
+  exact fp32 moments on tiny high-leverage factors; bf16 momentum + factored second moments (~3x
+  less memory than AdamW, with stochastic rounding for bf16/fp16 adapters); pre-momentum update-RMS
+  spike protection + norm-preserving cautious gating; and a bounded self-regulating LR (0.5x–2.5x)
+  driven by momentum-gradient alignment that still honours warmup and LR schedules. Batched across
+  shapes with fused Triton kernels for CUDA and ROCm.
 - **Dramatically faster `torch.compile` startup and zero un-checkpointing recompile waves.**
   - Shared per-class `torch.compile` wrappers (`compile.py`, `memory/__init__.py`) and shared bound
     methods in `int8_backward.install()` and `SwiGLU` let identical transformer blocks share one
