@@ -129,7 +129,7 @@ The optimizer, learning rate and schedule, and the run's length.
 | `optim.lora_plus` | `0.0` | number, >= 0 | LoRA+: the up matrices learn this many times faster than the down ones, which trains a LoRA faster for the same stability (paper: 16; 4 is a safe start). 0 or 1 = off. |
 | `optim.ema` | `0.0` | number, >= 0, < 1 | Weight averaging: checkpoints, samples and the saved LoRA use a running average of the adapter (0.98 = roughly the last 50 steps). 0 = off. |
 | `optim.lr_floor` | `0.0` | number, >= 0, <= 1 | Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this fraction of its start (v3's decays and can stall under-strength). 0 = default floor. |
-| `optim.lotus_auto_lr` | `false` | true/false | Lotus: per-layer SNR adaptive learning rate (0.25x-4x) instead of following the schedule directly. Off = predictable AdamW-style scheduled LR; On = Automagic-style self-tuning LR per layer. |
+| `optim.lotus_auto_lr` | `false` | true/false | Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead of following the schedule directly. Off = predictable AdamW-style scheduled LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails. |
 
 ## objective
 

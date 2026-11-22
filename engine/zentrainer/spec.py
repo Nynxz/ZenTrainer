@@ -181,9 +181,9 @@ class OptimSpec:
     lr_floor: float = setting(0.0, "Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this "
                                    "fraction of its start (v3's decays and can stall under-strength). 0 = default floor.",
                               ge=0, le=1)
-    lotus_auto_lr: bool = setting(False, "Lotus: per-layer SNR adaptive learning rate (0.25x-4x) instead of following "
-                                         "the schedule directly. Off = predictable AdamW-style scheduled LR; On = "
-                                         "Automagic-style self-tuning LR per layer.")
+    lotus_auto_lr: bool = setting(False, "Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead "
+                                         "of following the schedule directly. Off = predictable AdamW-style scheduled "
+                                         "LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails.")
 
 
 @dataclass

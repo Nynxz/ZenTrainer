@@ -255,10 +255,10 @@ OPTIMIZERS: dict[str, OptimizerDef] = {d.id: d for d in [
     OptimizerDef("Lotus", "Lotus (adapter-native)",
                  _lotus,
                  lr_hint="1e-4",
-                 note="Built for diffusion LoRAs & LoKrs: Riemannian (down, up) rank preconditioning and "
-                      "Kronecker (w1, w2) scale balancing, bf16 momentum + factored second moments (~3x less "
-                      "memory than AdamW, stochastic rounding for bf16), spike-safe RMS clipping, and an "
-                      "optional per-layer SNR adaptive LR toggle (0.25x–4x)."),
+                 note="Built for diffusion LoRAs & LoKrs: bf16 momentum + factored second moments (~3x less "
+                      "memory than AdamW, stochastic rounding for bf16/fp16), Kronecker (w1, w2) scale "
+                      "balancing, spike-safe RMS clipping + cautious gating, and an optional group-level "
+                      "adaptive LR toggle (0.05x–20x)."),
     OptimizerDef("Prodigy", "Prodigy (auto LR)",
                  _prodigy,
                  package="prodigyopt", pip="prodigyopt", lr_hint="1.0",

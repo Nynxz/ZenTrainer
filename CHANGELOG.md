@@ -6,15 +6,14 @@ and Manager show.
 ## Unreleased
 
 - **Lotus: a new adapter-native optimizer for LoRA, LoKr and LoHa.** Built specifically for
-  diffusion adapters: scale-normalized Riemannian `(down, up)` Gram preconditioning for LoRA,
-  decomposed LoKr and LoHa; bounded Riemannian Kronecker `(lokr_w1, lokr_w2)` scale balancing with
-  exact fp32 moments on tiny high-leverage factors; bf16 momentum + factored second moments (~3x
-  less memory than AdamW, with stochastic rounding for bf16/fp16 adapters); pre-momentum update-RMS
-  spike protection + norm-preserving cautious gating; and an **Adaptive LR** toggle (`optim.lotus_auto_lr`)
-  switching between predictable scheduled LR (AdamW replacement) and per-layer SNR-normalized
-  adaptive LR in `0.25x–4x` (Automagic replacement that climbs on real trends, relaxes toward `1x`
-  as trends fade, holds steady on noise, and brakes on overshoot). Batched across shapes with fused
-  Triton kernels for CUDA and ROCm.
+  diffusion adapters: bf16 momentum + factored second moments (`beta2=0.999`, ~3x less optimizer
+  memory than AdamW, with Philox stochastic rounding for direct bf16/fp16 adapters); exact fp32
+  moments on tiny high-leverage matrices (`lokr_w1`) with bounded Riemannian Kronecker `(w1, w2)`
+  scale balancing; pre-momentum update-RMS spike protection (`clip=2.5`) + norm-preserving cautious
+  gating (`0.25`); and an **Adaptive LR** toggle (`optim.lotus_auto_lr`) switching between
+  predictable scheduled LR (AdamW replacement) and group-level hypergradient adaptive LR in
+  `0.05x–20x` (Automagic replacement that honors warmup and cosine tails). Runs in place via
+  zero-copy fused Triton kernels on CUDA and AMD ROCm.
 - **Dramatically faster `torch.compile` startup and zero un-checkpointing recompile waves.**
   - Shared per-class `torch.compile` wrappers (`compile.py`, `memory/__init__.py`) and shared bound
     methods in `int8_backward.install()` and `SwiGLU` let identical transformer blocks share one

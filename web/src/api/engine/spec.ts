@@ -98,7 +98,7 @@ export interface TrainSpec {
     ema?: number
     /** Automagic v3's/v4's and Lotus adaptive LR's lowest LR, as a fraction of the start LR; 0 = default */
     lr_floor?: number
-    /** Lotus: per-layer SNR adaptive LR (0.25x-4x); false = scheduled LR */
+    /** Lotus: group-level hypergradient adaptive LR (0.05x-20x); false = scheduled LR */
     lotus_auto_lr?: boolean
   }
   objective: {

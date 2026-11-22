@@ -1,21 +1,24 @@
-"""Lotus: a LoRA-native, memory-efficient optimizer for diffusion training.
+"""Lotus: an adapter-native, memory-efficient optimizer for diffusion training.
 
-Combines four ideas tailored specifically to low-rank diffusion adapters:
-1. Scale-normalized Riemannian LoRA preconditioning on paired (lora_down, lora_up) weights:
-   whitening each factor's update by the tiny r x r Gram matrix of its partner
-   (A A^T / s_A + damp * I)^-1 and (B^T B / s_B + damp * I)^-1 prevents rank collapse and
-   eliminates A/B scale fighting while keeping the user's LR on AdamW's intuitive 1e-4 scale.
-2. Smoothed momentum stored in bf16 (with stochastic rounding) + Adafactor-factored second
-   moments: denoises batch-size-1 random-timestep diffusion gradients like AdamW at ~2-3x less
-   optimizer VRAM, and trains direct bf16/fp16 LoRAs cleanly via Philox stochastic rounding.
-3. Pre-momentum update-RMS trust region + norm-preserving cautious gating: stops outlier
-   timestep spikes from poisoning momentum and damps momentum overshoot without amplifying noise.
-4. Bounded self-regulating LR multiplier in [lr_min_mult, lr_max_mult] driven by the group's
-   smoothed cosine alignment between previous momentum and current normalized gradient, with an
-   asymmetric deadzone: honors warmup/cosine schedules, climbs on steady trends, backs off on
-   overshoot, and holds steady on pure noise (zero Automagic3 decay stall, zero Automagic4 runaway).
+Combines four ideas tailored specifically to low-rank diffusion adapters (LoRA, LoKr, LoHa):
+1. Smoothed momentum stored in bf16 (with stochastic rounding) + Adafactor-factored second
+   moments (beta2=0.999): denoises random-timestep diffusion gradients like AdamW at ~3x less
+   optimizer VRAM, while tiny high-leverage matrices (e.g. lokr_w1, <= 1024 elems) and 1D
+   parameters keep exact fp32 moments. Direct bf16/fp16 adapters train cleanly via Philox
+   stochastic rounding.
+2. Pre-momentum update-RMS trust region (clip=2.5) + norm-preserving cautious gating (0.25):
+   stops outlier timestep spikes from poisoning momentum without choking normal diffusion
+   timestep swings, and damps momentum overshoot without amplifying noise.
+3. Bounded Riemannian Kronecker scale balancing on direct (lokr_w1, lokr_w2) pairs: scales
+   w1 and w2 updates symmetrically (s1 * s2 = 1, clamped to [0.5, 2.0]) so the large expressive
+   w2 factor adapts immediately instead of lagging behind zero-initialized w1.
+4. Optional group-level hypergradient adaptive LR (auto_lr, bounded in [0.05x, 20x]): pools
+   scale- and size-invariant per-tensor cosine alignment cos(m_{t-1}, gh_t) across the group
+   (20 bytes/group, zero CPU sync), climbs on low LR, brakes on overshoot, pauses climbing
+   during linear warmup and the final cosine decay tail, and holds steady on pure noise.
 
-Batched across same-shaped tensors and accelerated with fused Triton kernels on CUDA and ROCm.
+Batched across same-shaped tensors and accelerated with zero-copy in-place Triton kernels on
+CUDA and AMD ROCm.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from collections import defaultdict
 
 import torch
 
-CHUNK = 1 << 24  # max elements per shape stack (bounds peak transient memory)
+CHUNK = 1 << 24  # max elements per shape stack (fallback for 3D/4D conv or non-contiguous tensors)
 EXACT_MAX_NUMEL = 1024  # tiny high-leverage matrices (e.g. lokr_w1 4x4..32x32) keep exact fp32 moments
 
 
@@ -46,31 +49,6 @@ def _sr_truncate_(dst: torch.Tensor, src_fp32: torch.Tensor) -> None:
     as_i.add_(torch.randint_like(as_i, 1 << drop))
     as_i.bitwise_and_(-(1 << drop))
     dst.copy_(src_fp32)
-
-
-def _discover_pairs(param_groups: list[dict], explicit_pairs=None) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """Find (lora_down_A, lora_up_B) pairs from explicit pairs or Network._own weakref tags."""
-    seen: set[tuple[int, int]] = set()
-    pairs: list[tuple[torch.Tensor, torch.Tensor]] = []
-    if explicit_pairs:
-        for a, b in explicit_pairs:
-            key = (id(a), id(b))
-            if key not in seen and a.ndim == 2 and b.ndim == 2 and a.shape[0] == b.shape[1]:
-                seen.add(key)
-                pairs.append((a, b))
-    all_params = {id(p): p for g in param_groups for p in g["params"]}
-    for p in all_params.values():
-        if getattr(p, "_zt_lora_side", None) != "down":
-            continue
-        ref = getattr(p, "_zt_lora_partner", None)
-        partner = ref() if callable(ref) else ref
-        if partner is None or id(partner) not in all_params:
-            continue
-        key = (id(p), id(partner))
-        if key not in seen and p.ndim == 2 and partner.ndim == 2 and p.shape[0] == partner.shape[1]:
-            seen.add(key)
-            pairs.append((p, partner))
-    return pairs
 
 
 def _discover_kron_pairs(param_groups: list[dict], explicit_kron_pairs=None) -> list[tuple[torch.Tensor, torch.Tensor]]:
@@ -98,47 +76,23 @@ def _discover_kron_pairs(param_groups: list[dict], explicit_kron_pairs=None) -> 
     return pairs
 
 
-def _gram_preconditioner(G: torch.Tensor, damp: float) -> tuple[torch.Tensor, torch.Tensor]:
-    """Batched Frobenius-normalized (G / ||G||_F + damp * I)^-1 with unit spectral RMS.
-
-    Normalizing by ||G||_F keeps the largest eigenvalue of G / ||G||_F <= 1 regardless of rank r,
-    so the condition number is bounded by (1 + damp) / damp (~5x at damp=0.25) even at rank 64-128
-    when B is still near rank-1 early in training. Returns (P, valid_mask) where valid_mask is
-    (N, 1, 1) True when ||G||_F > 1e-10 (False at zero-initialized lora_up on step 1 -> identity).
-    """
-    n, r, _ = G.shape
-    eye = torch.eye(r, device=G.device, dtype=torch.float32).unsqueeze(0)
-    gnorm = G.flatten(1).norm(dim=1)  # (N,)
-    valid = gnorm > 1e-10
-    scale = gnorm.clamp_min(1e-10).view(n, 1, 1)
-    Gn = torch.where(valid.view(n, 1, 1), G / scale + damp * eye, eye)
-    L, info = torch.linalg.cholesky_ex(Gn)
-    ok = valid & (info == 0)
-    # Fallback cleanly to identity on any numerical degeneracy
-    L_safe = torch.where(ok.view(n, 1, 1), L, eye)
-    P = torch.cholesky_inverse(L_safe)
-    rms = (P.flatten(1).norm(dim=1) / math.sqrt(r)).clamp_min(1e-6).view(n, 1, 1)
-    P = P / rms
-    return P, ok.view(n, 1, 1)
-
-
 class Lotus(torch.optim.Optimizer):
     def __init__(
         self,
         params,
         lr: float = 1e-4,
-        betas: tuple[float, float] = (0.9, 0.99),
+        betas: tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-30,
-        clip_threshold: float = 1.0,
+        clip_threshold: float = 2.5,
         weight_decay: float = 0.0,
         cautious_min: float = 0.25,
-        precond_damp: float = 0.25,
+        kron_balance: bool = True,
         auto_lr: bool = False,
-        lr_min_mult: float = 0.25,
-        lr_max_mult: float = 4.0,
+        lr_min_mult: float = 0.05,
+        lr_max_mult: float = 20.0,
         lr_beta: float = 0.90,
         lr_rate: float = 0.03,
-        lora_pairs=None,
+        lr_floor: float = 0.04,
         kron_pairs=None,
     ):
         if lr < 0.0:
@@ -152,17 +106,16 @@ class Lotus(torch.optim.Optimizer):
             clip_threshold=clip_threshold,
             weight_decay=weight_decay,
             cautious_min=cautious_min,
-            precond_damp=precond_damp,
+            kron_balance=kron_balance,
             auto_lr=auto_lr,
             lr_min_mult=lr_min_mult,
             lr_max_mult=lr_max_mult,
             lr_beta=lr_beta,
             lr_rate=lr_rate,
+            lr_floor=lr_floor,
         )
         super().__init__(params, defaults)
-        self._explicit_pairs = lora_pairs
         self._explicit_kron_pairs = kron_pairs
-        self._pairs = _discover_pairs(self.param_groups, lora_pairs)
         self._kron_pairs = _discover_kron_pairs(self.param_groups, kron_pairs)
 
     def _init_state(self, p: torch.Tensor) -> dict:
@@ -179,53 +132,81 @@ class Lotus(torch.optim.Optimizer):
             st["exp_avg_sq_col"] = torch.zeros(p.shape[:-2] + p.shape[-1:], dtype=torch.float32, device=p.device)
         return st
 
-    def _ensure_lr_ctrl(self, p: torch.Tensor) -> torch.Tensor:
-        """Per-tensor on-device [lr_mult, ema_cos, ema_var] state (12 bytes) for auto_lr mode."""
-        st = self.state[p]
-        ctrl = st.get("lr_ctrl")
+    def _ensure_group_lr_ctrl(self, group: dict) -> tuple[torch.Tensor, dict]:
+        """Group-level on-device [mult, ema_cos, ema_var, prev_lr, peak_lr] state (20 bytes) for auto_lr.
+
+        Stored on the group's first parameter so state_dict/load_state_dict persists it cleanly across
+        devices; migrates old per-tensor `lr_ctrl` checkpoints by taking their mean multiplier.
+        """
+        p0 = group["params"][0]
+        st = self.state[p0]
+        ctrl = st.get("group_lr_ctrl")
         if ctrl is None:
-            ctrl = st["lr_ctrl"] = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32, device=p.device)
-        return ctrl
+            init_m = 1.0
+            old = [self.state[p]["lr_ctrl"] for p in group["params"] if "lr_ctrl" in self.state.get(p, {})]
+            if old:
+                init_m = float(torch.stack([c.to(old[0].device) for c in old])[:, 0].mean().item())
+            ctrl = st["group_lr_ctrl"] = torch.tensor(
+                [init_m, 0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=p0.device
+            )
+            st.setdefault("group_lr_step", 0)
+        return ctrl, st
 
     @staticmethod
-    def _update_lr_ctrl(
-        ctrls: list[torch.Tensor],
-        align_rows: torch.Tensor,
-        group: dict,
-        step: int,
-    ) -> torch.Tensor:
-        """Per-tensor SNR-normalized adaptive LR update (zero GPU->CPU sync).
-
-        Tracks smoothed alignment c_ema and its variance s2_ema per tensor; the dimensionless
-        z-score z = c_ema / sqrt(s2_ema + 1e-6) works identically on noisy batch-size-1 diffusion
-        and large batches. Climbs on real trends (z > 0.35), brakes 1.5x faster on overshoot
-        (z < -0.25), gently relaxes mult > 1 toward 1.0 when trends fade, and holds steady >= 1.0
-        on pure noise (no Automagic3 decay stall, no Automagic4 stuck-at-ceiling jitter).
-        """
-        ctrl = torch.stack(ctrls)  # (N, 3)
+    def _accum_align(align_rows: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Scale- and size-invariant per-tensor cosine sum and valid count (zero GPU->CPU sync)."""
         dot, m2, g2 = align_rows[:, 0], align_rows[:, 1], align_rows[:, 2]
         valid = (m2 > 1e-24) & (g2 > 1e-24)
-        cos = dot / ((m2 * g2).clamp_min(1e-24).sqrt() + 1e-12)
-        mult, c_prev, s2_prev = ctrl[:, 0], ctrl[:, 1], ctrl[:, 2]
-        bc = group["lr_beta"]
-        diff = cos - c_prev
-        c_new = torch.where(valid, c_prev * bc + cos * (1.0 - bc), c_prev)
-        s2_new = torch.where(valid, s2_prev * bc + diff * diff * (1.0 - bc), s2_prev)
-        if step >= 10:  # let variance EMA warm up before moving multipliers
-            z = c_new / (s2_new + 1e-6).sqrt()
-            rate = group["lr_rate"]
-            up = mult * torch.exp(rate * (z - 0.35).clamp(0.0, 2.0))
-            down = mult * torch.exp(rate * ((z + 0.25) * 1.5).clamp(-2.0, 0.0))
-            relax = torch.where(mult > 1.0, 1.0 + (mult - 1.0) * 0.992, mult)
-            m_new = torch.where(z > 0.35, up, torch.where(z < -0.25, down, relax)).clamp(
-                group["lr_min_mult"], group["lr_max_mult"]
-            )
-            mult_new = torch.where(valid, m_new, mult)
+        cos = torch.where(valid, dot / ((m2 * g2).clamp_min(1e-24).sqrt() + 1e-12), torch.zeros_like(dot))
+        return cos.sum(), valid.to(torch.float32).sum()
+
+    @staticmethod
+    def _update_group_lr_ctrl(
+        ctrl: torch.Tensor,
+        host_state: dict,
+        sum_cos: torch.Tensor,
+        count_valid: torch.Tensor,
+        group: dict,
+    ) -> None:
+        """Group-level hypergradient adaptive LR update (zero GPU->CPU sync).
+
+        Pools per-tensor cosines cos(m_{t-1}, gh_t) with equal weight per tensor so tiny high-leverage
+        matrices (e.g. lokr_w1) have equal vote with large projections and coupled pairs (A/B, Q/K)
+        never fight. Uses the true EMA standard error sqrt(v_ema * (1 - bc) / (1 + bc) + floor^2):
+        rock-solid on pure noise, climbs on low LR, brakes immediately on overshoot, pauses climbing
+        during linear warmup and the final cosine decay tail.
+        """
+        host_state["group_lr_step"] = int(host_state.get("group_lr_step", 0)) + 1
+        step = host_state["group_lr_step"]
+        base_lr = float(group["lr"])
+        bc = float(group["lr_beta"])
+        rate = float(group["lr_rate"])
+        floor = float(group["lr_floor"])
+        se_scale = (1.0 - bc) / (1.0 + bc)
+
+        mult, c_prev, v_prev, prev_lr, peak_lr = ctrl.unbind(0)
+        has_valid = count_valid > 0.0
+        cos = sum_cos / count_valid.clamp_min(1.0)
+        if step > 2:
+            diff = cos - c_prev
+            c_new = torch.where(has_valid, c_prev * bc + cos * (1.0 - bc), c_prev)
+            v_new = torch.where(has_valid, v_prev * bc + diff * diff * (1.0 - bc), v_prev)
+        else:
+            c_new, v_new = c_prev, v_prev
+
+        base_t = torch.tensor(base_lr, dtype=torch.float32, device=ctrl.device)
+        if step >= 8:
+            denom = (v_new * se_scale + floor * floor).sqrt()
+            z = (c_new / denom).clamp(-2.0, 2.0)
+            allow_up = (base_t <= prev_lr + 1e-15) & (base_t >= 0.5 * peak_lr)
+            z = torch.where((z > 0.0) & ~allow_up, torch.zeros_like(z), z)
+            m_cand = (mult * torch.exp(rate * z)).clamp(group["lr_min_mult"], group["lr_max_mult"])
+            mult_new = torch.where(has_valid, m_cand, mult)
         else:
             mult_new = mult
-        new_ctrl = torch.stack((mult_new, c_new, s2_new), dim=1)
-        torch._foreach_copy_(ctrls, list(new_ctrl.unbind(0)))
-        return mult_new
+
+        peak_new = torch.maximum(peak_lr, base_t)
+        ctrl.copy_(torch.stack((mult_new, c_new, v_new, base_t, peak_new)))
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -236,9 +217,9 @@ class Lotus(torch.optim.Optimizer):
 
         from . import _lotus_triton
 
-        # 1. Bucket active parameters by (group, shape, p.dtype, g.dtype, step, device)
+        # 1. Bucket active parameters by (group, shape, p.dtype, g.dtype, m.dtype, step, device)
         stacks: dict[tuple, list[torch.Tensor]] = defaultdict(list)
-        ones: list[tuple[int, torch.Tensor]] = []
+        exact: dict[tuple, list[torch.Tensor]] = defaultdict(list)
         group_of: dict[torch.Tensor, int] = {}
 
         for gi, group in enumerate(self.param_groups):
@@ -248,73 +229,113 @@ class Lotus(torch.optim.Optimizer):
                 if p.grad.is_sparse:
                     raise RuntimeError("Lotus does not support sparse gradients.")
                 st = self.state[p]
-                if not st:
+                if "exp_avg" not in st:
                     st = self._init_state(p)
-                if group["auto_lr"]:
-                    self._ensure_lr_ctrl(p)
                 group_of[p] = gi
-                if "exp_avg_sq" in st:
-                    ones.append((gi, p))
-                else:
-                    key = (gi, tuple(p.shape), p.dtype, p.grad.dtype, st["exp_avg"].dtype, st["step"], p.device)
-                    stacks[key].append(p)
+                key = (gi, tuple(p.shape), p.dtype, p.grad.dtype, st["exp_avg"].dtype, st["step"], p.device)
+                (exact if "exp_avg_sq" in st else stacks)[key].append(p)
 
-        # 2. Compute momentum updates and per-tensor LR multipliers (when auto_lr is on)
+        # Snapshot each active auto_lr group's multiplier once (1-step lag: zero cross-bucket sync)
+        group_ctrls: dict[int, tuple[torch.Tensor, dict]] = {}
+        group_mults: dict[int, torch.Tensor] = {}
+        align_acc: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        for gi in set(group_of.values()):
+            group = self.param_groups[gi]
+            if group["auto_lr"] and group["params"]:
+                ctrl, host_st = self._ensure_group_lr_ctrl(group)
+                group_ctrls[gi] = (ctrl, host_st)
+                group_mults[gi] = ctrl[0].clone()
+                align_acc[gi] = (
+                    torch.zeros((), dtype=torch.float32, device=ctrl.device),
+                    torch.zeros((), dtype=torch.float32, device=ctrl.device),
+                )
+
+        # 1b. Pre-compute Kronecker scalar balancing scales (w1, w2) so LoKr w2 stays on the
+        # zero-copy pointer-array Triton fast path.
+        kron_scale_map = self._compute_kron_scales(group_of)
+
+        # 2. Compute momentum updates and accumulate group cosine alignment (or finish in place via Triton)
         updates: dict[torch.Tensor, torch.Tensor] = {}
         chunk_records: list[tuple[int, list[torch.Tensor], torch.Tensor]] = []
         chunk_mults: list[torch.Tensor | None] = []
-        one_mults: list[torch.Tensor | None] = []
+        done_params: list[torch.Tensor] = []
 
-        for key, ps in stacks.items():
+        for key, ps, is_exact in [(k, v, False) for k, v in stacks.items()] + [(k, v, True) for k, v in exact.items()]:
             gi = key[0]
             group = self.param_groups[gi]
-            per = max(1, CHUNK // ps[0].numel())
+            g_mult = group_mults.get(gi)
+
+            # Zero-copy pointer-array Triton fast path for contiguous 2D factored buckets
+            if not is_exact:
+                states = [self.state[p] for p in ps]
+                ms = [s["exp_avg"] for s in states]
+                if _lotus_triton.can_fused_inplace(ps, ms):
+                    b1, b2 = group["betas"]
+                    for s in states:
+                        s["step"] += 1
+                    step = states[0]["step"]
+                    bc1, bc2 = 1.0 - b1 ** step, 1.0 - b2 ** step
+                    rows = [s["exp_avg_sq_row"] for s in states]
+                    cols = [s["exp_avg_sq_col"] for s in states]
+                    do_align = bool(group["auto_lr"]) and step > 1
+
+                    ks = None
+                    if kron_scale_map and any(p in kron_scale_map for p in ps):
+                        one = torch.ones((), dtype=torch.float32, device=ps[0].device)
+                        ks = torch.stack([kron_scale_map.get(p, one) for p in ps])
+                    align_rows = _lotus_triton.fused_inplace_step(
+                        ps, ms, rows, cols,
+                        b1=b1, b2=b2, bc1=bc1, bc2=bc2,
+                        eps=group["eps"], clip=group["clip_threshold"],
+                        cautious_min=group["cautious_min"], wd=group["weight_decay"],
+                        lr_base=group["lr"], do_align=do_align,
+                        lr_mult=g_mult, kron_scales=ks,
+                    )
+                    if align_rows is not None and gi in align_acc:
+                        sc, cnt = self._accum_align(align_rows)
+                        acc_s, acc_c = align_acc[gi]
+                        acc_s.add_(sc.to(acc_s.device))
+                        acc_c.add_(cnt.to(acc_c.device))
+                    done_params.extend(ps)
+                    continue
+
+            per = max(1, CHUNK // max(1, ps[0].numel()))
             for i in range(0, len(ps), per):
                 chunk = ps[i:i + per]
-                u_stack, align_rows = self._momentum_stack(chunk, group, _lotus_triton)
-                if group["auto_lr"]:
-                    ctrls = [self._ensure_lr_ctrl(p) for p in chunk]
-                    if align_rows is not None:
-                        mults = self._update_lr_ctrl(ctrls, align_rows, group, self.state[chunk[0]]["step"])
-                    else:
-                        mults = torch.stack(ctrls)[:, 0]
+                if is_exact:
+                    u_stack, align_rows = self._momentum_exact(chunk, group)
                 else:
-                    mults = None
+                    u_stack, align_rows = self._momentum_stack(chunk, group, _lotus_triton)
+                if align_rows is not None and gi in align_acc:
+                    sc, cnt = self._accum_align(align_rows)
+                    acc_s, acc_c = align_acc[gi]
+                    acc_s.add_(sc.to(acc_s.device))
+                    acc_c.add_(cnt.to(acc_c.device))
+                mults = g_mult.to(chunk[0].device).expand(len(chunk)).contiguous() if g_mult is not None else None
                 chunk_records.append((gi, chunk, u_stack))
                 chunk_mults.append(mults)
                 for p, u in zip(chunk, u_stack.unbind(0)):
                     updates[p] = u
 
-        for gi, p in ones:
-            group = self.param_groups[gi]
-            u, align_row = self._momentum_1d(p, group)
-            if group["auto_lr"]:
-                ctrl = self._ensure_lr_ctrl(p)
-                if align_row is not None:
-                    mult = self._update_lr_ctrl([ctrl], align_row, group, self.state[p]["step"])[0]
-                else:
-                    mult = ctrl[0]
-            else:
-                mult = None
-            updates[p] = u
-            one_mults.append(mult)
+        # 3. Apply Kronecker balancing scales to remaining stacked/exact updates (e.g. lokr_w1)
+        if kron_scale_map and updates:
+            ks_ps = [p for p in updates if p in kron_scale_map]
+            if ks_ps:
+                torch._foreach_mul_(
+                    [updates[p] for p in ks_ps],
+                    [kron_scale_map[p].view(*([1] * p.dim())) for p in ks_ps],
+                )
 
-        # 3. Batched Riemannian preconditioning: Gram whitening on (A, B) pairs and scale balancing on (w1, w2) Kronecker pairs
-        p_stacks: dict[int, torch.Tensor] = {}
-        self._precondition_pairs(updates, group_of, chunk_records, p_stacks)
-        self._precondition_kron_pairs(updates, group_of)
-
-        # 4. Apply decoupled weight decay, effective LR (scheduled or per-tensor auto), and stochastic rounding
+        # 4. Apply decoupled weight decay, effective LR, and stochastic rounding to fallback chunks
         for ci, (gi, chunk, u_stack) in enumerate(chunk_records):
             group = self.param_groups[gi]
             lr_base, wd = group["lr"], group["weight_decay"]
             dev, p_dtype = chunk[0].device, chunk[0].dtype
             mults = chunk_mults[ci]
-            p_stack = p_stacks.pop(ci, None)
             if _lotus_triton.supported(u_stack, p_dtype):
-                _lotus_triton.apply_step(u_stack, chunk, mults, lr_base, wd, p_stack=p_stack)
+                _lotus_triton.apply_step(u_stack, chunk, mults, lr_base, wd)
             else:
-                new_p = (p_stack if p_stack is not None else torch.stack(chunk)).to(torch.float32)
+                new_p = torch.stack(chunk).to(torch.float32)
                 if wd != 0.0:
                     u_stack.add_(new_p, alpha=wd)
                 if mults is not None:
@@ -329,27 +350,13 @@ class Lotus(torch.optim.Optimizer):
                     _sr_truncate_(low, new_p)
                     torch._foreach_copy_(chunk, list(low.unbind(0)))
 
-        for (gi, p), mult in zip(ones, one_mults):
-            group = self.param_groups[gi]
-            lr_base, wd = group["lr"], group["weight_decay"]
-            u = updates[p]
-            if p.dtype == torch.float32:
-                if wd != 0.0:
-                    u.add_(p, alpha=wd)
-                if mult is not None:
-                    p.addcmul_(u, mult * lr_base, value=-1.0)
-                else:
-                    p.add_(u, alpha=-lr_base)
-            else:
-                pf = p.to(torch.float32)
-                if wd != 0.0:
-                    u.add_(pf, alpha=wd)
-                if mult is not None:
-                    pf.addcmul_(u, mult * lr_base, value=-1.0)
-                else:
-                    pf.add_(u, alpha=-lr_base)
-                _sr_truncate_(p, pf)
+        # 5. Update group-level hypergradient LR controller once per active auto_lr group
+        for gi, (ctrl, host_st) in group_ctrls.items():
+            acc_s, acc_c = align_acc[gi]
+            self._update_group_lr_ctrl(ctrl, host_st, acc_s, acc_c, self.param_groups[gi])
 
+        for p in done_params:
+            p.grad = None
         for p in updates:
             p.grad = None
         return loss
@@ -382,18 +389,21 @@ class Lotus(torch.optim.Optimizer):
 
         r = (row / row.mean(dim=-1, keepdim=True).clamp_min(eps)).rsqrt_().unsqueeze(-1)
         c = col.unsqueeze(-2).rsqrt()
-        gh = grad.mul_(r * c).mul_(math.sqrt(bc2))
+        inv_s = (r * c).mul_(math.sqrt(bc2))
         del row, col, r, c
 
-        # Pre-momentum spike immunity: clip RMS and element extremes before updating momentum
         numel = ps[0].numel()
-        dims = tuple(range(1, gh.dim()))
-        rms = torch.linalg.vector_norm(gh, dim=dims, keepdim=True) / math.sqrt(numel)
-        gh.div_((rms / clip).clamp_(min=1.0))
-        gh.clamp_(-3.0 * clip, 3.0 * clip)
-
+        dims = tuple(range(1, grad.dim()))
         ms = [s["exp_avg"] for s in states]
         do_align = bool(group["auto_lr"]) and step > 1
+
+        gh = grad.mul_(inv_s)
+        # Pre-momentum spike immunity: clip RMS and element extremes before updating momentum
+        if clip < 1e8:
+            rms = torch.linalg.vector_norm(gh, dim=dims, keepdim=True) / math.sqrt(numel)
+            gh.div_((rms / clip).clamp_(min=1.0))
+            gh.clamp_(-3.0 * clip, 3.0 * clip)
+
         if triton_mod.supported(gh, ps[0].dtype):
             return triton_mod.momentum_step(gh, ms, b1, 1.0 / bc1, caut, do_align)
 
@@ -417,117 +427,46 @@ class Lotus(torch.optim.Optimizer):
             u.mul_(cm).mul_((cm * cm).mean(dim=dims, keepdim=True).clamp_min(0.1).rsqrt())
         return u, align_rows
 
-    def _momentum_1d(self, p: torch.Tensor, group: dict) -> tuple[torch.Tensor, torch.Tensor | None]:
-        st = self.state[p]
+    def _momentum_exact(self, ps: list[torch.Tensor], group: dict) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """_momentum_stack for 1D and tiny tensors: full fp32 moments, same-shaped ones in one stack."""
+        states = [self.state[p] for p in ps]
         b1, b2 = group["betas"]
         eps, clip, caut = group["eps"], group["clip_threshold"], group["cautious_min"]
-        st["step"] += 1
-        step = st["step"]
+        for s in states:
+            s["step"] += 1
+        step = states[0]["step"]
         bc1 = 1.0 - b1 ** step
         bc2 = 1.0 - b2 ** step
-        grad = p.grad.to(torch.float32).nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
-        st["exp_avg_sq"].mul_(b2).addcmul_(grad, grad, value=1.0 - b2)
-        gh = grad.mul_((st["exp_avg_sq"] / bc2 + eps).rsqrt())
-        rms = gh.norm() / math.sqrt(p.numel())
-        gh.div_((rms / clip).clamp_(min=1.0)).clamp_(-3.0 * clip, 3.0 * clip)
-        mp = st["exp_avg"].to(torch.float32)
-        align_row = None
+        n, lead = len(ps), (len(ps),) + (1,) * ps[0].dim()
+        grad = torch.stack([p.grad for p in ps]).to(torch.float32)
+        grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+        vs = [s["exp_avg_sq"] for s in states]
+        v = torch.stack(vs).mul_(b2).addcmul_(grad, grad, value=1.0 - b2)
+        torch._foreach_copy_(vs, list(v.unbind(0)))
+        inv_s = v.div_(bc2).add_(eps).rsqrt_()
+        ms = [s["exp_avg"] for s in states]
+        mp = torch.stack(ms)
+
+        gh = grad.mul_(inv_s)
+        if clip < 1e8:
+            rms = torch.linalg.vector_norm(gh.reshape(n, -1), dim=1) / math.sqrt(ps[0].numel())
+            gh.div_((rms / clip).clamp_(min=1.0).view(lead)).clamp_(-3.0 * clip, 3.0 * clip)
+        align_rows = None
         if group["auto_lr"] and step > 1:
-            align_row = torch.stack(((mp * gh).sum(), (mp * mp).sum(), (gh * gh).sum())).unsqueeze(0)
+            g2, m2 = gh.reshape(n, -1), mp.reshape(n, -1)
+            align_rows = torch.stack(((m2 * g2).sum(dim=1), (m2 * m2).sum(dim=1), (g2 * g2).sum(dim=1)), dim=1)
         mn = mp.mul_(b1).add_(gh, alpha=1.0 - b1)
-        st["exp_avg"].copy_(mn)
+        torch._foreach_copy_(ms, list(mn.unbind(0)))
         u = mn / bc1
         if caut < 1.0:
             cm = torch.where(u * gh > 0.0, 1.0, caut)
-            u = u * cm * (cm * cm).mean().clamp_min(0.1).rsqrt()
-        return u, align_row
+            u.mul_(cm).mul_((cm * cm).reshape(n, -1).mean(dim=1).clamp_min(0.1).rsqrt().view(lead))
+        return u, align_rows
 
-    def _precondition_pairs(
+    def _compute_kron_scales(
         self,
-        updates: dict[torch.Tensor, torch.Tensor],
         group_of: dict[torch.Tensor, int],
-        chunk_records: list[tuple[int, list[torch.Tensor], torch.Tensor]],
-        p_stacks: dict[int, torch.Tensor],
-    ) -> None:
-        if not self._pairs:
-            return
-        # Map each param to its (chunk_idx, slot) so we can stack params once and update u_stack in place
-        loc: dict[torch.Tensor, tuple[int, int]] = {
-            p: (ci, j) for ci, (_, chunk, _) in enumerate(chunk_records) for j, p in enumerate(chunk)
-        }
-        buckets: dict[tuple, list[tuple[torch.Tensor, torch.Tensor]]] = defaultdict(list)
-        for p_a, p_b in self._pairs:
-            if p_a not in updates and p_b not in updates:
-                continue
-            ga = self.param_groups[group_of.get(p_a, group_of[p_b])]
-            damp = ga["precond_damp"]
-            if damp <= 0.0:
-                continue
-            clip = ga["clip_threshold"]
-            buckets[(p_a.device, p_a.shape[0], p_a.shape[1], p_b.shape[0], damp, clip)].append((p_a, p_b))
-
-        def get_p_stack(ci: int) -> torch.Tensor:
-            st = p_stacks.get(ci)
-            if st is None:
-                st = p_stacks[ci] = torch.stack(chunk_records[ci][1])
-            return st
-
-        for (dev, r, _in, _out, damp, clip), pairs in buckets.items():
-            # Fast path: when all pairs' As live in one chunk in order (and Bs in one chunk in order),
-            # reuse p_stack and u_stack directly with zero extra stack/copy!
-            bs = [(a, b) for a, b in pairs if b in updates]
-            if bs:
-                a_locs = [loc.get(a) for a, _ in bs]
-                b_locs = [loc.get(b) for _, b in bs]
-                if (all(x is not None for x in a_locs) and len({x[0] for x in a_locs}) == 1
-                        and len(a_locs) == len(chunk_records[a_locs[0][0]][1])
-                        and [x[1] for x in a_locs] == list(range(len(a_locs)))):
-                    A = get_p_stack(a_locs[0][0]).to(torch.float32)
-                else:
-                    A = torch.stack([a.detach().to(torch.float32) for a, _ in bs])
-                P_A, ok = _gram_preconditioner(torch.bmm(A, A.transpose(1, 2)), damp)
-                b_fast = (all(x is not None for x in b_locs) and len({x[0] for x in b_locs}) == 1
-                          and len(b_locs) == len(chunk_records[b_locs[0][0]][1])
-                          and [x[1] for x in b_locs] == list(range(len(b_locs))))
-                ub = chunk_records[b_locs[0][0]][2] if b_fast else torch.stack([updates[b] for _, b in bs])
-                ub_p = torch.where(ok, torch.bmm(ub, P_A), ub)
-                rms = torch.linalg.vector_norm(ub_p, dim=(1, 2), keepdim=True) / math.sqrt(ub_p[0].numel())
-                ub_p.div_((rms / clip).clamp_(min=1.0))
-                if b_fast:
-                    ub.copy_(ub_p)
-                else:
-                    for (_, b), u in zip(bs, ub_p.unbind(0)):
-                        updates[b].copy_(u)
-
-            as_ = [(a, b) for a, b in pairs if a in updates]
-            if as_:
-                a_locs = [loc.get(a) for a, _ in as_]
-                b_locs = [loc.get(b) for _, b in as_]
-                if (all(x is not None for x in b_locs) and len({x[0] for x in b_locs}) == 1
-                        and len(b_locs) == len(chunk_records[b_locs[0][0]][1])
-                        and [x[1] for x in b_locs] == list(range(len(b_locs)))):
-                    B = get_p_stack(b_locs[0][0]).to(torch.float32)
-                else:
-                    B = torch.stack([b.detach().to(torch.float32) for _, b in as_])
-                P_B, ok = _gram_preconditioner(torch.bmm(B.transpose(1, 2), B), damp)
-                a_fast = (all(x is not None for x in a_locs) and len({x[0] for x in a_locs}) == 1
-                          and len(a_locs) == len(chunk_records[a_locs[0][0]][1])
-                          and [x[1] for x in a_locs] == list(range(len(a_locs))))
-                ua = chunk_records[a_locs[0][0]][2] if a_fast else torch.stack([updates[a] for a, _ in as_])
-                ua_p = torch.where(ok, torch.bmm(P_B, ua), ua)
-                rms = torch.linalg.vector_norm(ua_p, dim=(1, 2), keepdim=True) / math.sqrt(ua_p[0].numel())
-                ua_p.div_((rms / clip).clamp_(min=1.0))
-                if a_fast:
-                    ua.copy_(ua_p)
-                else:
-                    for (a, _), u in zip(as_, ua_p.unbind(0)):
-                        updates[a].copy_(u)
-
-    def _precondition_kron_pairs(
-        self,
-        updates: dict[torch.Tensor, torch.Tensor],
-        group_of: dict[torch.Tensor, int],
-    ) -> None:
+    ) -> dict[torch.Tensor, torch.Tensor]:
         """Bounded Riemannian scale balancing for direct Kronecker (lokr_w1, lokr_w2) pairs.
 
         For dW = W1 kron W2, ||u1 kron W2||_F / ||W1 kron u2||_F = rms(W2) / rms(W1) regardless of
@@ -535,16 +474,17 @@ class Lotus(torch.optim.Optimizer):
         preserves geometric-mean LR (s1 * s2 = 1) while letting the large expressive W2 factor
         adapt immediately instead of lagging behind zero-initialized W1 early in training.
         """
+        out: dict[torch.Tensor, torch.Tensor] = {}
         if not self._kron_pairs:
-            return
+            return out
         buckets: dict[tuple, list[tuple[torch.Tensor, torch.Tensor]]] = defaultdict(list)
         for w1, w2 in self._kron_pairs:
-            if w1 not in updates or w2 not in updates:
+            if w1 not in group_of or w2 not in group_of:
                 continue
-            if self.param_groups[group_of[w1]]["precond_damp"] <= 0.0:
+            if not self.param_groups[group_of[w1]]["kron_balance"]:
                 continue
             buckets[(w1.device, tuple(w1.shape), tuple(w2.shape))].append((w1, w2))
-        for (dev, s1_shape, s2_shape), pairs in buckets.items():
+        for (dev, _s1_shape, _s2_shape), pairs in buckets.items():
             W1 = torch.stack([w1.detach() for w1, _ in pairs]).to(torch.float32)
             W2 = torch.stack([w2.detach() for _, w2 in pairs]).to(torch.float32)
             r1 = torch.linalg.vector_norm(W1.flatten(1), dim=1) / math.sqrt(W1[0].numel())
@@ -552,34 +492,41 @@ class Lotus(torch.optim.Optimizer):
             valid = (r1 > 1e-6) & (r2 > 1e-6)
             sc1 = torch.where(valid, (r1 / r2.clamp_min(1e-12)).sqrt().clamp(0.5, 2.0), torch.ones_like(r1))
             sc2 = 1.0 / sc1
-            torch._foreach_mul_([updates[w1] for w1, _ in pairs], list(sc1.view(-1, *([1] * len(s1_shape))).unbind(0)))
-            torch._foreach_mul_([updates[w2] for _, w2 in pairs], list(sc2.view(-1, *([1] * len(s2_shape))).unbind(0)))
+            for (w1, w2), s1, s2 in zip(pairs, sc1.unbind(0), sc2.unbind(0)):
+                out[w1] = s1
+                out[w2] = s2
+        return out
 
     def get_avg_learning_rate(self) -> float:
         """Mean effective learning rate across trainable tensors (scheduled LR, or scaled by each
-        tensor's SNR-adaptive multiplier when auto_lr is on)."""
-        vals: list[float] = []
+        group's hypergradient multiplier when auto_lr is on)."""
+        total, count = 0.0, 0
         for g in self.param_groups:
-            lr = float(g["lr"])
-            if not g["auto_lr"]:
-                vals.append(lr)
+            lr, n = float(g["lr"]), len(g["params"])
+            if not n:
                 continue
-            ms = [float(self.state[p]["lr_ctrl"][0]) for p in g["params"] if "lr_ctrl" in self.state.get(p, {})]
-            vals.append(lr * (sum(ms) / len(ms)) if ms else lr)
-        return sum(vals) / len(vals) if vals else 0.0
+            mult = 1.0
+            if g["auto_lr"]:
+                st0 = self.state.get(g["params"][0], {})
+                if "group_lr_ctrl" in st0:
+                    mult = float(st0["group_lr_ctrl"][0].item())
+                else:
+                    old = [self.state[p]["lr_ctrl"] for p in g["params"] if "lr_ctrl" in self.state.get(p, {})]
+                    if old:
+                        mult = float(torch.stack([c.to(old[0].device) for c in old])[:, 0].mean().item())
+            total += lr * mult * n
+            count += n
+        return total / count if count else 0.0
 
     def load_state_dict(self, state_dict: dict) -> None:
         super().load_state_dict(state_dict)
-        # Restore state dtypes (parent casts floating state to param.dtype)
-        for g in self.param_groups:
-            for p in g["params"]:
-                st = self.state.get(p)
-                if not st:
-                    continue
-                if "exp_avg" in st:
-                    st["exp_avg"] = st["exp_avg"].to(torch.float32 if "exp_avg_sq" in st else torch.bfloat16)
-                for k in ("exp_avg_sq_row", "exp_avg_sq_col", "exp_avg_sq", "lr_ctrl"):
-                    if k in st:
-                        st[k] = st[k].to(torch.float32)
-        self._pairs = _discover_pairs(self.param_groups, self._explicit_pairs)
+        # The parent casts floating state to the param's dtype: an fp16 adapter's second moments
+        # (~1e-11) round to zero there. Take each tensor from the saved state at its own dtype.
+        saved = state_dict["state"]
+        ids = [i for g in state_dict["param_groups"] for i in g["params"]]
+        params = [p for g in self.param_groups for p in g["params"]]
+        for i, p in zip(ids, params):
+            for k, v in saved.get(i, {}).items():
+                if torch.is_tensor(v):
+                    self.state[p][k] = v.to(p.device).clone()
         self._kron_pairs = _discover_kron_pairs(self.param_groups, self._explicit_kron_pairs)
