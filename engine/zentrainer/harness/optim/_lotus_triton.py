@@ -354,7 +354,6 @@ def _get_inplace_kernel():
         c_scale_ptr,   # (N, C) fp32
         rms_scale_ptr, # (N,) fp32 1 / max(1, rms / clip)
         caut_scale_ptr,# (N,) fp32 rsqrt(max(0.1, msq / numel))
-        u_scale_ptr,   # (N,) fp32 per-tensor update scale (e.g. Kronecker balancing) when HAS_USCALE
         eff_lr_ptr,    # (N,) fp32 lr_base * auto_mult
         R,
         C,
@@ -371,7 +370,6 @@ def _get_inplace_kernel():
         M_BF16: tl.constexpr,
         DO_CLIP: tl.constexpr,
         DO_CAUTIOUS: tl.constexpr,
-        HAS_USCALE: tl.constexpr,
         HAS_WD: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
@@ -416,8 +414,6 @@ def _get_inplace_kernel():
         if DO_CAUTIOUS:
             cm = tl.where(u * gh > 0.0, 1.0, cautious_min)
             u = u * cm * tl.load(caut_scale_ptr + tid)
-        if HAS_USCALE:
-            u = u * tl.load(u_scale_ptr + tid)
 
         lr = tl.load(eff_lr_ptr + tid)
         if HAS_WD:
@@ -466,7 +462,6 @@ def fused_inplace_step(
     lr_base: float,
     do_align: bool,
     lr_mult: torch.Tensor | None = None,
-    kron_scales: torch.Tensor | None = None,
 ) -> torch.Tensor | None:
     """Full Lotus step on a 2D shape bucket in place via pointer tables (0 tensor stacks/copies)."""
     import math
@@ -527,18 +522,16 @@ def fused_inplace_step(
         eff_lr = lr_mult.to(device=dev, dtype=torch.float32).mul(float(lr_base)).expand(n).contiguous()
     else:
         eff_lr = torch.full((n,), float(lr_base), dtype=torch.float32, device=dev)
-    has_uscale = kron_scales is not None
-    u_scale = kron_scales.contiguous() if has_uscale else r_scale
 
     # 3. Single in-place pass: update momentum + parameter with Philox stochastic rounding
     m_seed = int(torch.randint(0, 1 << 30, (), device="cpu").item()) if m_bf16 else 0
     p_seed = int(torch.randint(0, 1 << 30, (), device="cpu").item()) if p_code != 0 else 0
     _get_inplace_kernel()[grid](
-        p_ptrs, g_ptrs, m_ptrs, r_scale, c_scale, rms_scale, caut_scale, u_scale, eff_lr,
+        p_ptrs, g_ptrs, m_ptrs, r_scale, c_scale, rms_scale, caut_scale, eff_lr,
         R, C, numel, float(b1), 1.0 / bc1, float(clip), float(cautious_min), float(wd),
         m_seed, p_seed,
         P_DTYPE=p_code, G_DTYPE=g_code, M_BF16=m_bf16,
-        DO_CLIP=do_clip, DO_CAUTIOUS=do_caut, HAS_USCALE=has_uscale, HAS_WD=(wd != 0.0),
+        DO_CLIP=do_clip, DO_CAUTIOUS=do_caut, HAS_WD=(wd != 0.0),
         BLOCK=BLOCK, num_warps=4,
     )
     return align_buf if do_align else None

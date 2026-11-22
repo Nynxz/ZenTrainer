@@ -443,17 +443,9 @@ class Network:
                      len(self.modules), len(self.params), spec.algorithm, spec.rank, alpha)
 
     def _own(self, name: str, adapter: torch.nn.Module) -> None:
-        import weakref
-
         self.modules.append(adapter)
         for pname, p in adapter.named_parameters():
             self.params[f"{name}.{pname}"] = p
-        # Tag direct Kronecker (lokr_w1, lokr_w2) pairs with weakrefs for Lotus's Kronecker scale
-        # balancing without holding extra references or changing state_dict.
-        w1, w2 = getattr(adapter, "lokr_w1", None), getattr(adapter, "lokr_w2", None)
-        if isinstance(w1, torch.nn.Parameter) and isinstance(w2, torch.nn.Parameter):
-            w1._zt_kron_side, w1._zt_kron_partner = "w1", weakref.ref(w2)
-            w2._zt_kron_side, w2._zt_kron_partner = "w2", weakref.ref(w1)
 
     def _own_delta(self, patcher, key: str, param_name: str, shape, device) -> None:
         mod = _BiasDiff(shape, self.dtype, self._switch if self.scalable else None).to(device).train()

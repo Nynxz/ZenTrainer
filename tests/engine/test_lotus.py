@@ -1,7 +1,6 @@
-"""Tests for Lotus: adapter-native optimizer (parity, Kronecker balancing, auto-LR, resume, bf16)."""
+"""Tests for Lotus: adapter-native optimizer (parity, exact small moments, auto-LR, resume, bf16)."""
 
 import math
-import weakref
 
 import pytest
 import torch
@@ -152,55 +151,24 @@ def test_lotus_low_precision_stochastic_rounding_trains(dtype):
     assert mean_v < 0.998 and all(torch.isfinite(p).all() for p in params)
 
 
-def test_lotus_lokr_exact_moments_and_kronecker_scale_balancing():
-    # Direct LoKr: tiny zero-init w1 (4x4) and large Kaiming-init w2 (64x64) combined via kron(w1, w2).
+def test_lotus_lokr_uses_exact_fp32_moments_for_tiny_w1_and_factored_for_w2():
+    # Direct LoKr: tiny zero-init w1 (4x4 <= 1024 elems) keeps exact fp32 moments while large w2 uses factored bf16.
     torch.manual_seed(0)
     w1 = nn.Parameter(torch.zeros(4, 4))
     w2 = nn.Parameter(torch.randn(64, 64) / math.sqrt(64))
-    w1._zt_kron_side, w1._zt_kron_partner = "w1", weakref.ref(w2)
-    w2._zt_kron_side, w2._zt_kron_partner = "w2", weakref.ref(w1)
-
     target = torch.kron(torch.randn(4, 4) * 0.2, torch.randn(64, 64) / math.sqrt(64))
-    w1_u, w2_u = nn.Parameter(w1.detach().clone()), nn.Parameter(w2.detach().clone())
-    opt_u = Lotus([w1_u, w2_u], lr=2e-3, auto_lr=False)
     opt = Lotus([w1, w2], lr=2e-3, auto_lr=False)
-    assert len(opt._kron_pairs) == 1 and len(opt_u._kron_pairs) == 0
 
-    losses, losses_u = [], []
+    losses = []
     for _ in range(80):
         loss = (torch.kron(w1, w2) - target).pow(2).mean()
         loss.backward()
         opt.step()
         losses.append(loss.item())
 
-        loss_u = (torch.kron(w1_u, w2_u) - target).pow(2).mean()
-        loss_u.backward()
-        opt_u.step()
-        losses_u.append(loss_u.item())
-
-    # Tiny w1 keeps exact fp32 moments; large w2 uses factored bf16 momentum + row/col variance
     assert "exp_avg_sq" in opt.state[w1] and opt.state[w1]["exp_avg"].dtype == torch.float32
     assert "exp_avg_sq_row" in opt.state[w2] and opt.state[w2]["exp_avg"].dtype == torch.bfloat16
-    assert losses[-1] < losses[0] * 0.25 and losses[-1] < losses_u[-1] * 0.5
-
-    # Verify scale balancing actively boosts w2 (2.0x) and damps w1 (0.5x) when rms(w1) << rms(w2)
-    with torch.no_grad():
-        w1_a, w2_a = nn.Parameter(torch.full((4, 4), 1e-3)), nn.Parameter(torch.full((64, 64), 4e-2))
-        w1_b, w2_b = nn.Parameter(w1_a.clone()), nn.Parameter(w2_a.clone())
-    w1_a._zt_kron_side, w1_a._zt_kron_partner = "w1", weakref.ref(w2_a)
-    w2_a._zt_kron_side, w2_a._zt_kron_partner = "w2", weakref.ref(w1_a)
-    oa = Lotus([w1_a, w2_a], lr=1e-3, auto_lr=False)
-    ob = Lotus([w1_b, w2_b], lr=1e-3, auto_lr=False)
-    for p in (w1_a, w2_a, w1_b, w2_b):
-        p.grad = torch.ones_like(p) * 0.1
-    oa.step()
-    ob.step()
-    dw1_a = (w1_a - 1e-3).abs().mean().item()
-    dw1_b = (w1_b - 1e-3).abs().mean().item()
-    dw2_a = (w2_a - 4e-2).abs().mean().item()
-    dw2_b = (w2_b - 4e-2).abs().mean().item()
-    assert dw1_a == pytest.approx(dw1_b * 0.5, rel=1e-2)
-    assert dw2_a == pytest.approx(dw2_b * 2.0, rel=1e-2)
+    assert losses[-1] < losses[0] * 0.25
 
 
 def test_lotus_fp16_resume_keeps_second_moments():
@@ -227,20 +195,14 @@ def test_lotus_cuda_triton_matches_fallback(auto_lr, dtype):
 
     dev = torch.device("cuda")
     torch.manual_seed(11)
-    # Mix of 2D in-place Triton LoRA weights, Kronecker (w1 exact, w2 in-place Triton), 4D conv stacked Triton, and 1D bias
+    # Mix of 2D in-place Triton LoRA weights, tiny exact 2D (lokr_w1), 4D conv stacked Triton, and 1D bias
     pa = _make_lora_weights(2, 192, 192, 8, device=dev, dtype=dtype)
     w1_a = nn.Parameter(torch.full((4, 4), 2e-3, device=dev, dtype=dtype))
     w2_a = nn.Parameter(torch.randn(64, 64, device=dev, dtype=dtype) * 0.05)
-    w1_a._zt_kron_side, w1_a._zt_kron_partner = "w1", weakref.ref(w2_a)
-    w2_a._zt_kron_side, w2_a._zt_kron_partner = "w2", weakref.ref(w1_a)
     conv_a = nn.Parameter(torch.randn(16, 16, 3, 3, device=dev, dtype=dtype) * 0.05)
     bias_a = nn.Parameter(torch.randn(19, device=dev, dtype=dtype) * 0.05)
     pa = pa + [w1_a, w2_a, conv_a, bias_a]
-
     pb = [nn.Parameter(p.detach().clone()) for p in pa]
-    w1_b, w2_b = pb[-4], pb[-3]
-    w1_b._zt_kron_side, w1_b._zt_kron_partner = "w1", weakref.ref(w2_b)
-    w2_b._zt_kron_side, w2_b._zt_kron_partner = "w2", weakref.ref(w1_b)
 
     opt_tri = Lotus(pa, lr=1e-3, weight_decay=0.01, auto_lr=auto_lr)
     opt_ref = Lotus(pb, lr=1e-3, weight_decay=0.01, auto_lr=auto_lr)
