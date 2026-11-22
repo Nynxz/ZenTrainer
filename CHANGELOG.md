@@ -5,6 +5,12 @@ and Manager show.
 
 ## Unreleased
 
+- **Faster, lighter Automagic v3 / v4 optimizer step.** Sign-history bit packing, direction/flip
+  voting, weight decay, parameter updates and bf16/fp16 stochastic rounding now run in a single fused
+  Triton kernel (CUDA and ROCm) without unpacking the history into an 8x-larger `uint8` buffer, and
+  group learning-rate / sensitivity-reference updates run as batched `_foreach` ops instead of
+  per-tensor loops. Measured on an RTX 5090 (240 LoRA tensors, 23.6M params): 2.3–2.7x faster and
+  260–335 MB less transient VRAM per step, with the same weights and state-dict format.
 - **The app stops polling the engine.** The training queue, memory stats and what's loaded in VRAM
   are pushed to the app on ComfyUI's socket as they change, rather than each asked for every few
   seconds (three loops asked for the loaded models alone). An idle page went from about 35

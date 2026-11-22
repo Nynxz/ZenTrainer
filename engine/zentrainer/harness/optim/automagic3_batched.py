@@ -89,54 +89,100 @@ class Automagic3Batched(Automagic3):
         update.div_((rms / clip).clamp_(min=1.0))
         update.clamp_(-clip, clip)
 
-        # the sign window: every tensor here shares hist_idx and hist_fill (part of the key)
+        # the sign window, vote, WD, param update and stochastic rounding
         hists = [s["sign_history"] for s in states]
         H, idx = hists[0].shape[0], st0["hist_idx"]
-        weights, shifts = self._pack_consts(update.device)
-        flat = update.reshape(n, -1).gt(0.0).to(torch.uint8)
-        pad = (-numel) % 8
-        if pad:
-            flat = torch.cat([flat, flat.new_zeros(n, pad)], dim=1)
-        packed = (flat.view(n, -1, 8) * weights).sum(-1, dtype=torch.uint8)
-        torch._foreach_copy_([h[idx] for h in hists], list(packed.unbind(0)))
         new_idx = (idx + 1) % H
         fill = min(H, st0["hist_fill"] + 1)
         for s in states:
             s["hist_idx"], s["hist_fill"] = new_idx, fill
+            s["step"] += 1
 
-        if fill == H:
-            chron = torch.roll(torch.stack(hists), -new_idx, dims=1)
-            bits = (chron.unsqueeze(-1) >> shifts).bitwise_and_(1).view(n, H, -1)[:, :, :numel]
-            s1 = bits.sum(1, dtype=torch.int16)
-            flips = (bits[:, 1:] ^ bits[:, :-1]).sum(1, dtype=torch.int16)
-            up = s1.eq(H).logical_or_(s1.eq(0))
-            down = flips.eq(H - 1)
-            w = update.abs().view(n, -1)
-            num = (w * up).sum().sub_((w * down).sum())
-            den = w.sum()
-            gi = self._param_group_index.get(ps[0])
-            if gi is not None:
+        wd = group["weight_decay"]
+        lr = torch.stack([s["lr"] for s in states])
+        gi = self._param_group_index.get(ps[0])
+        do_vote = fill == H and gi is not None
+
+        from . import _automagic_triton
+
+        if _automagic_triton.supported(update, ps[0].dtype):
+            num, den = _automagic_triton.tail_step(
+                update, ps, hists, lr, wd, idx, new_idx, do_vote, is_v4=False,
+            )
+            if do_vote:
                 if self._group_num[gi] is None:
                     self._group_num[gi], self._group_den[gi] = num, den
                 else:
                     self._group_num[gi].add_(num.to(self._group_num[gi].device))
                     self._group_den[gi].add_(den.to(self._group_den[gi].device))
-            del bits, s1, flips, up, down, w
-
-        for s in states:
-            s["step"] += 1
-
-        wd = group["weight_decay"]
-        lr = torch.stack([s["lr"] for s in states]).view((n,) + (1,) * (update.dim() - 1))
-        new_p = torch.stack(ps).to(torch.float32)
-        if wd != 0.0:
-            update.add_(new_p, alpha=wd)
-        new_p.addcmul_(update, lr, value=-1.0)
-        if ps[0].dtype == torch.float32:
-            torch._foreach_copy_(ps, list(new_p.unbind(0)))
         else:
-            low = torch.empty((n,) + tuple(ps[0].shape), dtype=ps[0].dtype, device=new_p.device)
-            self._stochastic_copy_(low, new_p)
-            torch._foreach_copy_(ps, list(low.unbind(0)))
+            weights, shifts = self._pack_consts(update.device)
+            flat = update.reshape(n, -1).gt(0.0).to(torch.uint8)
+            pad = (-numel) % 8
+            if pad:
+                flat = torch.cat([flat, flat.new_zeros(n, pad)], dim=1)
+            packed = (flat.view(n, -1, 8) * weights).sum(-1, dtype=torch.uint8)
+            torch._foreach_copy_([h[idx] for h in hists], list(packed.unbind(0)))
+
+            if do_vote:
+                chron = torch.roll(torch.stack(hists), -new_idx, dims=1)
+                # Bitwise agreement / alternation across all H planes without unpacking (n, H, numel)
+                all_one = chron[:, 0].clone()
+                all_zero = chron[:, 0].bitwise_xor(255)
+                all_flip = torch.full_like(all_one, 255)
+                prev = chron[:, 0]
+                for t in range(1, H):
+                    cur = chron[:, t]
+                    all_one.bitwise_and_(cur)
+                    all_zero.bitwise_and_(cur.bitwise_xor(255))
+                    all_flip.bitwise_and_(cur.bitwise_xor(prev))
+                    prev = cur
+                up_byte = all_one.bitwise_or_(all_zero)
+                up = ((up_byte.unsqueeze(-1) >> shifts).bitwise_and_(1)).view(n, -1)[:, :numel]
+                down = ((all_flip.unsqueeze(-1) >> shifts).bitwise_and_(1)).view(n, -1)[:, :numel]
+                w = update.abs().view(n, -1)
+                num = (w * up).sum().sub_((w * down).sum())
+                den = w.sum()
+                if self._group_num[gi] is None:
+                    self._group_num[gi], self._group_den[gi] = num, den
+                else:
+                    self._group_num[gi].add_(num.to(self._group_num[gi].device))
+                    self._group_den[gi].add_(den.to(self._group_den[gi].device))
+                del chron, all_one, all_zero, all_flip, up_byte, up, down, w
+
+            lr_b = lr.view((n,) + (1,) * (update.dim() - 1))
+            new_p = torch.stack(ps).to(torch.float32)
+            if wd != 0.0:
+                update.add_(new_p, alpha=wd)
+            new_p.addcmul_(update, lr_b, value=-1.0)
+            if ps[0].dtype == torch.float32:
+                torch._foreach_copy_(ps, list(new_p.unbind(0)))
+            else:
+                low = torch.empty((n,) + tuple(ps[0].shape), dtype=ps[0].dtype, device=new_p.device)
+                self._stochastic_copy_(low, new_p)
+                torch._foreach_copy_(ps, list(low.unbind(0)))
         for p in ps:
             p.grad = None
+
+    def _apply_group_votes(self) -> None:
+        """Batched group-LR update: avoids launching 2 tiny kernels per parameter (1,600+/step)."""
+        for gi, group in enumerate(self.param_groups):
+            num = self._group_num[gi]
+            if num is None:
+                continue
+            den = self._group_den[gi]
+            signal = num.div_(den.clamp_(min=1e-30)).clamp_(-1.0, 1.0)
+            factor = torch.exp(signal)
+            by_dev: dict[torch.device, list[torch.Tensor]] = defaultdict(list)
+            for p in group["params"]:
+                st = self.state.get(p)
+                if st is not None and "lr" in st:
+                    by_dev[st["lr"].device].append(st["lr"])
+            lo, hi = group["min_lr"], group["max_lr"]
+            for dev, lrs in by_dev.items():
+                f = factor if factor.device == dev else factor.to(dev)
+                torch._foreach_mul_(lrs, f)
+                torch._foreach_clamp_min_(lrs, lo)
+                torch._foreach_clamp_max_(lrs, hi)
+            self._group_num[gi] = None
+            self._group_den[gi] = None
