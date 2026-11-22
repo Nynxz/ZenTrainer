@@ -18,7 +18,7 @@ Auto = Literal["auto"]
 
 # choices that live in the harness, which imports torch: tests keep them in step
 OPTIMIZERS = ("AdamW", "Adam", "Adafactor", "Lion", "SGD", "RMSprop", "AdamW8bit", "Lion8bit", "Automagic",
-              "Automagic3", "Automagic4", "Prodigy", "AdamWScheduleFree", "CAME")  # harness/optim OPTIMIZERS
+              "Automagic3", "Automagic4", "Lotus", "Prodigy", "AdamWScheduleFree", "CAME")  # harness/optim OPTIMIZERS
 TRAIN_ATTENTION = ("pytorch", "xformers", "sub_quad", "split")  # harness/memory TRAINABLE_ATTENTION
 WEIGHT_DTYPES = ("default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2")  # ComfyUI's weight_dtype
 DTYPES = ("bf16", "fp16", "fp32")

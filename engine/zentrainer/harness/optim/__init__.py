@@ -179,6 +179,13 @@ def _automagic4(p, s):
                              **({"min_lr": s.learning_rate * s.lr_floor} if s.lr_floor > 0 else {}))
 
 
+def _lotus(p, s):
+    from .lotus import Lotus
+
+    return Lotus(p, lr=s.learning_rate, weight_decay=s.weight_decay,
+                 **({"lr_min_mult": s.lr_floor} if s.lr_floor > 0 else {}))
+
+
 def _prodigy(p, s):
     from prodigyopt import Prodigy
 
@@ -245,6 +252,13 @@ OPTIMIZERS: dict[str, OptimizerDef] = {d.id: d for d in [
                  note="Ostris's v4, experimental: v3 whose LR settles at a level instead of sinking once "
                       "the trend is learned, and whose most sensitive weights take smaller steps. Start "
                       "near 1e-4; the schedule and warmup are ignored."),
+    OptimizerDef("Lotus", "Lotus (LoRA-native)",
+                 _lotus,
+                 lr_hint="1e-4",
+                 note="Built for diffusion LoRAs: Riemannian (down, up) rank preconditioning for fuller rank "
+                      "use, bf16 momentum + factored second moments (~3x less memory than AdamW, stochastic "
+                      "rounding for bf16 LoRAs), spike-safe RMS clipping, and a bounded self-regulating LR "
+                      "(0.5x–2.5x) that still honours your warmup and schedule."),
     OptimizerDef("Prodigy", "Prodigy (auto LR)",
                  _prodigy,
                  package="prodigyopt", pip="prodigyopt", lr_hint="1.0",

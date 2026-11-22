@@ -443,9 +443,19 @@ class Network:
                      len(self.modules), len(self.params), spec.algorithm, spec.rank, alpha)
 
     def _own(self, name: str, adapter: torch.nn.Module) -> None:
+        import weakref
+
         self.modules.append(adapter)
         for pname, p in adapter.named_parameters():
             self.params[f"{name}.{pname}"] = p
+        # Tag plain 2-D LoRA (down, up) pairs with weakrefs so pair-aware optimizers (Lotus)
+        # can precondition their bilinear product without holding extra references or changing state_dict.
+        down = getattr(getattr(adapter, "lora_down", None), "weight", None)
+        up = getattr(getattr(adapter, "lora_up", None), "weight", None)
+        if (isinstance(down, torch.nn.Parameter) and isinstance(up, torch.nn.Parameter)
+                and down.ndim == 2 and up.ndim == 2 and down.shape[0] == up.shape[1]):
+            down._zt_lora_side, down._zt_lora_partner = "down", weakref.ref(up)
+            up._zt_lora_side, up._zt_lora_partner = "up", weakref.ref(down)
 
     def _own_delta(self, patcher, key: str, param_name: str, shape, device) -> None:
         mod = _BiasDiff(shape, self.dtype, self._switch if self.scalable else None).to(device).train()
