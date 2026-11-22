@@ -764,23 +764,29 @@ def _int8_layer(m) -> bool:
             and type(w).__name__ == "QuantizedTensor" and hasattr(m, "forward_comfy_cast_weights"))
 
 
+def _int8_layer_forward(self, x, *args, **kwargs):
+    """Shared bound method for quantized linear layers (replaces per-layer closures so
+    torch.compile shares one graph across identical transformer blocks instead of recompiling
+    every block separately)."""
+    import comfy.model_management as mm
+
+    orig = self._zt_orig_forward
+    if (not (mm.in_training and torch.is_grad_enabled() and x.requires_grad) or args or kwargs
+            or len(self.weight_function) or len(self.bias_function)):
+        return orig(x, *args, **kwargs)
+    return _Int8Linear.apply(x, self, orig)
+
+
 def install(model) -> int:
     """Give the model's weight-only quantized layers the training path above (undone by uninstall)."""
-    import comfy.model_management as mm
+    import types
 
     n = 0
     for m in model.modules():
         if not _int8_layer(m) or "forward" in m.__dict__:
             continue
-        original = m.forward
-
-        def forward(x, *args, _m=m, _orig=original, **kwargs):
-            if not (mm.in_training and torch.is_grad_enabled() and x.requires_grad) or args or kwargs \
-                    or len(_m.weight_function) or len(_m.bias_function):
-                return _orig(x, *args, **kwargs)
-            return _Int8Linear.apply(x, _m, _orig)
-
-        m.forward = forward
+        m._zt_orig_forward = m.forward
+        m.forward = types.MethodType(_int8_layer_forward, m)
         _installed.append(m)
         n += 1
     return n
@@ -801,7 +807,9 @@ def weight_only(model) -> int:
 
 def uninstall() -> None:
     while _installed:
-        _installed.pop().__dict__.pop("forward", None)
+        m = _installed.pop()
+        m.__dict__.pop("forward", None)
+        m.__dict__.pop("_zt_orig_forward", None)
     while _flagged:
         m, was = _flagged.pop()
         m._full_precision_mm = was

@@ -5,6 +5,16 @@ and Manager show.
 
 ## Unreleased
 
+- **Dramatically faster `torch.compile` startup and zero un-checkpointing recompile waves.**
+  - Shared per-class `torch.compile` wrappers (`compile.py`, `memory/__init__.py`) and shared bound
+    methods in `int8_backward.install()` and `SwiGLU` let identical transformer blocks share one
+    compiled graph instead of compiling 32–48 separate graphs.
+  - When `compile_blocks` and `grad_checkpoint_skip="auto"` are both enabled, the first two steps
+    speed-run eager before `torch.compile` starts: step 1 probes one main denoising block (putting
+    `main_blocks` ahead of caption-only blocks like MOSS's `TextBlock`s so it never measures `0.00 GB`),
+    scales its activation cost to the active stage's largest bucket, and jumps straight to the target
+    kept count; step 2 verifies that count fits without OOM (backing off eagerly if needed) and tops
+    up from the real measured peak before removing measurement hooks and compiling once.
 - **Fused int8/packed LoRA bypass with training adapters, base LoRAs, turbo previews and sliders.**
   Attaching a `training_adapter` (such as MiniMax-H3-Image's de-distillation LoRA), a `base_lora`,
   a `samples.turbo_lora`, or training a slider previously fell back to the unfused int8 bypass path

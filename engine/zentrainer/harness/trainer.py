@@ -350,6 +350,7 @@ class Trainer:
                     self._ckpt = ckpt
                     self._keep_auto = (getattr(self, "_want_keep_auto", skip == "auto")
                                        and not m.offloading and bool(ckpt.all) and torch.cuda.is_available())
+                    self._arm_eager_keep_probe()
                     self.enter_training()
                     try:
                         for cb in self.callbacks:
@@ -954,7 +955,7 @@ class Trainer:
             overlap(True)
             guard_backward(True)
         if getattr(self, "_compiled", 0):
-            torch.compiler.set_stance("default")
+            torch.compiler.set_stance("force_eager" if getattr(self, "_keep_settle", 0) else "default")
         self._recompile_if_moved("reloaded for training, e.g. after samples")
 
     def enter_inference(self) -> None:
@@ -1073,9 +1074,14 @@ class Trainer:
         first load put them, and the VRAM fit measures again from there."""
         logging.info("[ZenTrainer] now training at %d px", res)
         if getattr(self, "_keep_auto", False):
-            self._kept(0)  # more tokens a block: measured again
+            self._unhook_kept()
+            if getattr(self, "_compiled", 0):
+                self._ckpt.keep(0)
+            else:
+                self._kept(0)  # more tokens a block: measured again
             self._keep_warm, self._keep_cost = 0, {}
             self.__dict__.pop("_keep_ceiling", None)
+            self._arm_eager_keep_probe()
             # and from a new peak: the lower stage's (its kept blocks with it) left the higher one
             # no room at all (Krea 2: 24.8 GB of 25.8 at 1024, none kept)
             self._peak = 0
@@ -1300,7 +1306,7 @@ class Trainer:
         if res < getattr(self, "_res_seen", 0):
             return
         self._keep_warm = getattr(self, "_keep_warm", 0) + 1
-        if self._keep_warm in KEEP_AT:
+        if self._keep_warm in KEEP_AT or getattr(self, "_keep_settle", 0):
             self._fit_kept()
 
     def _kept(self, n: int) -> int:
@@ -1329,27 +1335,81 @@ class Trainer:
             h.remove()
         self._keep_hooks = None
 
+    def _arm_eager_keep_probe(self) -> None:
+        """When compile_blocks and grad_checkpoint_skip='auto' are both on, speed-run the kept
+        block count while eager before torch.compile builds any graphs:
+          - stage 1 (step 1): 1 main block un-checkpointed -> measure cost and jump to `want`
+          - stage 2 (step 2): verify `want` fits without OOM (backing off eagerly if it does),
+            top up from the real measured peak if room remains, unhook, and turn compile on."""
+        if not (getattr(self, "_keep_auto", False) and getattr(self, "_compiled", 0)):
+            return
+        self._kept(1)
+        self._keep_settle = 1
+        torch.compiler.set_stance("force_eager")
+
+    def _finish_eager_settle(self) -> None:
+        self._unhook_kept()
+        self._keep_settle = 0
+        torch.compiler.set_stance("default")
+
+    def _bucket_scale(self) -> float:
+        """Ratio of the active stage's largest bucket (spatial*temporal volume) to the current step's,
+        at least 1.0, so a one-shot un-checkpoint jump leaves room for larger buckets."""
+        import math
+
+        buckets = getattr(self, "_step_buckets", None) or getattr(getattr(self, "dataset", None), "buckets", None)
+        key = getattr(self, "_step_key", None)
+        if not buckets or not key:
+            return 1.0
+        cur_shape = key[0][0]  # (B, C, [T,] h, w)
+        cur_vol = math.prod(cur_shape[2:]) if len(cur_shape) >= 4 else 0
+        max_vol = max((math.prod(s[1:]) for s in buckets
+                       if isinstance(s, tuple) and len(s) >= 3 and all(isinstance(d, int) for d in s[1:])),
+                      default=0)
+        if cur_vol <= 0 or max_vol <= cur_vol:
+            return 1.0
+        return max_vol / cur_vol
+
     def _fit_kept(self) -> None:
         """Keep as many last blocks un-checkpointed as the measured spare VRAM holds (see KEEP_AT)."""
         ck = self._ckpt
-        if self._keep_warm == KEEP_AT[0]:
+        settle = getattr(self, "_keep_settle", 0)
+        if self._keep_warm == KEEP_AT[0] and not settle:
             self._kept(1)  # the probe: next steps measure what a kept block holds
         else:
-            cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
-            if cost <= 0:
+            raw_cost = max(getattr(self, "_keep_cost", {}).values(), default=0)
+            if raw_cost <= 0:
+                if settle:
+                    # Probe block had no measurable activation cost (e.g. excluded by network.blocks):
+                    # leave eager stance so compile proceeds cleanly and later KEEP_AT steps can retry.
+                    self._finish_eager_settle()
                 return
+            scale = self._bucket_scale()
+            cost = raw_cost * scale * KEEP_SAFETY
             torch.cuda.empty_cache()
             total, others = self._card()
             spare = total - others - self._peak - TIGHTEN_MARGIN
             ceiling = getattr(self, "_keep_ceiling", len(ck.all))
-            want = max(0, min(ceiling, 2 * ck.kept, ck.kept + int(spare // cost)))
+            # During the pre-compile eager settle, jump straight to `want` instead of doubling
+            # 1->2->4->8->16->32 across 6 recompile waves.
+            cap = ceiling if settle else min(ceiling, 2 * ck.kept)
+            want = max(0, min(cap, ck.kept + int(spare // cost)))
             if want != ck.kept:
                 was = ck.kept
-                self._kept(want)
+                if settle or getattr(self, "_compiled", 0):
+                    ck.keep(want)  # never re-register forward hooks on compiled blocks
+                else:
+                    self._kept(want)
                 gb = 1024 ** 3
+                tag = ", pre-compile probe" if settle == 1 else ", pre-compile settle" if settle == 2 else ""
                 logging.info("[ZenTrainer] training peaked at %.1f GB of %.1f: blocks un-checkpointed %d -> %d "
-                             "of %d (%.2f GB each)", self._peak / gb, (total - others) / gb, was, want, len(ck.all),
-                             cost / gb)
+                             "of %d (%.2f GB each%s)", self._peak / gb, (total - others) / gb, was, want, len(ck.all),
+                             cost / gb, tag)
+            if settle == 1 and ck.kept > 0:
+                # Stay eager one more step to verify `want` fits without OOM and top up from the real peak.
+                self._keep_settle = 2
+            elif settle:
+                self._finish_eager_settle()
         self._peak = 0
         torch.cuda.reset_peak_memory_stats()
 
@@ -1367,7 +1427,12 @@ class Trainer:
             drop = was
         elif attempt:  # the margin's worth wasn't enough: half of them, not one more
             drop = max(drop, (was + 1) // 2)
-        self._keep_ceiling = self._kept(max(0, was - drop))
+        target = max(0, was - drop)
+        settle = getattr(self, "_keep_settle", 0)
+        self._keep_ceiling = ck.keep(target) if (settle or getattr(self, "_compiled", 0)) else self._kept(target)
+        if settle and target == 0:
+            # Nothing left to keep: stop eager settling and compile fully checkpointed.
+            self._finish_eager_settle()
         logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
         return True
 
@@ -1486,6 +1551,7 @@ class Trainer:
                 x0, weight, shapes = self.batch(idx)
                 keys.append((tuple(x0.shape), repr(shapes)))
                 self._step_key = tuple(keys)  # what this step's time depends on (the auto VRAM fit's trials)
+                self._step_buckets = getattr(self.dataset, "buckets", None)
                 conds = [self._cond(i, x0, shapes) for i in idx]
 
                 noise = torch.randn(x0.shape, generator=self.generator).to(self.device)
