@@ -136,6 +136,9 @@ def compiled_blocks(diffusion_model, enabled: bool):
                 sub.__dict__.pop("comfy_cast_weights", None)
         if cache_was is not None:
             functorch_config.enable_autograd_cache = cache_was
+        # Drop this run's compiled graphs so successive runs in one ComfyUI process never accumulate
+        # guard entries up to torch._dynamo.config.accumulated_recompile_limit (256).
+        torch._dynamo.reset()
 
 
 def residency(diffusion_model) -> tuple[bool, ...]:
