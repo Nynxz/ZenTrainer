@@ -29,15 +29,25 @@ class Lion(torch.optim.Optimizer):
     def step(self, closure=None):
         loss = closure() if closure is not None else None
         for group in self.param_groups:
-            b1, b2 = group["betas"]
+            b1, b2, lr, wd = group["betas"][0], group["betas"][1], group["lr"], group["weight_decay"]
+            buckets: dict[tuple, tuple[list, list, list]] = {}
             for p in group["params"]:
                 if p.grad is None:
                     continue
                 m = self.state[p].setdefault("exp_avg", torch.zeros_like(p))
-                if group["weight_decay"]:
-                    p.mul_(1 - group["lr"] * group["weight_decay"])
-                p.add_(torch.sign(m * b1 + p.grad * (1 - b1)), alpha=-group["lr"])
-                m.mul_(b2).add_(p.grad, alpha=1 - b2)
+                ps, gs, ms = buckets.setdefault((p.device, p.dtype), ([], [], []))
+                ps.append(p)
+                gs.append(p.grad)
+                ms.append(m)
+            for ps, gs, ms in buckets.values():
+                if wd:
+                    torch._foreach_mul_(ps, 1.0 - lr * wd)
+                upd = torch._foreach_mul(ms, b1)
+                torch._foreach_add_(upd, gs, alpha=1.0 - b1)
+                torch._foreach_sign_(upd)
+                torch._foreach_add_(ps, upd, alpha=-lr)
+                torch._foreach_mul_(ms, b2)
+                torch._foreach_add_(ms, gs, alpha=1.0 - b2)
         return loss
 
 
@@ -177,16 +187,31 @@ def _came(p, s):
     return CAME(p, lr=s.learning_rate, weight_decay=s.weight_decay)
 
 
+def _can_fuse(params: list) -> bool:
+    """Whether PyTorch's fused CUDA/ROCm optimizer kernel can take these params/param_groups."""
+    tensors = [t for g in params for t in (g["params"] if isinstance(g, dict) else (g,))]
+    return bool(tensors) and all(t.is_cuda and t.is_floating_point() for t in tensors)
+
+
+def _fused(cls, params: list, **kwargs):
+    if _can_fuse(params):
+        try:
+            return cls(params, fused=True, **kwargs)
+        except (RuntimeError, TypeError, ValueError):
+            pass
+    return cls(params, **kwargs)
+
+
 OPTIMIZERS: dict[str, OptimizerDef] = {d.id: d for d in [
-    OptimizerDef("AdamW", "AdamW", lambda p, s: torch.optim.AdamW(p, lr=s.learning_rate, weight_decay=s.weight_decay),
+    OptimizerDef("AdamW", "AdamW", lambda p, s: _fused(torch.optim.AdamW, p, lr=s.learning_rate, weight_decay=s.weight_decay),
                  note="The reliable default."),
-    OptimizerDef("Adam", "Adam", lambda p, s: torch.optim.Adam(p, lr=s.learning_rate, weight_decay=s.weight_decay),
+    OptimizerDef("Adam", "Adam", lambda p, s: _fused(torch.optim.Adam, p, lr=s.learning_rate, weight_decay=s.weight_decay),
                  note="AdamW without decoupled weight decay; same LRs."),
     OptimizerDef("Adafactor", "Adafactor", lambda p, s: torch.optim.Adafactor(p, lr=s.learning_rate, weight_decay=s.weight_decay),
                  lr_hint="1e-4 – 1e-3", note="Factored second moments: least optimizer memory."),
     OptimizerDef("Lion", "Lion", lambda p, s: Lion(p, lr=s.learning_rate, weight_decay=s.weight_decay),
                  lr_hint="1e-5 – 3e-5", note="One moment; use a 3–10× lower LR than AdamW."),
-    OptimizerDef("SGD", "SGD (momentum)", lambda p, s: torch.optim.SGD(p, lr=s.learning_rate, weight_decay=s.weight_decay, momentum=0.9),
+    OptimizerDef("SGD", "SGD (momentum)", lambda p, s: _fused(torch.optim.SGD, p, lr=s.learning_rate, weight_decay=s.weight_decay, momentum=0.9),
                  lr_hint="1e-3", note="Plain momentum, no per-weight scaling: needs a much higher LR and patience."),
     OptimizerDef("RMSprop", "RMSprop", lambda p, s: torch.optim.RMSprop(p, lr=s.learning_rate, weight_decay=s.weight_decay),
                  note="Adam's scaling without momentum; rarely better for LoRAs."),

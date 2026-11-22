@@ -5,6 +5,11 @@ and Manager show.
 
 ## Unreleased
 
+- **Faster int8/packed backward kernels (CUDA and ROCm), lighter offloading, and automatic free-VRAM checkpointing.**
+  - **CUDA W8A8 backward (`w8a8_cuda`):** single-pass register-cached row quantizers for layer widths up to 16,384 (no second global read of the gradient), a `BM=64` two-stage tile (2 CTAs/SM) when `BM=128` under-fills the GPU on small token counts (512 px images and text blocks), bank-conflict-free Hadamard digit-3 shared memory (`stride=260`), coalesced residual loads and output stores, and lower register pressure (210 vs 234 regs).
+  - **ROCm / Triton backward (`w8a8_backward`, `w8a16_backward`, `qk_norm_rope`):** fused `H16 ⊗ H16` Hadamard-256 + residual Triton kernel (one bf16 rounding instead of two, no separate residual add pass), fused residual epilogue for unrotated int8 layers, even-dimension vectorized loads and L2 launch swizzling, single-pass quantize for `N <= 2048`, multi-head `qk_norm_rope` backward sharing `freqs` and norm weights across heads, cached `ones` vector in `_int8_forward` (and skipping the unfused HIP `addcmul` wrapper on ROCm).
+  - **Dynamic offloading and free-VRAM checkpointing:** tiny offloaded modules (norms, q/k norms, biases <= 256 KB) stay resident on the GPU so they no longer cause synchronous H2D stalls or break 2-stream overlap; offloaded checkpointed blocks skip redundant GPU weight clones during forward and cache streamed int8/packed weights across recompute -> backward (cutting PCIe copies from 3 passes to 2); when `_tighten()` fits 100% of a model's weights onto the GPU, remaining free VRAM now enables `checkpoint_save="attention"` (when spare VRAM >= 1 GB) and unlocks `grad_checkpoint_skip="auto"` automatically, and OOM back-off drops kept blocks -> attention saving -> model weights in priority order.
+  - **Optimizer and EMA step:** `AdamW`, `Adam`, and `SGD` use PyTorch's fused CUDA/ROCm kernels; `EMA.update` and `Lion.step` run as multi-tensor `_foreach` ops instead of per-parameter Python loops.
 - **Changing the learning rate mid-run works with Automagic.** Automagic keeps its own rate, set
   once from the run's at its first step, so the run page's learning rate changed nothing it used. Its
   rate now moves to the one you set, its floor and ceiling with it, and it adapts on from there
