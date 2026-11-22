@@ -1303,6 +1303,8 @@ class Trainer:
         the highest resolution so far count. While a stage change blends, the lower one's steps peak
         lower, and fitting on them kept more blocks than the higher one holds (Krea 2, 768 -> 1024:
         out of VRAM at 10 kept, 1.6 GB each)."""
+        if hasattr(self, "_keep_step_cost"):
+            self._keep_step_cost.clear()
         if res < getattr(self, "_res_seen", 0):
             return
         self._keep_warm = getattr(self, "_keep_warm", 0) + 1
@@ -1311,11 +1313,14 @@ class Trainer:
 
     def _kept(self, n: int) -> int:
         """The last n blocks un-checkpointed (memory.grad_checkpoint_skip "auto"), each measured
-        while it runs that way: what it still holds after its forward is what it keeps for backward."""
+        while it runs that way: what it still holds after its forward is what it keeps for backward.
+        Sums across multiple forwards within one step (e.g. batch_size > 1 with split caption
+        lengths or objective.preserve, where all forwards' activations stay alive until backward)."""
         ck = self._ckpt
         hooks = getattr(self, "_keep_hooks", None)
         if hooks is None:
             self._keep_cost: dict[int, int] = {}
+            self._keep_step_cost: dict[int, int] = {}
             hooks = self._keep_hooks = []
             for i, b in enumerate(ck.all):
                 def pre(mod, args, i=i):
@@ -1325,7 +1330,13 @@ class Trainer:
                 def post(mod, args, out, i=i):
                     m0 = mod.__dict__.pop("_zt_mem", None)
                     if m0 is not None:
-                        self._keep_cost[i] = max(self._keep_cost.get(i, 0), torch.cuda.memory_allocated() - m0)
+                        delta = max(0, torch.cuda.memory_allocated() - m0)
+                        step_cost = getattr(self, "_keep_step_cost", None)
+                        if step_cost is not None:
+                            step_cost[i] = step_cost.get(i, 0) + delta
+                            self._keep_cost[i] = max(self._keep_cost.get(i, 0), step_cost[i])
+                        else:
+                            self._keep_cost[i] = max(self._keep_cost.get(i, 0), delta)
 
                 hooks += [b.register_forward_pre_hook(pre), b.register_forward_hook(post)]
         return ck.keep(n)
@@ -1334,13 +1345,15 @@ class Trainer:
         for h in getattr(self, "_keep_hooks", None) or []:
             h.remove()
         self._keep_hooks = None
+        self._keep_step_cost = {}
 
     def _arm_eager_keep_probe(self) -> None:
         """When compile_blocks and grad_checkpoint_skip='auto' are both on, speed-run the kept
         block count while eager before torch.compile builds any graphs:
-          - stage 1 (step 1): 1 main block un-checkpointed -> measure cost and jump to `want`
-          - stage 2 (step 2): verify `want` fits without OOM (backing off eagerly if it does),
-            top up from the real measured peak if room remains, unhook, and turn compile on."""
+          - stage 1 (step 1): 1 main block un-checkpointed -> measure per-step cost and jump to `want`
+          - stage 2+ (up to 3 eager steps): verify `want` fits without OOM (binary-searching
+            eagerly if it does instead of locking a low ceiling), top up from the real measured
+            peak if room remains, unhook, and turn compile on once settled."""
         if not (getattr(self, "_keep_auto", False) and getattr(self, "_compiled", 0)):
             return
         self._kept(1)
@@ -1353,8 +1366,9 @@ class Trainer:
         torch.compiler.set_stance("default")
 
     def _bucket_scale(self) -> float:
-        """Ratio of the active stage's largest bucket (spatial*temporal volume) to the current step's,
-        at least 1.0, so a one-shot un-checkpoint jump leaves room for larger buckets."""
+        """Ratio of the active stage's largest bucket (batch * spatial * temporal volume) to the
+        current step's, at least 1.0, so a one-shot un-checkpoint jump leaves room for larger or
+        fuller buckets (e.g. step 1 landing on a 1-image bucket when batch_size=2)."""
         import math
 
         buckets = getattr(self, "_step_buckets", None) or getattr(getattr(self, "dataset", None), "buckets", None)
@@ -1362,9 +1376,10 @@ class Trainer:
         if not buckets or not key:
             return 1.0
         cur_shape = key[0][0]  # (B, C, [T,] h, w)
-        cur_vol = math.prod(cur_shape[2:]) if len(cur_shape) >= 4 else 0
-        max_vol = max((math.prod(s[1:]) for s in buckets
-                       if isinstance(s, tuple) and len(s) >= 3 and all(isinstance(d, int) for d in s[1:])),
+        cur_vol = cur_shape[0] * math.prod(cur_shape[2:]) if len(cur_shape) >= 4 else 0
+        bs = max(1, getattr(getattr(self, "batches", None), "batch_size", cur_shape[0] if cur_shape else 1))
+        max_vol = max((min(bs, len(idxs)) * math.prod(s[1:]) for s, idxs in buckets.items()
+                       if isinstance(s, tuple) and len(s) >= 3 and all(isinstance(d, int) for d in s[1:]) and idxs),
                       default=0)
         if cur_vol <= 0 or max_vol <= cur_vol:
             return 1.0
@@ -1394,22 +1409,25 @@ class Trainer:
             # 1->2->4->8->16->32 across 6 recompile waves.
             cap = ceiling if settle else min(ceiling, 2 * ck.kept)
             want = max(0, min(cap, ck.kept + int(spare // cost)))
-            if want != ck.kept:
+            moved = want != ck.kept
+            if moved:
                 was = ck.kept
                 if settle or getattr(self, "_compiled", 0):
                     ck.keep(want)  # never re-register forward hooks on compiled blocks
                 else:
                     self._kept(want)
                 gb = 1024 ** 3
-                tag = ", pre-compile probe" if settle == 1 else ", pre-compile settle" if settle == 2 else ""
+                tag = ", pre-compile probe" if settle == 1 else ", pre-compile settle" if settle else ""
                 logging.info("[ZenTrainer] training peaked at %.1f GB of %.1f: blocks un-checkpointed %d -> %d "
                              "of %d (%.2f GB each%s)", self._peak / gb, (total - others) / gb, was, want, len(ck.all),
                              cost / gb, tag)
-            if settle == 1 and ck.kept > 0:
-                # Stay eager one more step to verify `want` fits without OOM and top up from the real peak.
-                self._keep_settle = 2
-            elif settle:
-                self._finish_eager_settle()
+            if settle:
+                # Verify any upward move eagerly (at most 3 settle steps) before compiling once;
+                # once settled (didn't move, reached full/ceiling, or hit 0), finish and compile.
+                if ck.kept > 0 and (settle == 1 or (moved and settle < 3 and ck.kept < ceiling)):
+                    self._keep_settle = settle + 1
+                else:
+                    self._finish_eager_settle()
         self._peak = 0
         torch.cuda.reset_peak_memory_stats()
 
@@ -1419,6 +1437,8 @@ class Trainer:
         ck = getattr(self, "_ckpt", None)
         if not getattr(self, "_keep_auto", False) or not ck or not ck.kept:
             return False
+        if hasattr(self, "_keep_step_cost"):
+            self._keep_step_cost.clear()
         cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
@@ -1429,7 +1449,11 @@ class Trainer:
             drop = max(drop, (was + 1) // 2)
         target = max(0, was - drop)
         settle = getattr(self, "_keep_settle", 0)
-        self._keep_ceiling = ck.keep(target) if (settle or getattr(self, "_compiled", 0)) else self._kept(target)
+        new_kept = ck.keep(target) if (settle or getattr(self, "_compiled", 0)) else self._kept(target)
+        # During eager settle, `was` is what OOMed so cap just below `was` (was - 1) rather than
+        # locking at the halved `target`: if `target` succeeds with GBs to spare, the next eager
+        # step steps cleanly into (target, was - 1] instead of leaving VRAM unused.
+        self._keep_ceiling = min(getattr(self, "_keep_ceiling", len(ck.all)), was - 1) if settle else new_kept
         if settle and target == 0:
             # Nothing left to keep: stop eager settling and compile fully checkpointed.
             self._finish_eager_settle()

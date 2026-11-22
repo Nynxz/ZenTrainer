@@ -167,11 +167,12 @@ def test_back_off_kept_during_eager_probe_exits_eager_and_does_not_rehook(monkey
     assert t._keep_settle == 1 and t._keep_hooks is not None and stances == ["force_eager"]
 
     # OOM during stage-2 verification with 4 kept: backs off eagerly (still force_eager so retry is verified eager!)
+    # Ceiling is set to was - 1 (3), NOT halved target (2), so if 2 succeeds with spare VRAM it can still try 3!
     t._keep_settle = 2
     t._ckpt.kept = 4
     t._keep_cost = {0: int(0.5 * 1024 ** 3)}
     assert t._back_off_kept() is True
-    assert t._keep_settle == 2 and t._ckpt.kept == 2 and stances == ["force_eager"]
+    assert t._keep_settle == 2 and t._ckpt.kept == 2 and t._keep_ceiling == 3 and stances == ["force_eager"]
 
     # OOM down to 0 kept: exits eager settle immediately and restores compile stance
     t._backoffs = T.TIGHTEN_RETRIES - 1
@@ -180,6 +181,37 @@ def test_back_off_kept_during_eager_probe_exits_eager_and_does_not_rehook(monkey
     assert t._keep_hooks is None
     assert t._ckpt.kept == 0
     assert stances == ["force_eager", "default"]
+
+
+def test_kept_hooks_sum_across_multiple_forwards_in_one_step(monkeypatch):
+    # Simulate batch_size=2 with split captions calling the same un-checkpointed block TWICE before backward
+    alloc = [100 * 1024 ** 2]
+    monkeypatch.setattr(T.torch.cuda, "memory_allocated", lambda: alloc[0])
+
+    t = T.Trainer.__new__(T.Trainer)
+    b = nn.Linear(4, 4)
+    t._ckpt = types.SimpleNamespace(all=[b], kept=0, keep=lambda n: n)
+    t._kept(1)
+
+    orig_fwd = b.forward
+
+    def grow_fwd(x):
+        alloc[0] += 500 * 1024 ** 2  # +500 MB per forward call
+        return orig_fwd(x)
+
+    b.forward = grow_fwd
+    x = torch.randn(1, 4, requires_grad=True)
+    # Two forward calls in the same step -> 500 MB + 500 MB = 1000 MB total alive for backward!
+    _ = b(x)
+    _ = b(x)
+    assert t._keep_cost[0] == 1000 * 1024 ** 2
+    t._unhook_kept()
+
+    # Step 1 landing on a 1-image bucket when batch_size=2 scales by 2x for full 2-image buckets
+    t._step_key = (((1, 16, 48, 48), "None"),)
+    t.batches = types.SimpleNamespace(batch_size=2)
+    t.dataset = types.SimpleNamespace(buckets={(16, 48, 48): [0], (16, 48, 48): [0, 1]})
+    assert t._bucket_scale() == 2.0
 
 
 def test_shared_compiled_blocks_eager_probe_then_compile_gradients_match(monkeypatch):
