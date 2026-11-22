@@ -5,6 +5,11 @@ and Manager show.
 
 ## Unreleased
 
+- **Fused int8/packed LoRA bypass with training adapters, base LoRAs, turbo previews and sliders.**
+  Attaching a `training_adapter` (such as MiniMax-H3-Image's de-distillation LoRA), a `base_lora`,
+  a `samples.turbo_lora`, or training a slider previously fell back to the unfused int8 bypass path
+  for every linear layer. Plain LoRAs inside `_Assisted` (including sliced frozen adapters) now stay
+  on the fused `_LoRAInt8` forward and backward residual path (1.35x faster per layer on RTX 5090).
 - **Faster int8/packed backward kernels (CUDA and ROCm), lighter offloading, and automatic free-VRAM checkpointing.**
   - **CUDA W8A8 backward (`w8a8_cuda`):** single-pass register-cached row quantizers for layer widths up to 16,384 (no second global read of the gradient), a `BM=64` two-stage tile (2 CTAs/SM) when `BM=128` under-fills the GPU on small token counts (512 px images and text blocks), bank-conflict-free Hadamard digit-3 shared memory (`stride=260`), coalesced residual loads and output stores, and lower register pressure (210 vs 234 regs).
   - **ROCm / Triton backward (`w8a8_backward`, `w8a16_backward`, `qk_norm_rope`):** fused `H16 ⊗ H16` Hadamard-256 + residual Triton kernel (one bf16 rounding instead of two, no separate residual add pass), fused residual epilogue for unrotated int8 layers, even-dimension vectorized loads and L2 launch swizzling, single-pass quantize for `N <= 2048`, multi-head `qk_norm_rope` backward sharing `freqs` and norm weights across heads, cached `ones` vector in `_int8_forward` (and skipping the unfused HIP `addcmul` wrapper on ROCm).
