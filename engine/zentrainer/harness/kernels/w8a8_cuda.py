@@ -25,9 +25,12 @@ from pathlib import Path
 
 import torch
 
-SMEM = 3 * (128 * 64 + 64 * 256)  # the GEMM's pipeline: three stages of a 128 x 64 and a 64 x 256 tile
-_NAMES = ("zt_quantize_rows", "zt_w8a8_gemm_rot", "zt_w8a8_gemm")
+SMEM = 3 * (128 * 64 + 64 * 256)  # the BM=128 GEMM's pipeline: three stages of 128x64 and 64x256
+SMEM64 = 2 * (64 * 64 + 64 * 256)  # the BM=64 GEMM's pipeline: two stages of 64x64 and 64x256 (2 CTAs/SM)
+_NAMES = ("zt_quantize_rows", "zt_quantize_rows_4k", "zt_quantize_rows_8k", "zt_quantize_rows_16k",
+          "zt_w8a8_gemm_rot", "zt_w8a8_gemm", "zt_w8a8_gemm64_rot", "zt_w8a8_gemm64")
 _kernels: dict[int, dict | None] = {}  # by device: its kernels, or None if they couldn't load
+_sms: dict[int, int] = {}  # SM count per device, to pick BM=64 when BM=128 under-fills the card
 
 
 def _load(device: torch.device) -> dict | None:
@@ -48,8 +51,11 @@ def _load(device: torch.device) -> dict | None:
         with torch.cuda.device(idx):
             ptx, _ = _nvrtc_compile(src, _NAMES[0], f"{major}{minor}", None, ["-std=c++17"])
             ks = _cuda_load_module(ptx, list(_NAMES))
-            for n in _NAMES[1:]:
+            for n in ("zt_w8a8_gemm_rot", "zt_w8a8_gemm"):
                 ks[n].set_shared_memory_config(SMEM)
+            for n in ("zt_w8a8_gemm64_rot", "zt_w8a8_gemm64"):
+                ks[n].set_shared_memory_config(SMEM64)
+        _sms[idx] = torch.cuda.get_device_properties(idx).multi_processor_count
         _kernels[idx] = ks
         logging.info("[ZenTrainer] int8 backward: CUDA kernels compiled for sm_%d%d", major, minor)
     except Exception:
@@ -104,12 +110,33 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
     res = residual is not None
     if res:
         residual = residual.to(torch.bfloat16).reshape(m, k).contiguous()
+        if residual.data_ptr() % 16 != 0:
+            residual = residual.clone()  # uint2/uint4 vector loads require 16-byte alignment
     stream = torch.cuda.current_stream(grad_2d.device)
-    ks["zt_quantize_rows"](grid=(m, 1, 1), block=(256, 1, 1), args=[grad_2d, scale, gq, steps, seed, n, grad_2d.stride(0)],
-                           stream=stream)
-    ks["zt_w8a8_gemm_rot" if rotate else "zt_w8a8_gemm"](grid=((k // 256) * ((m + 127) // 128), 1, 1), block=(256, 1, 1),
-                                                         args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
-                                                         shared_mem=SMEM, stream=stream)
+    if n <= 4096:
+        qname, qblock = "zt_quantize_rows_4k", 256
+    elif n <= 8192:
+        qname, qblock = "zt_quantize_rows_8k", 256
+    elif n <= 16384:
+        qname, qblock = "zt_quantize_rows_16k", 512
+    else:
+        qname, qblock = "zt_quantize_rows", 256
+    ks[qname](grid=(m, 1, 1), block=(qblock, 1, 1), args=[grad_2d, scale, gq, steps, seed, n, grad_2d.stride(0)],
+              stream=stream)
+    idx = grad_2d.device.index if grad_2d.device.index is not None else torch.cuda.current_device()
+    n_k = k // 256
+    ctas_128 = n_k * ((m + 127) // 128)
+    # BM=64 (128 threads, 40 KB SMEM -> 2 CTAs/SM) fills the SMs on small-M shapes (512 px, text blocks)
+    if ctas_128 < _sms.get(idx, 64) * 2 and m <= 2048:
+        gname = "zt_w8a8_gemm64_rot" if rotate else "zt_w8a8_gemm64"
+        ks[gname](grid=(n_k * ((m + 63) // 64), 1, 1), block=(128, 1, 1),
+                  args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
+                  shared_mem=SMEM64, stream=stream)
+    else:
+        gname = "zt_w8a8_gemm_rot" if rotate else "zt_w8a8_gemm"
+        ks[gname](grid=(ctas_128, 1, 1), block=(256, 1, 1),
+                  args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
+                  shared_mem=SMEM, stream=stream)
     return out
 
 

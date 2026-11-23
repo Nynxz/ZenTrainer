@@ -60,3 +60,150 @@ def test_quantized_weights_copy_their_storage():
     c = offload._own(q)
     assert type(c) is type(q) and c._qdata.data_ptr() != q._qdata.data_ptr()
     assert torch.equal(c.dequantize(), q.dequantize())
+
+
+def test_skip_guard_avoids_clone_during_checkpoint_forward(comfy_ops):
+    offload.guard_backward(True)
+    w, b = torch.ones(2, 2), torch.ones(2)
+    comfy_ops.result = (w, b, ("offload-stream", w, b))
+    with offload.skip_guard():
+        weight, bias, _ = comfy_ops.cast_bias_weight("layer", offloadable=True)
+        assert weight is w and bias is b
+    # outside skip_guard (recompute): cloned again
+    weight, bias, _ = comfy_ops.cast_bias_weight("layer", offloadable=True)
+    assert weight is not w and bias is not b
+
+
+def test_recompute_cache_stashes_and_pops_streamed_quantized_weights(comfy_ops):
+    class QuantizedTensor:
+        def __init__(self, qdata):
+            self._qdata = qdata
+
+        def _copy_with(self, qdata=None):
+            return QuantizedTensor(qdata if qdata is not None else self._qdata.clone())
+
+    m = torch.nn.Module()
+    m.quant_format = "int8_tensorwise"
+    w = QuantizedTensor(torch.zeros(64, 64, dtype=torch.int8))
+    offload.guard_backward(True)
+    comfy_ops.result = (w, None, ("offload-stream", w, None))
+    with offload.recompute_scope():
+        with torch.no_grad():
+            comfy_ops.cast_bias_weight(m, offloadable=True)
+    got = offload.pop_recompute_weight(m)
+    assert got is not None and got is not w and got._qdata.data_ptr() != w._qdata.data_ptr()
+    assert offload.pop_recompute_weight(m) is None  # popped once, freed immediately
+    offload.clear_recompute_weights()
+
+
+def test_pop_recompute_weight_does_not_guard_module_id_under_compile():
+    """Empty recompute cache must not emit ___check_obj_id guards across compiled blocks."""
+    from torch._dynamo.testing import CompileCounter
+
+    offload.clear_recompute_weights()
+    torch._dynamo.reset()
+
+    class _Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.randn(4, 4))
+
+        def forward(self, x):
+            cached = offload.pop_recompute_weight(self)
+            return x @ (cached if cached is not None else self.w)
+
+    blocks = [_Block() for _ in range(4)]
+    x = torch.randn(2, 4)
+    counter = CompileCounter()
+    compiled = torch.compile(_Block.forward, backend=counter)
+    for b in blocks:
+        compiled(b, x)
+    assert counter.frame_count == 1
+    torch._dynamo.reset()
+
+
+def test_keep_small_resident_promotes_only_tiny_offloaded_modules(monkeypatch):
+    mm = types.ModuleType("comfy.model_management")
+    mm.module_size = lambda mod: sum(p.nbytes for p in mod.parameters(recurse=False))
+    comfy = types.ModuleType("comfy")
+    comfy.model_management = mm
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(64)  # 512 B -> promoted
+            self.big = torch.nn.Linear(512, 512, bias=False)  # 1 MB -> stays offloaded
+            self.norm.comfy_cast_weights = True
+            self.norm.prev_comfy_cast_weights = False
+            self.model_lowvram = True
+            self.model_loaded_weight_memory = 0
+
+    model = TinyModel()
+    moved = []
+
+    def fake_to(self, dev):
+        moved.append(self)
+        return self
+
+    monkeypatch.setattr(torch.nn.Module, "to", fake_to)
+    unpinned = []
+    patcher = types.SimpleNamespace(
+        model=model,
+        load_device=torch.device("cuda", 0),
+        unpin_weight=lambda k: unpinned.append(k),
+    )
+    n, nbytes = offload.keep_small_resident(patcher, max_bytes=4096)
+    assert n == 1 and nbytes == 512
+    assert moved == [model.norm]
+    assert model.norm.comfy_patched_weights is True
+    assert model.norm.comfy_cast_weights is False and not hasattr(model.norm, "prev_comfy_cast_weights")
+    assert not getattr(model.big, "comfy_patched_weights", False)
+    assert set(unpinned) == {"norm.weight", "norm.bias"}
+    assert model.model_loaded_weight_memory == 512
+
+
+def test_backoff_kept_blocks_budget_does_not_starve_attention_saving_or_offload(monkeypatch):
+    """Three kept-block OOM drops must not exhaust the retry budget before attention saving runs."""
+    from zentrainer.harness.trainer import Trainer
+
+    mm = types.ModuleType("comfy.model_management")
+    mm.soft_empty_cache = lambda: None
+    comfy = types.ModuleType("comfy")
+    comfy.model_management = mm
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+
+    class FakeCkpt:
+        def __init__(self):
+            self.all = list(range(10))
+            self.kept = 8
+            self.saving_attention = True
+
+        def keep(self, n):
+            self.kept = max(0, n)
+            return self.kept
+
+        def set_save_attention(self, on):
+            changed = self.saving_attention != on
+            self.saving_attention = on
+            return changed
+
+    t = Trainer.__new__(Trainer)
+    t._ckpt = FakeCkpt()
+    t._keep_auto = True
+    t._keep_cost = {0: 512 * 1024 ** 2}
+    t._kept = t._ckpt.keep
+    t._auto_vram = lambda: False
+    t.optimizer = types.SimpleNamespace(zero_grad=lambda set_to_none=True: None)
+
+    # First 3 OOMs drop kept blocks down to 0 (8 -> 5 -> 2 -> 0)
+    assert t._back_off(RuntimeError("oom")) and t._ckpt.kept > 0
+    assert t._back_off(RuntimeError("oom")) and t._ckpt.kept > 0
+    assert t._back_off(RuntimeError("oom")) and t._ckpt.kept == 0
+    assert t._ckpt.saving_attention is True
+    # 4th OOM must still be allowed to disable selective attention saving
+    assert t._back_off(RuntimeError("oom"))
+    assert t._ckpt.saving_attention is False

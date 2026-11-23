@@ -5,6 +5,7 @@ import torch
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available() or torch.version.hip is not None
                           or torch.cuda.get_device_capability() < (8, 0), reason="needs an NVIDIA card, sm_80+")
+gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
 
 
 def _regular_hadamard(size: int) -> torch.Tensor:  # ConvRot's: H4 x H4 x ..., normalised
@@ -189,3 +190,48 @@ def test_the_fused_lora_skips_the_input_gradient_nothing_needs(monkeypatch):
     assert not calls
     for a, b in zip(got, ref):
         assert torch.allclose(a, b)
+
+
+@cuda
+@pytest.mark.parametrize("n", [256, 4096, 6144, 16384])
+def test_1pass_quantizers_match_2pass_bit_exact(n):
+    """Single-pass register-cached quantizers (4k, 8k, 16k) must match zt_quantize_rows bit-for-bit."""
+    from zentrainer.harness.kernels import w8a8_cuda
+
+    torch.manual_seed(7)
+    m = 37
+    g = torch.randn(m, n, device="cuda", dtype=torch.bfloat16)
+    s = torch.rand(n, device="cuda") * 0.01 + 0.001
+    seed = torch.tensor([11], device="cuda", dtype=torch.int32)
+    ks = w8a8_cuda._load(g.device)
+    gq0, st0 = torch.empty((m, n), device="cuda", dtype=torch.int8), torch.empty(m, device="cuda")
+    gq1, st1 = torch.empty_like(gq0), torch.empty_like(st0)
+    ks["zt_quantize_rows"](grid=(m, 1, 1), block=(256, 1, 1), args=[g, s, gq0, st0, seed, n, g.stride(0)])
+    qname, qblk = (("zt_quantize_rows_4k", 256) if n <= 4096 else
+                   ("zt_quantize_rows_8k", 256) if n <= 8192 else ("zt_quantize_rows_16k", 512))
+    ks[qname](grid=(m, 1, 1), block=(qblk, 1, 1), args=[g, s, gq1, st1, seed, n, g.stride(0)])
+    assert torch.equal(gq0, gq1) and torch.equal(st0, st1)
+
+
+@gpu
+def test_triton_hadamard256_residual_and_int8_matmul_residual():
+    """The Triton W8A8 path (ROCm's primary path) fuses residual into int8_matmul and hadamard256."""
+    from zentrainer.harness.kernels import w8a8_backward as wb
+
+    if not wb.TRITON_AVAILABLE:
+        pytest.skip("no Triton")
+    torch.manual_seed(9)
+    m, n, k = 130, 256, 512
+    a = torch.randint(-127, 127, (m, n), device="cuda", dtype=torch.int8)
+    b = torch.randint(-127, 127, (n, k), device="cuda", dtype=torch.int8)
+    steps = torch.rand(m, device="cuda", dtype=torch.float32) * 0.01 + 0.001
+    res = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+
+    exact = (a.double() @ b.double()) * steps.double()[:, None]
+    out_res = wb.int8_matmul(a, b, steps, res).double()
+    want_res = exact + res.double()
+    assert ((out_res - want_res).norm() / want_res.norm()).item() < 3e-3
+
+    out_rot = wb.hadamard256_residual(wb.int8_matmul(a, b, steps), res).double()
+    want_rot = (exact.view(m, k // 256, 256) @ _regular_hadamard(256).cuda().T).view(m, k) + res.double()
+    assert ((out_rot - want_rot).norm() / want_rot.norm()).item() < 4e-3

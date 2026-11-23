@@ -99,6 +99,33 @@ def _patch_saving(m) -> None:
     m.forward = torch.compile(checkpointed(inner), dynamic=True) if inner is not None else checkpointed(org)
 
 
+def _patch_offload_block(m) -> None:
+    """Non-reentrant block checkpoint for offloaded models: skips guard_backward's weight clones
+    during the forward pass (saved tensors are discarded) and caches streamed int8/packed weights
+    across the block's recompute -> backward so they cross PCIe twice a step instead of three times."""
+    import torch
+
+    from .offload import recompute_scope, skip_guard
+
+    org = m.forward
+
+    def checkpointing_fwd(*args, **kwargs):
+        recomputing = [False]
+
+        def run(a, kw):
+            if recomputing[0]:
+                with recompute_scope():
+                    return org(*a, **kw)
+            recomputing[0] = True
+            with skip_guard():
+                return org(*a, **kw)
+
+        return torch.utils.checkpoint.checkpoint(run, args, kwargs, use_reentrant=False)
+
+    m.org_forward = org
+    m.forward = checkpointing_fwd
+
+
 @contextmanager
 def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloading: bool, skip: int = 0,
                            save: str = "none") -> Iterator[int]:
@@ -116,30 +143,16 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     import torch.nn as nn
 
     if not enabled:
-        yield types.SimpleNamespace(blocks=0, input_grad=False, all=[], kept=0, keep=lambda n: 0)
+        yield types.SimpleNamespace(blocks=0, input_grad=False, all=[], kept=0, allow_keep=False,
+                                    saving_attention=False, set_save_attention=lambda on: False, keep=lambda n: 0)
         return
-    from comfy_extras.nodes_train import patch, unpatch
+    from comfy_extras.nodes_train import patch as comfy_patch, unpatch
 
-    if save == "attention" and not hasattr(__import__("torch").utils.checkpoint, "create_selective_checkpoint_contexts"):
+    can_save = hasattr(__import__("torch").utils.checkpoint, "create_selective_checkpoint_contexts")
+    if save == "attention" and not can_save:
         # selective checkpointing is torch 2.4's: an older ComfyUI's torch checkpoints whole blocks
         logging.info("[ZenTrainer] checkpoints keep nothing, not attention: this torch has no selective checkpointing (2.4+)")
         save = "none"
-    if save == "attention" and not offloading:  # (offloading checkpoints per layer: untested there)
-        comfy_patch = patch
-
-        sharp: set[int] = set()
-
-        def patch(m, offloading=False):  # noqa: F811
-            i = next((i for i, b in enumerate(every) if b is m), None)
-            if i is not None and (peak := _qk_peak(m)) > SHARP_QK and i not in sharp:
-                sharp.add(i)
-                name = next((n for n, x in diffusion_model.named_modules() if x is m), f"block {i}")
-                logging.info("[ZenTrainer] %s keeps nothing, not attention: its attention is too sharp for it "
-                             "(q x k norm weights %.0f)", name, peak)
-            if i is not None and i not in sharp:
-                _patch_saving(m)
-            else:
-                comfy_patch(m, offloading=offloading)
 
     every = block_lists(diffusion_model, max(1, depth))
     if not every:  # no repeated blocks (unusual): fall back to the top-level children
@@ -148,30 +161,65 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     # Krea 2's last blocks are its four small text-fusion ones, which run on the caption only
     size = [sum(p.numel() for p in b.parameters()) for b in every]
     order = sorted(range(len(every) - 1, -1, -1), key=lambda i: -size[i])
-    state = types.SimpleNamespace(blocks=0, input_grad=False, all=every, kept=0)
+    state = types.SimpleNamespace(blocks=0, input_grad=False, all=every, kept=0, allow_keep=not offloading,
+                                  saving_attention=save == "attention" and not offloading)
+    sharp: set[int] = set()
+
+    def patch_block(i: int, m) -> None:
+        if state.saving_attention:
+            if i not in sharp and (peak := _qk_peak(m)) > SHARP_QK:
+                sharp.add(i)
+                name = next((n for n, x in diffusion_model.named_modules() if x is m), f"block {i}")
+                logging.info("[ZenTrainer] %s keeps nothing, not attention: its attention is too sharp for it "
+                             "(q x k norm weights %.0f)", name, peak)
+            if i not in sharp:
+                _patch_saving(m)
+            else:
+                comfy_patch(m, offloading=False)
+        elif offloading and not isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+            _patch_offload_block(m)
+        else:
+            comfy_patch(m, offloading=offloading)
 
     def keep(n: int) -> int:
         """The n blocks of `order` un-checkpointed, the rest checkpointed; between steps too
-        (memory.grad_checkpoint_skip "auto" moves it as it measures). Fixed with offloading: kept
-        blocks' weights would stream too, and the loose layers patched below assume the start's."""
+        (memory.grad_checkpoint_skip "auto" moves it as it measures). Blocked while weights are
+        offloaded (kept blocks' weights would stream too); enabled automatically once _tighten()
+        fits the whole model onto the GPU."""
         n = min(max(0, n), len(every))
-        if state.blocks and (offloading or n == state.kept):
+        if state.blocks and (n == state.kept or (n > 0 and not state.allow_keep)):
             return state.kept
         kept = set(order[:n])
         for i, m in enumerate(every):
             if i not in kept and not hasattr(m, "org_forward"):
-                patch(m, offloading=offloading)
+                patch_block(i, m)
             elif i in kept and hasattr(m, "org_forward"):
                 unpatch(m)
         state.kept, state.blocks = n, len(every) - n
         return n
 
+    def set_save_attention(on: bool) -> bool:
+        """Toggle selective attention saving on currently checkpointed blocks between steps:
+        turned on once _tighten() fits 100% of weights onto the GPU, and off first on OOM."""
+        on = bool(on)
+        if on and not can_save:
+            return False
+        if on == state.saving_attention:
+            return False
+        state.saving_attention = on
+        for i, m in enumerate(every):
+            if hasattr(m, "org_forward"):
+                unpatch(m)
+                patch_block(i, m)
+        return True
+
     keep(skip)
     blocks = [m for m in every if hasattr(m, "org_forward")]
     logging.info("[ZenTrainer] gradient checkpointing on %d blocks (depth %d%s%s)", len(blocks), depth,
                  f", {state.kept} kept" if state.kept else "",
-                 ", attention kept" if save == "attention" and not offloading else "")
+                 ", attention kept" if state.saving_attention else "")
     state.keep = keep
+    state.set_save_attention = set_save_attention
     if offloading:
         # An offloaded layer's weight lives in a streaming buffer that the next layers reuse, so
         # autograd can't keep it for backward ("modified by an inplace operation" on step one).
@@ -186,7 +234,7 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
                  if id(m) not in inside and next(m.children(), None) is None
                  and isinstance(getattr(m, "weight", None), torch.Tensor)]
         for m in loose:
-            patch(m, offloading=False)
+            comfy_patch(m, offloading=False)
         if loose:
             logging.info("[ZenTrainer] %d layers outside the checkpointed blocks recompute too (offloaded weights)", len(loose))
     # ComfyUI's per-layer offload checkpoint (a custom autograd Function, used when a patched

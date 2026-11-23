@@ -26,9 +26,30 @@ class EMA:
 
     @torch.no_grad()
     def update(self, step: int) -> None:
-        d = self.rate(step)
+        w = 1.0 - self.rate(step)
+        # group by device and whether params are already fp32 so the update is one multi-tensor kernel
+        fp32: dict[torch.device, tuple[list[torch.Tensor], list[torch.Tensor]]] = {}
+        other: dict[torch.device, tuple[list[torch.Tensor], list[torch.Tensor]]] = {}
         for k, p in self.params.items():
-            self.shadow[k].lerp_(p.detach().float(), 1.0 - d)
+            s = self.shadow[k]
+            dst = fp32 if p.dtype == torch.float32 else other
+            ss, ps = dst.setdefault(s.device, ([], []))
+            ss.append(s)
+            ps.append(p.detach())
+        for ss, ps in fp32.values():
+            torch._foreach_lerp_(ss, ps, w)
+        for ss, ps in other.values():
+            # Convert low-precision adapters in bounded chunks (~16 MB fp32) to avoid peak VRAM spikes
+            cs, cp, n = [], [], 0
+            for s, p in zip(ss, ps):
+                if cs and n + p.numel() > (1 << 22):
+                    torch._foreach_lerp_(cs, cp, w)
+                    cs, cp, n = [], [], 0
+                cs.append(s)
+                cp.append(p.float())
+                n += p.numel()
+            if cs:
+                torch._foreach_lerp_(cs, cp, w)
 
     @contextlib.contextmanager
     def applied(self):

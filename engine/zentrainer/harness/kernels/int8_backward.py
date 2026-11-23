@@ -116,25 +116,29 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
         _count("w8a8: cuda")
         seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
         return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256, residual)
-    g = _w8a8_input_grad(grad_2d, q, scale, group)
-    return g if residual is None else g + residual.to(g.dtype)  # an fp16 residual: the bf16 result's dtype
+    return _w8a8_input_grad(grad_2d, q, scale, group, residual)
 
 
-def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor:
+def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int,
+                     residual: torch.Tensor | None = None) -> torch.Tensor:
     m, n = grad_2d.shape
     k = q.shape[1]
     try:
-        from .w8a8_backward import TRITON_AVAILABLE, int8_matmul, quantize_rows
+        from .w8a8_backward import TRITON_AVAILABLE, hadamard256_residual, int8_matmul, quantize_rows
     except Exception:
         TRITON_AVAILABLE = False
-    if TRITON_AVAILABLE:  # two fused kernels (kernels/w8a8_backward.py), then the rotation in bf16
+    if TRITON_AVAILABLE:  # fused Triton kernels (kernels/w8a8_backward.py), ROCm and CUDA fallback
         seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)  # no .item(): compile-safe
         gq, step = quantize_rows(grad_2d, scale, seed)
+        if group == 256 and k % 256 == 0:
+            g = int8_matmul(gq, q, step)
+            return hadamard256_residual(g, residual)
+        if not group:
+            return int8_matmul(gq, q, step, residual)
         g = int8_matmul(gq, q, step)
-        if group:
-            h = _hadamard(group, g.device, torch.bfloat16)
-            g = torch.matmul(g.view(m, k // group, group), h.T).view(m, k)
-        return g
+        h = _hadamard(group, g.device, torch.bfloat16)
+        g = torch.matmul(g.view(m, k // group, group), h.T).view(m, k)
+        return g if residual is None else g + residual.to(g.dtype)
     gs = grad_2d.float() * scale.reshape(1, -1).float()
     step = gs.abs().amax(dim=1, keepdim=True).clamp_min(1e-30) / 127.0
     # stochastic rounding: each value lands on a neighbouring int8 step with the odds that keep
@@ -147,7 +151,8 @@ def _w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor
     if group:
         h = _hadamard(group, g.device, torch.float32)
         g = torch.matmul(g.view(m, k // group, group), h.T).view(m, k)
-    return g.to(torch.bfloat16)
+    g = g.to(torch.bfloat16)
+    return g if residual is None else g + residual.to(g.dtype)
 
 
 def _patch() -> None:
@@ -440,38 +445,47 @@ def _(g, qdata, s_rel, s_channel, codebook, correction, group_size, convrot_grou
     return g.new_empty((g.shape[0], k), dtype=torch.bfloat16)
 
 
+def _weight_input_grad(w, fmt: str | None, g: torch.Tensor, residual: torch.Tensor | None) -> torch.Tensor:
+    """Compute g @ W (+ residual) for a resident/casted weight `w`."""
+    gi = None
+    if type(w).__name__ == "QuantizedTensor":
+        params = w._params
+        if fmt in PACKED_FORMATS and not getattr(params, "transposed", False):
+            n, k = params.orig_shape
+            return packed_input_grad(g, w._qdata, params.scale, params.s_channel, params.codebook,
+                                     params.correction, int(params.group_size), int(params.convrot_groupsize),
+                                     bool(params.mma_packed), n, k, fmt, residual)
+        group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
+        if _mode == "w8a8" and g.is_cuda and fmt in INT8_FORMATS:
+            try:
+                gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
+            except (*_BUGS, torch.OutOfMemoryError):  # a code mistake or full card: don't hide behind dequantization
+                raise
+            except Exception as e:  # a kernel that fails to compile or launch here: dequantize
+                _kernel_failed(e)
+                gi = None
+        _count(("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized") if fmt in INT8_FORMATS
+               else f"{fmt}: dequantized")
+        if gi is not None:
+            return gi
+        gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
+    else:
+        _count("int8 layer: plain weight")
+        gi = torch.mm(g, w.to(g.dtype))
+    return gi if residual is None else gi + residual
+
+
 def _layer_input_grad(m, g: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
     """A frozen quantized layer's input gradient for g (M, out), plus `residual` (M, in) when given."""
     from comfy.ops import CastBiasWeightContext
+    from ..memory.offload import pop_recompute_weight
 
     fmt = quant_format(m)
+    cached = pop_recompute_weight(m)
+    if cached is not None:
+        return _weight_input_grad(cached, fmt, g, residual)
     with CastBiasWeightContext(m, g, offloadable=True, compute_dtype=g.dtype, want_requant=False) as (w, _b):
-        gi = None
-        if type(w).__name__ == "QuantizedTensor":
-            params = w._params
-            if fmt in PACKED_FORMATS and not getattr(params, "transposed", False):
-                n, k = params.orig_shape
-                return packed_input_grad(g, w._qdata, params.scale, params.s_channel, params.codebook,
-                                         params.correction, int(params.group_size), int(params.convrot_groupsize),
-                                         bool(params.mma_packed), n, k, fmt, residual)
-            group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
-            if _mode == "w8a8" and g.is_cuda and fmt in INT8_FORMATS:
-                try:
-                    gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
-                except _BUGS:  # a mistake in the code, not the kernel: don't hide it behind the fallback
-                    raise
-                except Exception as e:  # a kernel that fails to compile or launch here: dequantize
-                    _kernel_failed(e)
-                    gi = None
-            _count(("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized") if fmt in INT8_FORMATS
-                   else f"{fmt}: dequantized")
-            if gi is not None:
-                return gi
-            gi = torch.mm(g.to(torch.bfloat16), w.dequantize().to(torch.bfloat16))
-        else:
-            _count("int8 layer: plain weight")
-            gi = torch.mm(g, w.to(g.dtype))
-    return gi if residual is None else gi + residual
+        return _weight_input_grad(w, fmt, g, residual)
 
 
 # ---- the packed forward under torch.compile -----------------------------------------------------------
@@ -559,7 +573,8 @@ class _LoRAInt8(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, down, up, scale, m, original):
         x2 = x.detach().reshape(-1, x.shape[-1])
-        a, b = down.detach().to(x.dtype), (up.detach() * scale).to(x.dtype)  # (rank, in), (out, rank)
+        a = down.detach().to(x.dtype)
+        b = up.detach().to(x.dtype) if scale == 1.0 else (up.detach() * scale).to(x.dtype)  # (rank, in), (out, rank)
         with torch.no_grad():
             z = x2 @ a.t()
             h = z @ b.t()
@@ -578,7 +593,7 @@ class _LoRAInt8(torch.autograd.Function):
         x2 = x.detach().reshape(-1, x.shape[-1])
         g = grad_out.reshape(-1, grad_out.shape[-1]).to(x2.dtype)
         gz = g @ b  # (M, rank): the gradient at the LoRA's middle, its scale in b
-        d_up = (g.t() @ z) * ctx.scale
+        d_up = g.t() @ z if ctx.scale == 1.0 else (g.t() @ z) * ctx.scale
         d_down = gz.t() @ x2
         # the int8 input gradient only when something before the layer needs it
         gi = _layer_input_grad(ctx.m, g, gz @ a).to(grad_out.dtype).reshape(ctx.in_shape) if ctx.needs_input_grad[0] else None
@@ -586,17 +601,34 @@ class _LoRAInt8(torch.autograd.Function):
         return gi, d_down.to(ctx.dtypes[0]), d_up.to(ctx.dtypes[1]), None, None, None
 
 
+_ones_cache: dict[tuple, torch.Tensor] = {}
+
+
+def _ones(width: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Cached all-ones vector of length `width`, avoiding a GPU allocation per linear layer."""
+    if torch.compiler.is_compiling():
+        return torch.ones(width, device=device, dtype=dtype)
+    key = (device, dtype)
+    buf = _ones_cache.get(key)
+    if buf is None or buf.shape[0] < width:
+        buf = torch.ones(width, device=device, dtype=dtype)
+        _ones_cache[key] = buf
+    return buf[:width]
+
+
 def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor | None:
     """The int8 layer's forward with `residual` added in the GEMM's epilogue (ComfyUI's
     QuantizedTensor.linear_input_act, which outside training it uses for a block's residual), or
     None where the layer or this ComfyUI can't."""
+    if torch.version.hip:  # comfy_kitchen's HIP backend applies residual via addcmul(residual, out, ones), not in epilogue
+        return None
     from comfy.ops import CastBiasWeightContext
 
     with CastBiasWeightContext(m, x2, offloadable=True, compute_dtype=x2.dtype, want_requant=True) as (w, bias):
         fused = getattr(w, "linear_input_act", None) if type(w).__name__ == "QuantizedTensor" else None
         if fused is None or (_fuse_failed_once and quant_format(m) in PACKED_FORMATS):  # failed once: it fails again
             return None
-        ones = torch.ones(residual.shape[-1], device=x2.device, dtype=x2.dtype)
+        ones = _ones(residual.shape[-1], x2.device, x2.dtype)
         try:
             out = fused(x2, bias, residual=residual, residual_scale=ones)
         except (*_BUGS, torch.OutOfMemoryError):  # a mistake in the code, or a full card: not a missing epilogue

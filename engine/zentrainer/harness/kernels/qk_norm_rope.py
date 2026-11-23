@@ -90,62 +90,75 @@ if TRITON_AVAILABLE:
     @triton.jit
     def _backward_kernel(G, X, W, FR, OUT, H, L, sgb, sgh, sgl, sxb, sxh, sxl, sob, soh, sol, sfb, eps,
                          D: tl.constexpr, ROT: tl.constexpr, HP: tl.constexpr, PP: tl.constexpr,
-                         SPLIT: tl.constexpr):
+                         SPLIT: tl.constexpr, BH: tl.constexpr):
         # ROT: the dims the rope turns (D for all), as ROT/2 pairs padded to HP; the D - ROT after
-        # them (padded to PP, 0 when none) are only normalized
-        row = tl.program_id(0)
-        b = (row // (H * L)).to(tl.int64)
-        h = ((row // L) % H).to(tl.int64)
-        t = (row % L).to(tl.int64)
+        # them (padded to PP, 0 when none) are only normalized. One program handles BH heads at a
+        # single (b, t), reusing the loaded freqs[b, t] and W across all BH heads instead of reading
+        # them H times per token.
+        pid_bt = tl.program_id(0)
+        pid_hg = tl.program_id(1)
+        b = (pid_bt // L).to(tl.int64)
+        t = (pid_bt % L).to(tl.int64)
         k = tl.arange(0, HP)
         km = k < ROT // 2
         if SPLIT:  # pair k: elements k and k + ROT/2
             e, o = k, k + ROT // 2
         else:  # pair k: elements 2k and 2k + 1
             e, o = 2 * k, 2 * k + 1
-        g = G + b * sgb + h * sgh + t * sgl
-        x = X + b * sxb + h * sxh + t * sxl
-        out = OUT + b * sob + h * soh + t * sol
         f = FR + b * sfb + t * (ROT * 2) + k * 4
-        xe = tl.load(x + e, mask=km, other=0.0).to(tl.float32)
-        xo = tl.load(x + o, mask=km, other=0.0).to(tl.float32)
-        ge = tl.load(g + e, mask=km, other=0.0).to(tl.float32)
-        go = tl.load(g + o, mask=km, other=0.0).to(tl.float32)
-        we = tl.load(W + e, mask=km, other=0.0)
-        wo = tl.load(W + o, mask=km, other=0.0)
         f00 = tl.load(f, mask=km, other=0.0)
         f01 = tl.load(f + 1, mask=km, other=0.0)
         f10 = tl.load(f + 2, mask=km, other=0.0)
         f11 = tl.load(f + 3, mask=km, other=0.0)
-        sq = tl.sum(xe * xe, 0) + tl.sum(xo * xo, 0)
+        we = tl.load(W + e, mask=km, other=0.0)
+        wo = tl.load(W + o, mask=km, other=0.0)
         if PP > 0:
             j = ROT + tl.arange(0, PP)
             jm = j < D
-            xp = tl.load(x + j, mask=jm, other=0.0).to(tl.float32)
-            gp = tl.load(g + j, mask=jm, other=0.0).to(tl.float32)
             wp = tl.load(W + j, mask=jm, other=0.0)
-            sq += tl.sum(xp * xp, 0)
-        r = tl.rsqrt(sq / D + eps)
-        ne = xe * r
-        no = xo * r
-        gne = (f00 * ge + f10 * go) * we
-        gno = (f01 * ge + f11 * go) * wo
-        dot = tl.sum(gne * ne, 0) + tl.sum(gno * no, 0)
-        if PP > 0:
-            npp = xp * r
-            gnp = gp * wp
-            dot += tl.sum(gnp * npp, 0)
-        dot = dot / D
-        tl.store(out + e, (r * (gne - ne * dot)).to(OUT.dtype.element_ty), mask=km)
-        tl.store(out + o, (r * (gno - no * dot)).to(OUT.dtype.element_ty), mask=km)
-        if PP > 0:
-            tl.store(out + j, (r * (gnp - npp * dot)).to(OUT.dtype.element_ty), mask=jm)
+        h0 = pid_hg * BH
+        for dh in range(BH):
+            hi = h0 + dh
+            if hi < H:
+                h = hi.to(tl.int64)
+                g = G + b * sgb + h * sgh + t * sgl
+                x = X + b * sxb + h * sxh + t * sxl
+                out = OUT + b * sob + h * soh + t * sol
+                xe = tl.load(x + e, mask=km, other=0.0).to(tl.float32)
+                xo = tl.load(x + o, mask=km, other=0.0).to(tl.float32)
+                ge = tl.load(g + e, mask=km, other=0.0).to(tl.float32)
+                go = tl.load(g + o, mask=km, other=0.0).to(tl.float32)
+                sq = tl.sum(xe * xe, 0) + tl.sum(xo * xo, 0)
+                if PP > 0:
+                    xp = tl.load(x + j, mask=jm, other=0.0).to(tl.float32)
+                    gp = tl.load(g + j, mask=jm, other=0.0).to(tl.float32)
+                    sq += tl.sum(xp * xp, 0)
+                r = tl.rsqrt(sq / D + eps)
+                ne = xe * r
+                no = xo * r
+                gne = (f00 * ge + f10 * go) * we
+                gno = (f01 * ge + f11 * go) * wo
+                dot = tl.sum(gne * ne, 0) + tl.sum(gno * no, 0)
+                if PP > 0:
+                    npp = xp * r
+                    gnp = gp * wp
+                    dot += tl.sum(gnp * npp, 0)
+                dot = dot / D
+                tl.store(out + e, (r * (gne - ne * dot)).to(OUT.dtype.element_ty), mask=km)
+                tl.store(out + o, (r * (gno - no * dot)).to(OUT.dtype.element_ty), mask=km)
+                if PP > 0:
+                    tl.store(out + j, (r * (gnp - npp * dot)).to(OUT.dtype.element_ty), mask=jm)
 
 
 _triton_failed = False  # once a launch fails (an unusual GPU or Triton build): plain torch from then on
 
 
-def _backward(g, x, w, freqs, eps, split_half, seq_first, rot=0):
+def _prep_freqs(freqs: torch.Tensor, x: torch.Tensor, seq_first: bool) -> torch.Tensor:
+    f = _freqs(freqs, x, seq_first, torch.float32)
+    return (f[:, :, 0] if seq_first else f[:, 0]).contiguous()  # (B or 1, L, rot/2, 2, 2)
+
+
+def _backward(g, x, w, freqs, eps, split_half, seq_first, rot=0, _prepped_freqs=None):
     global _triton_failed
     D = x.shape[-1]
     rot = rot if rot and rot < D else D
@@ -153,27 +166,28 @@ def _backward(g, x, w, freqs, eps, split_half, seq_first, rot=0):
                               and x.dtype in (torch.bfloat16, torch.float16, torch.float32)):
         return _backward_torch(g, x, w, freqs, eps, split_half, seq_first, rot)
     try:
-        return _backward_triton(g, x, w, freqs, eps, split_half, seq_first, rot)
+        return _backward_triton(g, x, w, freqs, eps, split_half, seq_first, rot, _prepped_freqs)
     except Exception as e:  # the torch backward is the same maths
         _triton_failed = True
         logging.warning("[ZenTrainer] fused q/k rope: the Triton backward failed (%s); plain torch from here", e)
         return _backward_torch(g, x, w, freqs, eps, split_half, seq_first, rot)
 
 
-def _backward_triton(g, x, w, freqs, eps, split_half, seq_first, rot):
+def _backward_triton(g, x, w, freqs, eps, split_half, seq_first, rot, prepped_freqs=None):
     D = x.shape[-1]
     hd, sd = (2, 1) if seq_first else (1, 2)  # which dims hold the heads and the sequence
     B, H, L = x.shape[0], x.shape[hd], x.shape[sd]
-    f = _freqs(freqs, x, seq_first, torch.float32)
-    f = (f[:, :, 0] if seq_first else f[:, 0]).contiguous()  # (B or 1, L, rot/2, 2, 2)
+    f = prepped_freqs if prepped_freqs is not None else _prep_freqs(freqs, x, seq_first)
     g, x = (t if t.stride(-1) == 1 else t.contiguous() for t in (g, x))
     out = torch.empty(x.shape, device=x.device, dtype=x.dtype)
-    _backward_kernel[(B * H * L,)](g, x, w.float().contiguous(), f, out, H, L,
-                                   g.stride(0), g.stride(hd), g.stride(sd), x.stride(0), x.stride(hd), x.stride(sd),
-                                   out.stride(0), out.stride(hd), out.stride(sd), f.stride(0) if f.shape[0] > 1 else 0,
-                                   eps, D=D, ROT=rot, HP=triton.next_power_of_2(rot // 2),
-                                   PP=triton.next_power_of_2(D - rot) if rot < D else 0, SPLIT=split_half,
-                                   num_warps=1 if D <= 64 else 2)
+    bh = 8 if H >= 8 else (4 if H >= 4 else (2 if H >= 2 else 1))
+    _backward_kernel[(B * L, triton.cdiv(H, bh))](
+        g, x, w.float().contiguous(), f, out, H, L,
+        g.stride(0), g.stride(hd), g.stride(sd), x.stride(0), x.stride(hd), x.stride(sd),
+        out.stride(0), out.stride(hd), out.stride(sd), f.stride(0) if f.shape[0] > 1 else 0,
+        eps, D=D, ROT=rot, HP=triton.next_power_of_2(rot // 2),
+        PP=triton.next_power_of_2(D - rot) if rot < D else 0, SPLIT=split_half, BH=bh,
+        num_warps=1 if D <= 64 else 2)
     return out
 
 
@@ -207,8 +221,11 @@ def _(q, k, wq, wk, freqs, eps, split_half=False, seq_first=False, rot=0):
 def qk_norm_rope_backward(gq: torch.Tensor, gk: torch.Tensor, q: torch.Tensor, k: torch.Tensor, wq: torch.Tensor,
                           wk: torch.Tensor, freqs: torch.Tensor, eps: float, split_half: bool,
                           seq_first: bool, rot: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
-    return (_backward(gq, q, wq, freqs, eps, split_half, seq_first, rot),
-            _backward(gk, k, wk, freqs, eps, split_half, seq_first, rot))
+    # prepare freqs once for both q and k when Triton runs (avoids a duplicate cast/copy per layer)
+    pf = (_prep_freqs(freqs, q, seq_first) if (TRITON_AVAILABLE and not _triton_failed and q.is_cuda
+                                               and q.shape[-1] in (64, 128, 256)) else None)
+    return (_backward(gq, q, wq, freqs, eps, split_half, seq_first, rot, pf),
+            _backward(gk, k, wk, freqs, eps, split_half, seq_first, rot, pf))
 
 
 @qk_norm_rope_backward.register_fake

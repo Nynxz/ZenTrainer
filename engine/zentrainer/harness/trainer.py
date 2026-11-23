@@ -348,7 +348,8 @@ class Trainer:
                                                0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:
                     self._input_grad = ckpt.input_grad
                     self._ckpt = ckpt
-                    self._keep_auto = skip == "auto" and not m.offloading and bool(ckpt.all) and torch.cuda.is_available()
+                    self._keep_auto = (getattr(self, "_want_keep_auto", skip == "auto")
+                                       and not m.offloading and bool(ckpt.all) and torch.cuda.is_available())
                     self.enter_training()
                     try:
                         for cb in self.callbacks:
@@ -885,8 +886,11 @@ class Trainer:
     def _offload_skip(self) -> None:
         """Kept (un-checkpointed) last blocks trade VRAM for speed, but with weights offloaded
         that VRAM holds weights instead, and is worth as much: measured on Krea 2 int8 at 1024 px,
-        16 GB card, keeping 6 blocks cost 2 GB of weights on the card for no faster steps."""
+        16 GB card, keeping 6 blocks cost 2 GB of weights on the card for no faster steps.
+        Remember when the spec asked for "auto" so if _tighten() later fits 100% of weights on the
+        GPU, remaining free VRAM can un-checkpoint last blocks automatically."""
         m = self.spec.memory
+        self._want_keep_auto = m.grad_checkpoint_skip == "auto"
         if m.offloading and m.gradient_checkpointing and m.grad_checkpoint_skip != 0:
             if m.grad_checkpoint_skip != "auto":
                 logging.info("[ZenTrainer] keep last blocks %d -> 0: with weights offloaded, that VRAM holds weights instead", m.grad_checkpoint_skip)
@@ -926,6 +930,7 @@ class Trainer:
                 self._card()
             mm.load_models_gpu([patcher], memory_required=self.headroom, force_full_load=False)
             self._fit_weights()
+            self._keep_small_resident()
             self._pin_offloaded()
             if not getattr(self, "_first_resident", None):
                 self._first_resident = patcher.loaded_size()  # the safe estimate's load, to return to
@@ -1007,6 +1012,7 @@ class Trainer:
                     self._times = (getattr(self, "_times", []) +
                                    [(self._warm, time.perf_counter() - ts, getattr(self, "_step_key", None))])[-24:]
                     self._backoffs = 0  # the retries count in a row: a long run's sample passes don't use them up
+                    self._keep_backoffs = 0
                 except torch.OutOfMemoryError as e:
                     if not self._back_off(e):
                         raise
@@ -1080,6 +1086,8 @@ class Trainer:
             return
         self._trial = None
         self.__dict__.pop("_ceiling", None)
+        self.__dict__.pop("_save_attn_off", None)
+        self._disable_free_vram()
         self._resident = self._first_resident
         self._fit_weights()
         self._recompile_if_moved("a new resolution")
@@ -1110,9 +1118,23 @@ class Trainer:
         if have < target - 64 * 1024 ** 2:
             torch.cuda.empty_cache()  # into clean space, as _tighten
             patcher.partially_load(self.device, target - have)
+            self._keep_small_resident()
         elif have > target + 64 * 1024 ** 2:
             patcher.partially_unload(patcher.offload_device, have - target)
+            self._keep_small_resident()
             self._pin_offloaded()  # what came off the card is plain RAM again
+
+    def _keep_small_resident(self) -> None:
+        """Keep tiny offloaded modules (norms, q/k norms, biases <= 256 KB) on the GPU so they
+        never stall async weight streaming (see offload.py)."""
+        if not self.spec.memory.offloading or not torch.cuda.is_available():
+            return
+        from .memory.offload import keep_small_resident
+
+        n, size = keep_small_resident(self.models.patcher)
+        if n:
+            logging.info("[ZenTrainer] kept %d small modules (%.1f MB) on the GPU so they don't stall streaming",
+                         n, size / 1024 ** 2)
 
     def _pin_offloaded(self) -> None:
         """Pinned copies of offloaded weights ComfyUI couldn't pin in place (see offload.py)."""
@@ -1189,6 +1211,7 @@ class Trainer:
         have = patcher.loaded_size()
         target = min(patcher.model_size(), have + spare, getattr(self, "_ceiling", 1 << 62))
         if target - have < 256 * 1024 ** 2:
+            self._maybe_use_free_vram(spare)
             return
         gb = 1024 ** 3
         self._trial = {"at": self._warm, "prev": have, "before": list(getattr(self, "_times", [])),
@@ -1201,6 +1224,48 @@ class Trainer:
                      self._peak / gb, (total - others) / gb, have / gb, now / gb, patcher.model_size() / gb)
         self._peak = 0  # the next pass measures with these weights in
         torch.cuda.reset_peak_memory_stats()
+        self._maybe_use_free_vram(spare - max(0, now - have))
+
+    def _maybe_use_free_vram(self, spare: int | None = None) -> None:
+        """Once _tighten() has loaded 100% of weights onto the GPU, use remaining free VRAM for
+        selective attention checkpointing (checkpoint_save="attention") and auto un-checkpointing
+        (grad_checkpoint_skip="auto"): saving attention buys ~6-15% for 1-2 GB before un-checkpointing
+        whole blocks."""
+        ck = getattr(self, "_ckpt", None)
+        if ck is None or not ck.all or not torch.cuda.is_available():
+            return
+        patcher = self.models.patcher
+        if getattr(patcher.model, "model_lowvram", False) or patcher.loaded_size() < patcher.model_size() - 1024:
+            return
+        spec = getattr(self, "spec", None)
+        want_attn = spec is not None and spec.memory.checkpoint_save == "attention"
+        if (want_attn and not getattr(ck, "saving_attention", False)
+                and not getattr(self, "_save_attn_off", False)
+                and (spare is None or spare >= 1024 ** 3)
+                and getattr(ck, "set_save_attention", None) is not None):
+            if ck.set_save_attention(True):
+                if getattr(self, "_compiled", 0):
+                    torch._dynamo.reset()
+                logging.info("[ZenTrainer] all model weights fit on the GPU: keeping attention outputs in checkpoints")
+        if getattr(self, "_want_keep_auto", False) and not getattr(self, "_keep_auto", False):
+            ck.allow_keep = True
+            self._keep_auto = True
+            self._keep_warm = 0
+            self._keep_cost = {}
+            self.__dict__.pop("_keep_ceiling", None)
+            logging.info("[ZenTrainer] all model weights fit on the GPU: free VRAM will keep last blocks un-checkpointed")
+
+    def _disable_free_vram(self) -> None:
+        """Undo dynamic free-VRAM checkpointing before weights move back off the GPU."""
+        ck = getattr(self, "_ckpt", None)
+        if getattr(self, "_keep_auto", False):
+            self._kept(0)
+            self._keep_auto = False
+            if ck is not None:
+                ck.allow_keep = False
+        if ck is not None and getattr(ck, "saving_attention", False) and getattr(ck, "set_save_attention", None) is not None:
+            if ck.set_save_attention(False) and getattr(self, "_compiled", 0):
+                torch._dynamo.reset()
 
     def _judge(self) -> None:
         """Keep the last fit only if it didn't slow the steps (see TRIAL_STEPS)."""
@@ -1219,6 +1284,7 @@ class Trainer:
             return
         patcher = self.models.patcher
         have = patcher.loaded_size()
+        self._disable_free_vram()
         self._resident = self._ceiling = trial["prev"]
         self._fit_weights()
         self._recompile_if_moved("the VRAM fit going back")
@@ -1296,39 +1362,64 @@ class Trainer:
         cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
-        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES - 1:  # the last retry: none kept, all checkpointed
+        attempt = max(getattr(self, "_keep_backoffs", 0), getattr(self, "_backoffs", 0))
+        if attempt >= TIGHTEN_RETRIES - 1:  # the last retry: none kept, all checkpointed
             drop = was
-        elif getattr(self, "_backoffs", 0):  # the margin's worth wasn't enough: half of them, not one more
+        elif attempt:  # the margin's worth wasn't enough: half of them, not one more
             drop = max(drop, (was + 1) // 2)
         self._keep_ceiling = self._kept(max(0, was - drop))
         logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
         return True
 
     def _back_off(self, e: BaseException) -> bool:
-        """A step ran out of VRAM (a bigger bucket than the first steps saw, say): take the
-        margin's worth of weights off the card (or of kept blocks, with none offloaded), never go
-        above that again, and retry the step."""
-        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES:
-            return False
-        if not self._auto_vram():
-            if not self._back_off_kept():
-                return False
+        """A step ran out of VRAM (a bigger bucket than the first steps saw, say): drop kept
+        blocks first, then selective attention saving, then take the margin's worth of weights off
+        the card, never go above that again, and retry the step."""
+        from .memory.offload import clear_recompute_weights
+
+        clear_recompute_weights()
+        if getattr(self, "_keep_backoffs", 0) < TIGHTEN_RETRIES and self._back_off_kept():
             import comfy.model_management as mm
 
             _release_frames(e)
             del e
             self.optimizer.zero_grad(set_to_none=True)
-            self._backoffs = getattr(self, "_backoffs", 0) + 1
+            self._keep_backoffs = getattr(self, "_keep_backoffs", 0) + 1
             mm.soft_empty_cache()
             self._peak = 0
             torch.cuda.reset_peak_memory_stats()
             return True
+        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES:
+            return False
+        ck = getattr(self, "_ckpt", None)
+        if (ck is not None and getattr(ck, "saving_attention", False)
+                and getattr(ck, "set_save_attention", None) is not None and ck.set_save_attention(False)):
+            import comfy.model_management as mm
+
+            self._save_attn_off = True
+            _release_frames(e)
+            del e
+            self.optimizer.zero_grad(set_to_none=True)
+            self._backoffs = getattr(self, "_backoffs", 0) + 1
+            if getattr(self, "_compiled", 0):
+                torch._dynamo.reset()
+            mm.soft_empty_cache()
+            self._peak = 0
+            torch.cuda.reset_peak_memory_stats()
+            logging.warning("[ZenTrainer] out of VRAM: checkpoints keeping nothing instead of attention, retrying the step")
+            return True
+        if not self._auto_vram():
+            return False
         import comfy.model_management as mm
 
         _release_frames(e)
         del e
         self.optimizer.zero_grad(set_to_none=True)
         self._backoffs = getattr(self, "_backoffs", 0) + 1
+        if getattr(self, "_keep_auto", False):
+            self._keep_auto = False
+            if ck is not None:
+                ck.allow_keep = False
         patcher = self.models.patcher
         have = patcher.loaded_size()
         if have <= 0:
@@ -1386,44 +1477,50 @@ class Trainer:
             mark = now
 
         self.objective.start_step()
+        from .memory.offload import clear_recompute_weights
+
         keys = []
-        for a in range(acc):
-            idx = next(self.batches)
-            x0, weight, shapes = self.batch(idx)
-            keys.append((tuple(x0.shape), repr(shapes)))
-            self._step_key = tuple(keys)  # what this step's time depends on (the auto VRAM fit's trials)
-            conds = [self._cond(i, x0, shapes) for i in idx]
+        try:
+            for a in range(acc):
+                idx = next(self.batches)
+                x0, weight, shapes = self.batch(idx)
+                keys.append((tuple(x0.shape), repr(shapes)))
+                self._step_key = tuple(keys)  # what this step's time depends on (the auto VRAM fit's trials)
+                conds = [self._cond(i, x0, shapes) for i in idx]
 
-            noise = torch.randn(x0.shape, generator=self.generator).to(self.device)
-            drawn = (self.step * acc + a) * self._spread_stride  # noise levels before these (spread)
-            percents = sample_percents(s.objective, len(idx), self.generator, drawn, s.seed)
-            sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
-            x_t = self.objective.noisy(ms, sigma, noise, x0)
-            lap("data")
-            if s.slider.kind == "pairs":  # each picture at its own end, from the same noise
-                total_loss += self._pair_loss(idx, x0, conds, weight, noise, sigma, x_t, percents, acc)
-                lap("backward")
-                continue
-            if s.slider.kind:  # its own losses and backward passes (one per direction)
-                total_loss += self._slider_loss(x0, shapes, x_t, sigma, acc)
-                lap("backward")
-                continue
+                noise = torch.randn(x0.shape, generator=self.generator).to(self.device)
+                drawn = (self.step * acc + a) * self._spread_stride  # noise levels before these (spread)
+                percents = sample_percents(s.objective, len(idx), self.generator, drawn, s.seed)
+                sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
+                x_t = self.objective.noisy(ms, sigma, noise, x0)
+                lap("data")
+                if s.slider.kind == "pairs":  # each picture at its own end, from the same noise
+                    total_loss += self._pair_loss(idx, x0, conds, weight, noise, sigma, x_t, percents, acc)
+                    lap("backward")
+                    continue
+                if s.slider.kind:  # its own losses and backward passes (one per direction)
+                    total_loss += self._slider_loss(x0, shapes, x_t, sigma, acc)
+                    lap("backward")
+                    continue
 
-            # the input needs grad only for ComfyUI's per-layer offload checkpoint (see memory.py);
-            # otherwise it stays grad-free so the backward ends at the first trained layer
-            with self._autocast():
-                x0_pred = self.denoiser(x_t.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds,
-                                        self._tread(idx))
-            loss = self.objective.train_loss(x_t.detach(), x0, x0_pred, sigma, weight, percents).mean()
-            lap("forward")
-            scaled = loss / acc
-            (self.scaler.scale(scaled) if self.scaler else scaled).backward()
-            total_loss += loss.detach().float()
-            del x0_pred, loss, scaled  # the preservation pass's graph needs the room
-            held = self._preserve_loss(idx, x0, shapes, x_t, sigma, noise, acc)
-            if held is not None:
-                held_sum, held_n = held_sum + held, held_n + 1
-            lap("backward")
+                # the input needs grad only for ComfyUI's per-layer offload checkpoint (see memory.py);
+                # otherwise it stays grad-free so the backward ends at the first trained layer
+                with self._autocast():
+                    x0_pred = self.denoiser(x_t.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds,
+                                            self._tread(idx))
+                loss = self.objective.train_loss(x_t.detach(), x0, x0_pred, sigma, weight, percents).mean()
+                lap("forward")
+                scaled = loss / acc
+                (self.scaler.scale(scaled) if self.scaler else scaled).backward()
+                clear_recompute_weights()
+                total_loss += loss.detach().float()
+                del x0_pred, loss, scaled  # the preservation pass's graph needs the room
+                held = self._preserve_loss(idx, x0, shapes, x_t, sigma, noise, acc)
+                if held is not None:
+                    held_sum, held_n = held_sum + held, held_n + 1
+                lap("backward")
+        finally:
+            clear_recompute_weights()
 
         if held_n:
             self.last_preserve_loss = held_sum / held_n  # the step's mean over its micro-batches
