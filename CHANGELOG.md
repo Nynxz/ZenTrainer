@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`
+  picked as the captioning model, the Captions panel offers the 5 MB LoRA from
+  [nynxz/Qwen3.8-27B](https://huggingface.co/nynxz/Qwen3.8-27B) (AEON-7's uncensored edit, as a
+  LoRA on the stock encoder) next to the ones for Qwen3-VL-8B and Qwen3.5-9B.
 - **Lotus: a new adapter-native optimizer for LoRA, LoKr and LoHa.** Built specifically for
   diffusion adapters: bf16 momentum + factored second moments (`beta2=0.999`, ~3x less optimizer
   memory than AdamW, with Philox stochastic rounding for direct bf16/fp16 adapters); exact fp32
