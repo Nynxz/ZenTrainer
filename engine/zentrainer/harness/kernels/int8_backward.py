@@ -579,7 +579,8 @@ class _LoRAInt8(torch.autograd.Function):
             z = x2 @ a.t()
             h = z @ b.t()
             for fa, fb, fscale, foff in frozen:
-                fa_t, fb_t = fa.detach().to(x2.dtype), fb.detach().to(x2.dtype)
+                fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
+                fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
                 fh = (x2 @ fa_t.t()) @ fb_t.t()
                 if fscale != 1.0:
                     fh = fh * fscale
@@ -608,7 +609,8 @@ class _LoRAInt8(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             dx = gz @ a
             for fa, fb, fscale, foff in ctx.frozen:
-                fa_t, fb_t = fa.detach().to(x2.dtype), fb.detach().to(x2.dtype)
+                fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
+                fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
                 g_slice = g if foff is None else g[:, foff:foff + fb_t.shape[0]]
                 fgz = g_slice @ fb_t
                 if fscale != 1.0:
@@ -667,7 +669,8 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
 
 def _is_plain_lora(mod) -> bool:
     return (type(mod).__name__ == "LoraDiff" and getattr(mod, "lora_mid", None) is None
-            and getattr(mod, "dora_scale", None) is None)
+            and getattr(mod, "dora_scale", None) is None
+            and mod.lora_down.weight.ndim == 2 and mod.lora_up.weight.ndim == 2)
 
 
 def _frozen_lora_terms(mod, strength: float) -> list[tuple] | None:
@@ -695,8 +698,12 @@ class LoRABeside(_PassesOn, torch.nn.Module):
 
     def __init__(self, lora, layer, assisted=None, frozen_terms: tuple = ()):
         super().__init__()
-        self.lora = lora
-        self.assisted = assisted
+        if assisted is not None:
+            self.assisted = assisted
+            self.__dict__["lora"] = lora  # already registered under self.assisted.trained
+        else:
+            self.lora = lora
+            self.assisted = None
         self.__dict__["layer"] = layer  # not a submodule: its weights aren't the adapter's
         self._alpha = float(lora.alpha)  # read once: a Parameter on the GPU would sync every call
         self._frozen = frozen_terms  # frozen (down, up, scale, offset) active while training (assist + base)
@@ -725,8 +732,11 @@ class LoRABeside(_PassesOn, torch.nn.Module):
                 or getattr(m, "_full_precision_mm", False) or len(m.weight_function) or len(m.bias_function)):
             base = org_forward(x, *args, **kwargs)
             return base + self.h(x, base)
-        scale = self._alpha / self.lora.rank * getattr(self, "multiplier", 1.0) * st
-        return _LoRAInt8.apply(x, self.lora.lora_down.weight, self.lora.lora_up.weight, scale, m, org_forward, self._frozen)
+        mult = getattr(self, "multiplier", 1.0)
+        scale = self._alpha / self.lora.rank * mult * st
+        frozen = (self._frozen if mult == 1.0 or not self._frozen
+                  else tuple((fa, fb, fs * mult, foff) for fa, fb, fs, foff in self._frozen))
+        return _LoRAInt8.apply(x, self.lora.lora_down.weight, self.lora.lora_up.weight, scale, m, org_forward, frozen)
 
 
 def lora_beside(adapter, layer):
