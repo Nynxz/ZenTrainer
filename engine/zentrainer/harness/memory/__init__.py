@@ -84,10 +84,27 @@ def _qk_peak(m) -> float:
 def _patch_saving(m) -> None:
     """A block checkpointed with _keep_attention. A compiled block (kernels/compile.py) is compiled
     again around the checkpoint: the policy has to see the ops, which a checkpoint around the
-    compiled forward can't (it fails in the backward)."""
+    compiled forward can't (it fails in the backward). When `m` uses a shared compiled class method,
+    all blocks of that class share one compiled checkpointed wrapper too."""
+    import types
+
     import torch
 
     org = m.forward
+    m.org_forward = org  # what unpatch puts back
+    org_func = getattr(org, "__func__", None)
+    orig_cls_fwd = getattr(org_func, "_zt_orig_cls_fwd", None)
+    if orig_cls_fwd is not None:
+        compiled = getattr(org_func, "_zt_ckpt_compiled", None)
+        if compiled is None:
+            def ckpt_cls_run(self, *args, _fn=orig_cls_fwd, **kwargs):
+                return torch.utils.checkpoint.checkpoint(_fn, self, *args, use_reentrant=False,
+                                                         context_fn=_keep_attention, **kwargs)
+            compiled = torch.compile(ckpt_cls_run, dynamic=True)
+            org_func._zt_ckpt_compiled = compiled
+        m.forward = types.MethodType(compiled, m)
+        return
+
     inner = getattr(org, "_torchdynamo_orig_callable", None)
 
     def checkpointed(fn):
@@ -95,7 +112,6 @@ def _patch_saving(m) -> None:
             return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False, context_fn=_keep_attention, **kwargs)
         return run
 
-    m.org_forward = org  # what unpatch puts back
     m.forward = torch.compile(checkpointed(inner), dynamic=True) if inner is not None else checkpointed(org)
 
 
@@ -157,12 +173,17 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
     every = block_lists(diffusion_model, max(1, depth))
     if not every:  # no repeated blocks (unusual): fall back to the top-level children
         every = [c for c in diffusion_model.children()]
-    # which blocks stay un-checkpointed first: the biggest, the last of them first. By order alone
-    # Krea 2's last blocks are its four small text-fusion ones, which run on the caption only
+    # which blocks stay un-checkpointed first: main denoising blocks first (last of them first),
+    # then other lists by parameter count. Putting main_blocks first prevents caption-only blocks
+    # of equal parameter count (e.g. MOSS's 2 TextBlocks) from taking the probe slots and measuring
+    # 0.00 GB activation cost.
+    from ..kernels.compile import main_blocks
+
+    main_ids = {id(b) for b in main_blocks(diffusion_model)}
     size = [sum(p.numel() for p in b.parameters()) for b in every]
-    order = sorted(range(len(every) - 1, -1, -1), key=lambda i: -size[i])
-    state = types.SimpleNamespace(blocks=0, input_grad=False, all=every, kept=0, allow_keep=not offloading,
-                                  saving_attention=save == "attention" and not offloading)
+    order = sorted(range(len(every) - 1, -1, -1), key=lambda i: (0 if id(every[i]) in main_ids else 1, -size[i]))
+    state = types.SimpleNamespace(blocks=0, input_grad=False, all=every, kept=0, order=order,
+                                  allow_keep=not offloading, saving_attention=save == "attention" and not offloading)
     sharp: set[int] = set()
 
     def patch_block(i: int, m) -> None:

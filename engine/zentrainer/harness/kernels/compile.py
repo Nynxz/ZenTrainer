@@ -65,16 +65,14 @@ def main_blocks(diffusion_model) -> list:
     return list(max(lists, key=lambda l: sum(p.numel() for p in l.parameters())))
 
 
-def _swiglu_out_of_place(m):
+def _swiglu_forward(self, x):
     """Krea 2's SwiGLU, `down(silu(gate(x)).mul_(up(x)))`, without the in-place mul_: dynamo
     can't trace that mul_ here ("does not know how to trace the builtin Tensor.mul_"), so every
-    block's graph broke at its MLP and the MLP ran eager. Same values."""
+    block's graph broke at its MLP and the MLP ran eager. Shared method (not a per-instance
+    closure) so identical blocks reuse one compiled graph. Same values."""
     import torch.nn.functional as F
 
-    def forward(x):
-        return m.down(F.silu(m.gate(x)) * m.up(x))
-
-    return forward
+    return self.down(F.silu(self.gate(x)) * self.up(x))
 
 
 @contextlib.contextmanager
@@ -82,8 +80,9 @@ def compiled_blocks(diffusion_model, enabled: bool):
     if not enabled:
         yield 0
         return
-    import torch._dynamo
+    import types
 
+    import torch._dynamo
     import torch._functorch.config as functorch_config
 
     torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 256)
@@ -97,7 +96,7 @@ def compiled_blocks(diffusion_model, enabled: bool):
             if type(sub).__name__ == "SwiGLU" and all(hasattr(sub, k) for k in ("gate", "up", "down"))
             and "forward" not in sub.__dict__]
     for sub in mlps:
-        sub.forward = _swiglu_out_of_place(sub)
+        sub.forward = types.MethodType(_swiglu_forward, sub)
     # ComfyUI's layers read comfy_cast_weights, a class attribute until a low-VRAM round trip
     # (samples on a card the model doesn't fit beside) sets it on the instance and puts it back
     # as one. The graphs guard on its absence from the instance, so that round trip invalidated
@@ -107,13 +106,24 @@ def compiled_blocks(diffusion_model, enabled: bool):
              if hasattr(sub, "comfy_cast_weights") and "comfy_cast_weights" not in sub.__dict__]
     for sub in casts:
         sub.comfy_cast_weights = sub.comfy_cast_weights
+    # Share ONE torch.compile wrapper per block class (bound via MethodType) instead of compiling
+    # N separate per-instance bound methods: identical blocks reuse the compiled graph instead of
+    # recompiling 32-48 times on step 1 and again as blocks un-checkpoint.
+    by_cls: dict[type, object] = {}
     done = []
     for m in blocks:
         if "forward" in m.__dict__:  # already wrapped by someone else: leave it
             continue
-        m.forward = torch.compile(m.forward, dynamic=True)
+        cls = type(m)
+        compiled = by_cls.get(cls)
+        if compiled is None:
+            compiled = torch.compile(cls.forward, dynamic=True)
+            compiled._zt_orig_cls_fwd = cls.forward
+            by_cls[cls] = compiled
+        m.forward = types.MethodType(compiled, m)
         done.append(m)
-    logging.info("[ZenTrainer] torch.compile on the %d main blocks (the first steps compile)", len(done))
+    logging.info("[ZenTrainer] torch.compile on the %d main blocks (%d shared graph%s)",
+                 len(done), len(by_cls), "" if len(by_cls) == 1 else "s")
     try:
         yield len(done)
     finally:
@@ -126,6 +136,9 @@ def compiled_blocks(diffusion_model, enabled: bool):
                 sub.__dict__.pop("comfy_cast_weights", None)
         if cache_was is not None:
             functorch_config.enable_autograd_cache = cache_was
+        # Drop this run's compiled graphs so successive runs in one ComfyUI process never accumulate
+        # guard entries up to torch._dynamo.config.accumulated_recompile_limit (256).
+        torch._dynamo.reset()
 
 
 def residency(diffusion_model) -> tuple[bool, ...]:
