@@ -310,7 +310,7 @@ const patterns = computed({
             <span v-else class="sw-state">Auto (= rank)</span>
           </div>
         </ZenField>
-        <ZenField label="LoRA precision" stack tip="fp32: small steps land. bf16 rounds most AdamW steps away; use it only with Automagic (stochastic rounding)">
+        <ZenField label="LoRA precision" stack tip="fp32: small steps land. bf16 rounds most AdamW steps away; use it only with Automagic or Lotus (stochastic rounding)">
           <ZenCombo v-model="spec.network.lora_dtype" :items="items(['fp32', 'bf16'], { fp32: 'fp32 (recommended)', bf16: 'bf16' })" :searchable="false" :sorted="false" />
         </ZenField>
         <ZenField label="Other LoRAs" stack class="full-row" tip="A LoRA to train more on, one to sit under the new LoRA, or one that's on only while training: pick the file, then how it's used">

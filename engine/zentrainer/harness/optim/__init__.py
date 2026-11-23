@@ -348,6 +348,11 @@ def set_lr(opt: torch.optim.Optimizer, sched, lr: float) -> None:
     sched.base_lrs = [lr * g.get("lr_mult", 1.0) for g in opt.param_groups]  # LoRA+ keeps its ratio
     for group, base, f in zip(opt.param_groups, sched.base_lrs, sched.lr_lambdas):
         group["lr"] = base * f(sched.last_epoch)
+        if group["params"]:
+            ctrl = opt.state.get(group["params"][0], {}).get("group_lr_ctrl")
+            if isinstance(ctrl, torch.Tensor) and ctrl.numel() == 5:
+                glr = float(group["lr"])
+                ctrl.copy_(torch.tensor([1.0, 0.0, 0.0, glr, glr], dtype=ctrl.dtype, device=ctrl.device))
     own = [st["lr"] for st in opt.state.values() if isinstance(st.get("lr"), torch.Tensor)]
     if not own or now <= 0:
         return

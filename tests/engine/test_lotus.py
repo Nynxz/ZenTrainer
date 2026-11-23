@@ -250,3 +250,20 @@ def test_lotus_cuda_triton_matches_fallback(auto_lr, dtype):
         assert torch.isfinite(x).all()
         torch.testing.assert_close(x.detach().float(), y.detach().float(), atol=tol, rtol=tol)
     assert opt_tri.get_avg_learning_rate() == pytest.approx(opt_ref.get_avg_learning_rate(), rel=2e-2)
+
+
+def test_set_lr_moves_lotus_auto_lr():
+    from zentrainer.harness import optim
+    from zentrainer.spec import OptimSpec
+
+    params = _make_lora_weights(1, 32, 32, 4)
+    spec = OptimSpec(optimizer="Lotus", learning_rate=1e-4, lotus_auto_lr=True, warmup_steps=0)
+    opt, sched = optim.build(params, spec)
+    for _ in range(12):
+        for p in params:
+            p.grad = torch.full_like(p, 0.05)
+        opt.step()
+        sched.step()
+    assert optim.current_lr(opt) != pytest.approx(1e-4, rel=1e-2)  # controller adapted away from 1e-4
+    optim.set_lr(opt, sched, 5e-5)
+    assert optim.current_lr(opt) == pytest.approx(5e-5, rel=1e-5)
