@@ -179,6 +179,13 @@ def _automagic4(p, s):
                              **({"min_lr": s.learning_rate * s.lr_floor} if s.lr_floor > 0 else {}))
 
 
+def _lotus(p, s):
+    from .lotus import Lotus
+
+    return Lotus(p, lr=s.learning_rate, weight_decay=s.weight_decay, auto_lr=s.lotus_auto_lr,
+                 **({"lr_min_mult": s.lr_floor} if s.lr_floor > 0 else {}))
+
+
 def _prodigy(p, s):
     from prodigyopt import Prodigy
 
@@ -245,6 +252,13 @@ OPTIMIZERS: dict[str, OptimizerDef] = {d.id: d for d in [
                  note="Ostris's v4, experimental: v3 whose LR settles at a level instead of sinking once "
                       "the trend is learned, and whose most sensitive weights take smaller steps. Start "
                       "near 1e-4; the schedule and warmup are ignored."),
+    OptimizerDef("Lotus", "Lotus (adapter-native)",
+                 _lotus,
+                 lr_hint="1e-4",
+                 note="Built for diffusion LoRAs & LoKrs: bf16 momentum + factored second moments (~3x less "
+                      "memory than AdamW, exact fp32 moments on tiny matrices like lokr_w1, stochastic "
+                      "rounding for bf16/fp16), spike-safe RMS clipping + cautious gating, and an optional "
+                      "group-level adaptive LR toggle (0.05x–20x)."),
     OptimizerDef("Prodigy", "Prodigy (auto LR)",
                  _prodigy,
                  package="prodigyopt", pip="prodigyopt", lr_hint="1.0",
@@ -291,6 +305,7 @@ def build(params: Iterable[torch.nn.Parameter], spec: OptimSpec):
     if not available(d):
         raise RuntimeError(f"{d.label} needs `{d.pip}`: run `scripts/zt extras optimizers` (or pip install {d.pip})")
     opt = d.build(list(params), spec)
+    auto_adaptive = d.adaptive or (d.id == "Lotus" and spec.lotus_auto_lr)
     if d.adaptive and spec.lr_floor > 0:  # a group at a multiple of the LR floors at that multiple too
         for g in opt.param_groups:
             if "min_lr" in g:
@@ -300,7 +315,7 @@ def build(params: Iterable[torch.nn.Parameter], spec: OptimSpec):
         # dropped half the time) kept it climbing to hundreds and the run blew up
         for g in opt.param_groups:
             g["max_lr"] = spec.learning_rate * AUTOMAGIC3_CEILING * g.get("lr_mult", 1.0)
-    if d.schedule_free or d.adaptive:  # its own warmup / LR control; the schedule must stay flat
+    if d.schedule_free or auto_adaptive:  # its own warmup / LR control; the schedule must stay flat
         sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda i: 1.0)
     else:
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _schedule(spec))
@@ -333,6 +348,11 @@ def set_lr(opt: torch.optim.Optimizer, sched, lr: float) -> None:
     sched.base_lrs = [lr * g.get("lr_mult", 1.0) for g in opt.param_groups]  # LoRA+ keeps its ratio
     for group, base, f in zip(opt.param_groups, sched.base_lrs, sched.lr_lambdas):
         group["lr"] = base * f(sched.last_epoch)
+        if group["params"]:
+            ctrl = opt.state.get(group["params"][0], {}).get("group_lr_ctrl")
+            if isinstance(ctrl, torch.Tensor) and ctrl.numel() == 5:
+                glr = float(group["lr"])
+                ctrl.copy_(torch.tensor([1.0, 0.0, 0.0, glr, glr], dtype=ctrl.dtype, device=ctrl.device))
     own = [st["lr"] for st in opt.state.values() if isinstance(st.get("lr"), torch.Tensor)]
     if not own or now <= 0:
         return
@@ -370,7 +390,8 @@ def resume_cold(opt: torch.optim.Optimizer, sched, spec: OptimSpec, step: int) -
     seeds each weight's LR from the group's on its first step and then scales it by the schedule
     again, would count a ramp twice."""
     d = OPTIMIZERS.get(spec.optimizer)
-    ramp = d is not None and not (d.adaptive or d.schedule_free) and d.id != "Automagic"
+    auto_adaptive = d is not None and (d.adaptive or (d.id == "Lotus" and spec.lotus_auto_lr))
+    ramp = d is not None and not (auto_adaptive or d.schedule_free) and d.id != "Automagic"
     if ramp:
         rewarm(sched, step)
     seek(opt, sched, step)

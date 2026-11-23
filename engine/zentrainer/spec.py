@@ -18,7 +18,7 @@ Auto = Literal["auto"]
 
 # choices that live in the harness, which imports torch: tests keep them in step
 OPTIMIZERS = ("AdamW", "Adam", "Adafactor", "Lion", "SGD", "RMSprop", "AdamW8bit", "Lion8bit", "Automagic",
-              "Automagic3", "Automagic4", "Prodigy", "AdamWScheduleFree", "CAME")  # harness/optim OPTIMIZERS
+              "Automagic3", "Automagic4", "Lotus", "Prodigy", "AdamWScheduleFree", "CAME")  # harness/optim OPTIMIZERS
 TRAIN_ATTENTION = ("pytorch", "xformers", "sub_quad", "split")  # harness/memory TRAINABLE_ATTENTION
 WEIGHT_DTYPES = ("default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2")  # ComfyUI's weight_dtype
 DTYPES = ("bf16", "fp16", "fp32")
@@ -178,8 +178,12 @@ class OptimSpec:
                                     "0 or 1 = off.", ge=0)
     ema: float = setting(0.0, "Weight averaging: checkpoints, samples and the saved LoRA use a running average of the "
                               "adapter (0.98 = roughly the last 50 steps). 0 = off.", ge=0, lt=1)
-    lr_floor: float = setting(0.0, "Automagic v3/v4: the adaptive rate never drops below this fraction of its start "
-                                   "(v3's decays and can stall under-strength). 0 = no floor.", ge=0, le=1)
+    lr_floor: float = setting(0.0, "Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this "
+                                   "fraction of its start (v3's decays and can stall under-strength). 0 = default floor.",
+                              ge=0, le=1)
+    lotus_auto_lr: bool = setting(False, "Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead "
+                                         "of following the schedule directly. Off = predictable AdamW-style scheduled "
+                                         "LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails.")
 
 
 @dataclass

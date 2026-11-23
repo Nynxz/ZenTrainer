@@ -5,6 +5,14 @@ and Manager show.
 
 ## Unreleased
 
+- **Lotus: a new adapter-native optimizer for LoRA, LoKr and LoHa.** Built specifically for
+  diffusion adapters: bf16 momentum + factored second moments (`beta2=0.999`, ~3x less optimizer
+  memory than AdamW, with Philox stochastic rounding for direct bf16/fp16 adapters); exact fp32
+  moments on 1D and tiny high-leverage matrices (`<= 1024` elements, e.g. `lokr_w1`); pre-momentum
+  update-RMS spike protection (`clip=2.5`) + norm-preserving cautious gating (`0.25`); and an
+  **Adaptive LR** toggle (`optim.lotus_auto_lr`) switching between predictable scheduled LR (AdamW
+  replacement) and group-level hypergradient adaptive LR in `0.05x–20x` (honoring warmup and cosine
+  tails). Runs in place via zero-copy fused Triton kernels on CUDA and AMD ROCm.
 - **Dramatically faster `torch.compile` startup and zero un-checkpointing recompile waves.**
   - Shared per-class `torch.compile` wrappers (`compile.py`, `memory/__init__.py`) and shared bound
     methods in `int8_backward.install()` and `SwiGLU` let identical transformer blocks share one

@@ -472,6 +472,7 @@
             "Automagic",
             "Automagic3",
             "Automagic4",
+            "Lotus",
             "Prodigy",
             "AdamWScheduleFree",
             "CAME"
@@ -544,10 +545,15 @@
         },
         "lr_floor": {
           "type": "number",
-          "description": "Automagic v3/v4: the adaptive rate never drops below this fraction of its start (v3's decays and can stall under-strength). 0 = no floor.",
+          "description": "Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this fraction of its start (v3's decays and can stall under-strength). 0 = default floor.",
           "default": 0.0,
           "minimum": 0,
           "maximum": 1
+        },
+        "lotus_auto_lr": {
+          "type": "boolean",
+          "description": "Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead of following the schedule directly. Off = predictable AdamW-style scheduled LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails.",
+          "default": false
         }
       },
       "additionalProperties": false

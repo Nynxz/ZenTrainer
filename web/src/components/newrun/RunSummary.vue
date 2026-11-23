@@ -50,10 +50,10 @@ const warnings = computed(() => {
   if (keep === 'val_loss' && !spec.validation.every) w.push('Keeping the lowest validation loss needs validation on (Advanced training → Validation every).')
   if (opt.value?.id === 'Prodigy' && spec.optim.learning_rate < 0.5) w.push('Prodigy sets its own step size: use LR 1.0.')
   if (opt.value && opt.value.id !== 'Prodigy' && spec.optim.learning_rate >= 0.01) w.push('That LR is very high for this optimizer.')
-  const automagic = ['Automagic', 'Automagic3', 'Automagic4'].includes(opt.value?.id ?? '')
+  const sr = ['Automagic', 'Automagic3', 'Automagic4', 'Lotus'].includes(opt.value?.id ?? '')
   if (opt.value?.id === 'Automagic' && spec.optim.learning_rate > 1e-4) w.push("Automagic's LR is only where each weight starts: use 1e-6 and let it climb.")
   if (opt.value?.id === 'Automagic3' && spec.optim.learning_rate < 2e-5) w.push('Automagic v3 climbs only on a steady trend, which small batches rarely give: from a low start it can stay near it the whole run. Start around 1e-4.')
-  if (spec.network.lora_dtype === 'bf16' && !automagic) w.push('bf16 LoRA weights lose most small steps with this optimizer: use fp32.')
+  if (spec.network.lora_dtype === 'bf16' && !sr) w.push('bf16 LoRA weights lose most small steps with this optimizer: use fp32.')
   if (opt.value && !opt.value.available) w.push(`${opt.value.label} isn't installed (scripts/zt extras optimizers).`)
   if (epochs.value != null && epochs.value < 3) w.push(`Only ${epochs.value.toFixed(1)} epochs: probably too few steps.`)
   return w

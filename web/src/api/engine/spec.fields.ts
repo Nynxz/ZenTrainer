@@ -76,6 +76,7 @@ export interface SpecFields {
     lora_plus: number
     ema: number
     lr_floor: number
+    lotus_auto_lr: boolean
   }
   objective: {
     loss: string
