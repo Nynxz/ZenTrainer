@@ -294,3 +294,52 @@ def test_shared_compiled_blocks_eager_probe_then_compile_gradients_match(monkeyp
     finally:
         torch.compiler.set_stance("default")
         torch._dynamo.reset()
+
+
+def test_deferred_eager_probe_waits_for_next_step_and_scales_already_kept_blocks(monkeypatch):
+    """A probe armed by _tighten() mid-iteration must survive that iteration's _keep_step(), and
+    _fit_kept() must reserve the scaled growth of already-kept blocks for larger buckets."""
+    from zentrainer.harness import trainer as tr_mod
+    from zentrainer.harness.trainer import Trainer
+
+    gb = 1024 ** 3
+    stances = []
+    monkeypatch.setattr(torch.compiler, "set_stance", lambda s: stances.append(s))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+
+    blocks = [nn.Linear(4, 4) for _ in range(12)]
+    ck = types.SimpleNamespace(all=blocks, kept=0, allow_keep=True)
+    ck.keep = lambda n: (setattr(ck, "kept", n) or n)
+
+    t = object.__new__(Trainer)
+    t._ckpt = ck
+    t._compiled = 12
+    t._keep_auto = True
+    t._keep_warm = 0
+    t._keep_cost = {}
+    t._res_seen = 512
+    t._peak = 10 * gb
+    t._card = lambda: (20 * gb, 0)
+    # 1-image current bucket vs 2-image largest bucket -> scale = 2.0
+    t._step_sample_shape = (1, 16, 32, 32)
+    t._step_buckets = {(16, 32, 32): [0, 1]}
+    t.batches = types.SimpleNamespace(batch_size=2)
+
+    # Mid-iteration arming from _tighten(): same-iteration _keep_step must NOT finish settling
+    t._arm_eager_keep_probe(defer=True)
+    assert t._keep_settle == 1 and ck.kept == 1 and stances[-1] == "force_eager"
+    t._keep_step(512)
+    assert t._keep_settle == 1 and t._keep_hooks is not None and t._keep_warm == 0
+
+    # Now simulate already-kept blocks (8 kept, 0.5 GB each at 1x -> 1.0 GB each at 2x).
+    # Peak at 1x = 12 GB (includes 8 * 0.5 GB = 4 GB), card = 20 GB, margin = TIGHTEN_MARGIN.
+    # Extra growth of the 8 already-kept blocks at 2x = 8 * 0.5 * 1.0 * KEEP_SAFETY.
+    ck.kept = 8
+    t._keep_cost = {0: int(0.5 * gb)}
+    t._peak = 12 * gb
+    t._keep_step(512)
+    # Total budget at 2x: 8 GB baseline + want * (0.5 * 2 * KEEP_SAFETY) <= 20 GB - TIGHTEN_MARGIN
+    budget = 20 * gb - tr_mod.TIGHTEN_MARGIN - (12 * gb - 8 * 0.5 * gb)
+    assert ck.kept * 0.5 * gb * 2.0 * tr_mod.KEEP_SAFETY <= budget + 0.5 * gb * 2.0 * tr_mod.KEEP_SAFETY
+    assert ck.kept < 12  # without subtracting already-kept growth, spare=8GB-margin would jump to 12

@@ -1259,7 +1259,7 @@ class Trainer:
             self._keep_warm = 0
             self._keep_cost = {}
             self.__dict__.pop("_keep_ceiling", None)
-            self._arm_eager_keep_probe()
+            self._arm_eager_keep_probe(defer=True)  # _keep_step runs in this same iteration before any forward under it
             logging.info("[ZenTrainer] all model weights fit on the GPU: free VRAM will keep last blocks un-checkpointed")
 
     def _disable_free_vram(self) -> None:
@@ -1309,6 +1309,9 @@ class Trainer:
         out of VRAM at 10 kept, 1.6 GB each)."""
         if hasattr(self, "_keep_step_cost"):
             self._keep_step_cost.clear()
+        if getattr(self, "_keep_defer", False):
+            self._keep_defer = False
+            return
         if res < getattr(self, "_res_seen", 0):
             return
         self._keep_warm = getattr(self, "_keep_warm", 0) + 1
@@ -1351,7 +1354,7 @@ class Trainer:
         self._keep_hooks = None
         self._keep_step_cost = {}
 
-    def _arm_eager_keep_probe(self) -> None:
+    def _arm_eager_keep_probe(self, defer: bool = False) -> None:
         """When compile_blocks and grad_checkpoint_skip='auto' are both on, speed-run the kept
         block count while eager before torch.compile builds any graphs:
           - stage 1 (step 1): 1 main block un-checkpointed -> measure per-step cost and jump to `want`
@@ -1362,11 +1365,13 @@ class Trainer:
             return
         self._kept(1)
         self._keep_settle = 1
+        self._keep_defer = defer
         torch.compiler.set_stance("force_eager")
 
     def _finish_eager_settle(self) -> None:
         self._unhook_kept()
         self._keep_settle = 0
+        self._keep_defer = False
         torch.compiler.set_stance("default")
 
     def _bucket_scale(self) -> float:
@@ -1409,7 +1414,8 @@ class Trainer:
             cost = raw_cost * scale * KEEP_SAFETY
             torch.cuda.empty_cache()
             total, others = self._card()
-            spare = total - others - self._peak - TIGHTEN_MARGIN
+            # already-kept blocks grow with the largest bucket too, not just newly added ones
+            spare = total - others - self._peak - TIGHTEN_MARGIN - ck.kept * raw_cost * (scale - 1.0) * KEEP_SAFETY
             ceiling = getattr(self, "_keep_ceiling", len(ck.all))
             # During the pre-compile eager settle, jump straight to `want` instead of doubling
             # 1->2->4->8->16->32 across 6 recompile waves.
