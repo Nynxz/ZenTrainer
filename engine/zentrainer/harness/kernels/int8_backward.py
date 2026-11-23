@@ -571,19 +571,29 @@ class _LoRAInt8(torch.autograd.Function):
     its weights' own."""
 
     @staticmethod
-    def forward(ctx, x, down, up, scale, m, original):
+    def forward(ctx, x, down, up, scale, m, original, frozen=()):
         x2 = x.detach().reshape(-1, x.shape[-1])
         a = down.detach().to(x.dtype)
         b = up.detach().to(x.dtype) if scale == 1.0 else (up.detach() * scale).to(x.dtype)  # (rank, in), (out, rank)
         with torch.no_grad():
             z = x2 @ a.t()
             h = z @ b.t()
+            for fa, fb, fscale, foff in frozen:
+                fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
+                fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
+                fh = (x2 @ fa_t.t()) @ fb_t.t()
+                if fscale != 1.0:
+                    fh = fh * fscale
+                if foff is None:
+                    h = h + fh
+                else:
+                    h[:, foff:foff + fh.shape[1]].add_(fh)
             out = _int8_forward(m, x2, h)
             if out is None:  # the layer can't take the residual: as the bypass does it
                 _count("lora + int8: unfused")
                 out = original(x2) + h  # the layer's own forward (no grad here)
         ctx.save_for_backward(x, z, a, b)  # x itself: a view of it saved breaks compiled blocks' tracing
-        ctx.m, ctx.scale, ctx.in_shape, ctx.dtypes = m, scale, x.shape, (down.dtype, up.dtype)
+        ctx.m, ctx.scale, ctx.in_shape, ctx.dtypes, ctx.frozen = m, scale, x.shape, (down.dtype, up.dtype), frozen
         return out.reshape(*x.shape[:-1], out.shape[-1])
 
     @staticmethod
@@ -596,9 +606,22 @@ class _LoRAInt8(torch.autograd.Function):
         d_up = g.t() @ z if ctx.scale == 1.0 else (g.t() @ z) * ctx.scale
         d_down = gz.t() @ x2
         # the int8 input gradient only when something before the layer needs it
-        gi = _layer_input_grad(ctx.m, g, gz @ a).to(grad_out.dtype).reshape(ctx.in_shape) if ctx.needs_input_grad[0] else None
+        if ctx.needs_input_grad[0]:
+            dx = gz @ a
+            for fa, fb, fscale, foff in ctx.frozen:
+                fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
+                fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
+                g_slice = g if foff is None else g[:, foff:foff + fb_t.shape[0]]
+                fgz = g_slice @ fb_t
+                if fscale != 1.0:
+                    fgz = fgz * fscale
+                dx = dx + fgz @ fa_t
+            gi = _layer_input_grad(ctx.m, g, dx).to(grad_out.dtype).reshape(ctx.in_shape)
+        else:
+            gi = None
         ctx.m = None
-        return gi, d_down.to(ctx.dtypes[0]), d_up.to(ctx.dtypes[1]), None, None, None
+        ctx.frozen = ()
+        return gi, d_down.to(ctx.dtypes[0]), d_up.to(ctx.dtypes[1]), None, None, None, None
 
 
 _ones_cache: dict[tuple, torch.Tensor] = {}
@@ -644,47 +667,91 @@ def _int8_forward(m, x2: torch.Tensor, residual: torch.Tensor) -> torch.Tensor |
     return out
 
 
-class LoRABeside(_PassesOn, torch.nn.Module):
-    """How a plain LoRA attaches (bypass) to a frozen int8 layer while training: as _LoRAInt8.
-    Otherwise (sampling, no grad, a layer with weight functions, int8_forward off) the bypass's
-    own way, f(x) + h(x). Owns no parameters of its own: the LoRA's stay where they're saved from."""
+def _is_plain_lora(mod) -> bool:
+    return (type(mod).__name__ == "LoraDiff" and getattr(mod, "lora_mid", None) is None
+            and getattr(mod, "dora_scale", None) is None
+            and mod.lora_down.weight.ndim == 2 and mod.lora_up.weight.ndim == 2)
 
-    def __init__(self, lora, layer):
+
+def _frozen_lora_terms(mod, strength: float) -> list[tuple] | None:
+    """Extract (down, up, scale, offset_or_None) from a frozen LoraDiff or _Sliced of LoraDiffs,
+    or None if the adapter uses another layout (LoHa, LoKr, DoRA, conv mid)."""
+    if mod is None or strength == 0.0:
+        return []
+    if _is_plain_lora(mod):
+        return [(mod.lora_down.weight, mod.lora_up.weight, float(mod.alpha) / mod.rank * strength, None)]
+    if type(mod).__name__ == "_Sliced":
+        terms = []
+        for off, _size, part in getattr(mod, "parts", ()):
+            if not _is_plain_lora(part):
+                return None
+            terms.append((part.lora_down.weight, part.lora_up.weight, float(part.alpha) / part.rank * strength, off))
+        return terms
+    return None
+
+
+class LoRABeside(_PassesOn, torch.nn.Module):
+    """How a plain LoRA (alone, or inside _Assisted with a turbo/training/base LoRA or slider)
+    attaches (bypass) to a frozen int8 layer while training: as _LoRAInt8. Otherwise (sampling,
+    no grad, strength 0, a layer with weight functions, int8_forward off) the bypass's own way,
+    f(x) + h(x). Owns no parameters of its own: the LoRA's stay where they're saved from."""
+
+    def __init__(self, lora, layer, assisted=None, frozen_terms: tuple = ()):
         super().__init__()
-        self.lora = lora
+        if assisted is not None:
+            self.assisted = assisted
+            self.__dict__["lora"] = lora  # already registered under self.assisted.trained
+        else:
+            self.lora = lora
+            self.assisted = None
         self.__dict__["layer"] = layer  # not a submodule: its weights aren't the adapter's
         self._alpha = float(lora.alpha)  # read once: a Parameter on the GPU would sync every call
+        self._frozen = frozen_terms  # frozen (down, up, scale, offset) active while training (assist + base)
 
     def _inner(self) -> list:
-        return [self.lora]
+        return [self.assisted] if self.assisted is not None else [self.lora]
 
     def h(self, x, base_out):
-        return self.lora.h(x, base_out)
+        return self.assisted.h(x, base_out) if self.assisted is not None else self.lora.h(x, base_out)
 
     def g(self, y):
-        return y
+        return self.assisted.g(y) if self.assisted is not None else y
 
     def __call__(self, w):  # the weight-wrapper protocol, which bypass never uses
-        return self.lora(w)
+        return self.assisted(w) if self.assisted is not None else self.lora(w)
 
     def bypass_forward(self, org_forward, x, *args, **kwargs):
         import comfy.model_management as mm
 
         m = self.layer
-        if (args or kwargs or not (mm.in_training and torch.is_grad_enabled()) or not x.is_cuda
-                or x.dtype not in (torch.bfloat16, torch.float16) or getattr(m, "_full_precision_mm", False)
-                or len(m.weight_function) or len(m.bias_function)):
+        assisted = self.assisted
+        st = assisted.switch.strength if assisted is not None else 1.0
+        training_active = assisted is None or (assisted.switch.on and st != 0.0)
+        if (args or kwargs or not (mm.in_training and torch.is_grad_enabled() and training_active)
+                or not x.is_cuda or x.dtype not in (torch.bfloat16, torch.float16)
+                or getattr(m, "_full_precision_mm", False) or len(m.weight_function) or len(m.bias_function)):
             base = org_forward(x, *args, **kwargs)
             return base + self.h(x, base)
-        scale = self._alpha / self.lora.rank * getattr(self, "multiplier", 1.0)
-        return _LoRAInt8.apply(x, self.lora.lora_down.weight, self.lora.lora_up.weight, scale, m, org_forward)
+        mult = getattr(self, "multiplier", 1.0)
+        scale = self._alpha / self.lora.rank * mult * st
+        frozen = (self._frozen if mult == 1.0 or not self._frozen
+                  else tuple((fa, fb, fs * mult, foff) for fa, fb, fs, foff in self._frozen))
+        return _LoRAInt8.apply(x, self.lora.lora_down.weight, self.lora.lora_up.weight, scale, m, org_forward, frozen)
 
 
 def lora_beside(adapter, layer):
-    """The adapter to attach to `layer` in bypass: LoRABeside for a plain LoRA on an int8 layer."""
-    if (type(adapter).__name__ == "LoraDiff" and getattr(adapter, "lora_mid", None) is None
-            and _int8_layer(layer) and _mode):
+    """The adapter to attach to `layer` in bypass: LoRABeside for a plain LoRA on an int8 layer,
+    including one wrapped in _Assisted (turbo preview LoRA, training adapter, base LoRA, slider)."""
+    if not (_int8_layer(layer) and _mode):
+        return adapter
+    if _is_plain_lora(adapter):
         return LoRABeside(adapter, layer)
+    if type(adapter).__name__ == "_Assisted" and _is_plain_lora(adapter.trained):
+        base_terms = _frozen_lora_terms(adapter.base, adapter.base_strength)
+        assist_terms = _frozen_lora_terms(adapter.assist, 1.0)
+        if base_terms is None or assist_terms is None:
+            return adapter
+        return LoRABeside(adapter.trained, layer, assisted=adapter, frozen_terms=tuple(base_terms + assist_terms))
     return adapter
 
 
