@@ -579,11 +579,12 @@ def delete_folder(name: str, sub: str) -> int:
     return n
 
 
-def save_upload(name: str, filename: str, data: bytes, into: str = "") -> str:
+def save_upload(name: str, filename: str, data: bytes, into: str = "") -> tuple[str, bool]:
     """An image, a caption file, or a mask (`<stem>-masklabel.png` / `<stem>.mask.png`,
     stored as `_masks/<stem>.png`), written into the dataset folder, or into its subfolder
-    `into` (an added folder; made if new). Never over an existing file: the same bytes again
-    are skipped, different ones get `name (2).ext`."""
+    `into` (an added folder; made if new): its path there, and whether it's new. Never over an
+    existing file: the same bytes again aren't written (not new), different ones get
+    `name (2).ext`."""
     base = Path(filename).name
     p = Path(base)
     if p.suffix.lower() not in MEDIA_EXTS | {".txt"} or base.startswith("."):
@@ -607,12 +608,18 @@ def save_upload(name: str, filename: str, data: bytes, into: str = "") -> str:
         target = _inside(d, str(sub.relative_to(d) / "_masks" / f"{stem}{p.suffix.lower()}"))
     else:
         target = _inside(d, str(sub.relative_to(d) / base))
-    if target.exists():
-        if target.is_file() and target.stat().st_size == len(data) and target.read_bytes() == data:
-            return str(target.relative_to(d))  # already there
-        target = safeio.free_name(target)
-    safeio.write_bytes(target, data)
-    return str(target.relative_to(d))
+    # the same bytes already there, under the name or a numbered one an earlier drop of them got (a
+    # drop again after the connection dropped): not new, not written again. Else the first free name
+    alt, n = target, 2
+    while alt.exists():
+        try:
+            if alt.is_file() and alt.stat().st_size == len(data) and alt.read_bytes() == data:
+                return str(alt.relative_to(d)), False
+        except PermissionError:
+            pass  # unreadable candidate: preserve it and keep looking for a free numbered name
+        alt, n = target.with_name(f"{target.stem} ({n}){target.suffix}"), n + 1
+    safeio.write_bytes(alt, data)
+    return str(alt.relative_to(d)), True
 
 
 def save_mask(name: str, rel: str, data_url: str) -> dict:

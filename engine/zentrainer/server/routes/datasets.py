@@ -468,7 +468,7 @@ def register(server) -> None:
     async def upload(request):
         """Files into the dataset, or with ?folder= into that subfolder of it (an added folder)."""
         name, into = request.match_info["name"], request.query.get("folder", "")
-        saved, errors = [], []
+        saved, existing, errors = [], [], []  # existing: the dataset had that file, byte for byte
         reader = await request.multipart()
         async for part in reader:
             if part.filename:
@@ -477,9 +477,10 @@ def register(server) -> None:
                     errors.append(_too_big(part.filename))
                     continue
                 try:
-                    saved.append(await asyncio.to_thread(datasets.save_upload, name, part.filename, bytes(data), into))
+                    rel, new = await asyncio.to_thread(datasets.save_upload, name, part.filename, bytes(data), into)
+                    (saved if new else existing).append(rel)
                 except (datasets.DatasetError, FileNotFoundError) as e:
                     errors.append(str(e))
                 except OSError as e:  # the disk said no (full, say): that file, not the rest of the batch
                     errors.append(f"{part.filename}: {e.strerror or e}")
-        return web.json_response({"saved": saved, "errors": errors})
+        return web.json_response({"saved": saved, "existing": existing, "errors": errors})

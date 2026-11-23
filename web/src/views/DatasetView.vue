@@ -16,6 +16,7 @@ import DatasetPairs from '@/components/dataset/DatasetPairs.vue'
 import DatasetSide from '@/components/dataset/DatasetSide.vue'
 import DatasetTable from '@/components/dataset/DatasetTable.vue'
 import { askText } from '@/lib/ask'
+import { handoff, useFileDrop } from '@/lib/drop'
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
@@ -128,17 +129,39 @@ function openMasks() {
 }
 
 // ---- upload -------------------------------------------------------------------------------
-const dragging = ref(false)
 const uploading = ref(false)
+const sent = ref(0) // of the drop's bytes, 0 to 1: the toast's bar
 const fileInput = ref<HTMLInputElement | null>(null)
+// a drop with folders in it keeps them (addFolder); loose files go in as they are, the server saying
+// why it refuses any
+const take = (files: File[], paths: string[] | null) => (paths ? addFolder(files.map((f, i): [File, string] => [f, paths[i]!])) : upload(files))
+// a folder named like this dataset is the one it was made from (the Datasets page lays its contents
+// out at the top): dropped again it goes in the same way, so what's there is skipped rather than
+// copied into a subfolder of the dataset's own name
+const dragging = useFileDrop(({ files, paths, folder }) =>
+  take(files, folder === props.name && paths ? paths.map((p) => p.slice(folder.length + 1)) : paths),
+)
 const folderInput = ref<HTMLInputElement | null>(null)
-// `folders[i]` is the subfolder files[i] goes into ('' or none: the dataset itself); one request a folder
-// `note`: what was left out before the upload, said with its errors
-async function upload(files: File[], folders: string[] = [], note = '') {
-  if (!files.length) return
+// A drop or pick goes up in requests of about 48 MB (a tunnel or proxy on the way won't take a
+// gigabyte in one; what's landed stays when one fails), each into one folder, the pictures showing
+// as they come. The toast's bar fills by bytes, so it moves inside a part on a slow link.
+// Drops take turns: a second during the first waits for it.
+// `folders[i]` is the subfolder files[i] goes into ('' or none: the dataset itself); `note`: what
+// was left out before the upload, said with its result
+const BATCH = 48 * 1024 ** 2
+let turn = Promise.resolve()
+// Each goes into the dataset it was dropped on: going to another dataset's page keeps this page
+// (only the name changes), and a drop's later parts mustn't follow it there
+function upload(files: File[], folders: string[] = [], note = '') {
+  const name = props.name
+  turn = turn.then(() => send(name, files, folders, note))
+}
+async function send(name: string, files: File[], folders: string[], note: string) {
+  if (!files.length) return flash('Nothing to add in that drop')
   uploading.value = true
-  error.value = null
-  notice.value = `Adding ${files.length} file${files.length === 1 ? '' : 's'}…`
+  sent.value = 0
+  const total = files.reduce((n, f) => n + f.size, 0) || 1
+  let done = 0
   const groups = new Map<string, File[]>()
   for (const [i, f] of files.entries()) {
     const into = folders[i] ?? ''
@@ -146,29 +169,50 @@ async function upload(files: File[], folders: string[] = [], note = '') {
     if (!group) groups.set(into, (group = []))
     group.push(f)
   }
-  const r = { saved: [] as string[], errors: [] as string[] }
-  let failed = ''
+  const saved: string[] = []
+  const existing: string[] = []
+  const errors: string[] = []
+  let stopped: string | null = null
+  let refreshed = Date.now()
+  // the same words throughout, so the toast holds its width while its bar fills
+  notice.value = `Adding ${files.length.toLocaleString()} file${files.length === 1 ? '' : 's'}…`
   try {
     for (const [into, group] of groups) {
-      const part = await engine.upload(props.name, group, into)
-      r.saved.push(...part.saved)
-      r.errors.push(...part.errors)
+      for (let i = 0; i < group.length; ) {
+        let j = i + 1
+        for (let bytes = group[i]!.size; j < group.length && bytes + group[j]!.size <= BATCH; j++) bytes += group[j]!.size
+        const part = group.slice(i, j)
+        const bytes = part.reduce((n, f) => n + f.size, 0)
+        const r = await engine.upload(name, part, into, (f) => (sent.value = (done + f * bytes) / total))
+        done += bytes
+        saved.push(...r.saved)
+        existing.push(...r.existing)
+        errors.push(...r.errors)
+        i = j
+        if (done < total && name === props.name && Date.now() - refreshed > 4000) {
+          refreshed = bust.value = Date.now()
+          await load()
+        }
+      }
     }
   } catch (e) {
-    failed = (e as Error).message // the folders before it are in: the reload below shows them
-  }
-  const n = r.saved.length
-  const added = `${n} file${n === 1 ? '' : 's'} added`
-  if (failed) notice.value = null
-  else {
-    const into = [...groups.keys()].filter(Boolean)
-    flash(added + (into.length ? ` into ${into.join(', ')}` : '') + (r.errors.length ? `, ${r.errors.length} skipped` : '') + (note ? `. ${note}` : ''))
+    stopped = String((e as Error).message ?? e)
+  } finally {
+    uploading.value = false
   }
   bust.value = Date.now()
-  await load() // clears the error when it loads: this upload's own go in after
-  const report = [...(failed ? [`Adding the files failed${n ? ` after ${added}` : ''}: ${failed}`] : []), ...r.errors, ...(failed && note ? [note] : [])]
-  if (report.length) error.value = report.join('\n')
-  uploading.value = false
+  await load() // clears `error`: what was skipped, and why, goes up after it
+  const count = (k: number) => `${k} file${k === 1 ? '' : 's'}`
+  // the folders, when all of it went into some (a folder dropped or picked onto the page)
+  const into = groups.has('') ? '' : ` into ${[...groups.keys()].join(', ')}`
+  let said = saved.length || !existing.length ? `${count(saved.length)} added${into}` : `${count(existing.length)} already there`
+  if (saved.length && existing.length) said += `, ${existing.length} already there`
+  if (errors.length) said += `, ${errors.length} skipped`
+  const to = name === props.name ? '' : `${name}: ` // finished after going to another dataset's page
+  flash(to + (stopped ? `${count(saved.length)} added, then the upload stopped` : said + (note ? `. ${note}` : '')))
+  if (stopped) errors.push(stopped)
+  if (note) errors.push(note)
+  if (errors.length) error.value = errors.join('\n')
 }
 // what the server takes: pictures, videos and .txt captions (the engine's IMAGE_EXTS and VIDEO_EXTS)
 const TAKES = /\.(png|jpe?g|webp|bmp|mp4|webm|mov|mkv|avi|m4v|txt)$/i
@@ -216,69 +260,16 @@ function addFolder(picked: [File, string][]) {
   }
   return upload(files, folders, note)
 }
-// every file under some dropped entries, each with its path from the dropped folder's name
-async function walk(entries: FileSystemEntry[]): Promise<[File, string][]> {
-  const out: [File, string][] = []
-  for (const entry of entries) {
-    if (entry.isFile) {
-      const file = await new Promise<File>((ok, bad) => (entry as FileSystemFileEntry).file(ok, bad))
-      out.push([file, entry.fullPath.replace(/^\//, '')])
-    } else if (entry.isDirectory) {
-      const reader = (entry as FileSystemDirectoryEntry).createReader()
-      // a folder's entries come a batch at a time, until an empty one
-      for (let batch = await read(reader); batch.length; batch = await read(reader)) out.push(...(await walk(batch)))
-    }
-  }
-  return out
-}
-const read = (reader: FileSystemDirectoryReader) => new Promise<FileSystemEntry[]>((ok, bad) => reader.readEntries(ok, bad))
-let depth = 0
-// a picture dragged from this page (a card, the lightbox) carries itself as a file too: only files
-// from outside are added
-let inner = false
-const onDragStart = () => (inner = true)
-const onDragEnd = () => (inner = false)
-const onEnter = (e: DragEvent) => {
-  if (!inner && e.dataTransfer?.types.includes('Files')) {
-    depth++
-    dragging.value = true
-  }
-}
-const onLeave = () => {
-  if (--depth <= 0) {
-    depth = 0
-    dragging.value = false
-  }
-}
-const onOver = (e: DragEvent) => e.preventDefault()
-const onDrop = (e: DragEvent) => {
-  e.preventDefault()
-  depth = 0
-  dragging.value = false
-  if (inner) return
-  // read before anything is awaited: a drop's items are gone once the event is over
-  const entries = [...(e.dataTransfer?.items ?? [])].map((item) => item.webkitGetAsEntry?.()).filter((x): x is FileSystemEntry => !!x)
-  if (entries.some((x) => x.isDirectory)) walk(entries).then(addFolder, (err: Error) => (error.value = `Reading the dropped folder failed: ${err.message}`))
-  else upload([...(e.dataTransfer?.files ?? [])])
-}
 onMounted(() => {
-  addEventListener('dragenter', onEnter)
-  addEventListener('dragleave', onLeave)
-  addEventListener('dragover', onOver)
-  addEventListener('drop', onDrop)
-  addEventListener('dragstart', onDragStart)
-  addEventListener('dragend', onDragEnd)
   addEventListener('keydown', onEsc)
+  // dropped on the Datasets page, which made this dataset for them
+  if (handoff.name === props.name && handoff.files.length) {
+    const paths = handoff.paths
+    handoff.paths = null
+    take(handoff.files.splice(0), paths)
+  }
 })
-onUnmounted(() => {
-  removeEventListener('dragenter', onEnter)
-  removeEventListener('dragleave', onLeave)
-  removeEventListener('dragover', onOver)
-  removeEventListener('drop', onDrop)
-  removeEventListener('dragstart', onDragStart)
-  removeEventListener('dragend', onDragEnd)
-  removeEventListener('keydown', onEsc)
-})
+onUnmounted(() => removeEventListener('keydown', onEsc))
 </script>
 
 <template>
@@ -341,8 +332,6 @@ onUnmounted(() => {
       <button class="chip-btn" @click="reviewing = null"><i class="mdi mdi-close" /> Show all</button>
     </div>
 
-    <div v-if="notice" class="notice">{{ notice }}</div>
-
     <ZenEmpty v-if="!loading && !items.length" title="Empty dataset" icon="mdi mdi-image-plus-outline">
       Drop images, videos, same-name .txt captions and masks (<span class="mono">name-masklabel.png</span>) anywhere on this page, or whole folders: each comes in as a folder of its own.
     </ZenEmpty>
@@ -356,22 +345,33 @@ onUnmounted(() => {
       <DatasetSide v-if="panelShown" :name="name" :drawer="narrow" />
     </div>
 
-    <!-- selecting doesn't move anything: the actions float over the bottom of the page -->
-    <Transition name="selbar">
-      <div v-if="selected.size || boxing" class="sel-bar zen-surface">
-        <b>{{ selected.size }}<span class="lbl"> selected</span></b>
-        <button class="chip-btn" :title="allShownSelected ? 'Deselect the shown images' : 'Select every shown image'" @click="toggleAll">
-          <i :class="allShownSelected ? 'mdi mdi-checkbox-marked' : 'mdi mdi-checkbox-multiple-blank-outline'" /><span class="lbl">{{ allShownSelected ? 'Deselect shown' : 'Select shown' }}</span>
-        </button>
-        <span class="sel-sep" />
-        <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /><span class="lbl">Mute</span></button>
-        <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /><span class="lbl">Unmute</span></button>
-        <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /><span class="lbl">Masks</span></button>
-        <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /><span class="lbl">Delete</span></button>
-        <span class="sel-sep" />
-        <button class="chip-btn" title="Clear the selection (Esc)" @click="selected.clear()"><i class="mdi mdi-close" /></button>
-      </div>
-    </Transition>
+    <!-- a message and the selection's actions float over the bottom of the page: neither moves anything -->
+    <div class="float">
+      <Transition name="float">
+        <div v-if="notice" class="notice zen-surface" :class="{ busy: uploading }">
+          <i v-if="uploading" class="mdi mdi-loading mdi-spin" />{{ notice }}
+          <template v-if="uploading">
+            <b class="pct"><span>{{ Math.floor(sent * 100) }}%</span></b>
+            <span class="bar" :style="{ transform: `scaleX(${sent})` }" />
+          </template>
+        </div>
+      </Transition>
+      <Transition name="float">
+        <div v-if="selected.size || boxing" class="sel-bar zen-surface">
+          <b>{{ selected.size }}<span class="lbl"> selected</span></b>
+          <button class="chip-btn" :title="allShownSelected ? 'Deselect the shown images' : 'Select every shown image'" @click="toggleAll">
+            <i :class="allShownSelected ? 'mdi mdi-checkbox-marked' : 'mdi mdi-checkbox-multiple-blank-outline'" /><span class="lbl">{{ allShownSelected ? 'Deselect shown' : 'Select shown' }}</span>
+          </button>
+          <span class="sel-sep" />
+          <button class="chip-btn" :title="`Keep them, but don't train on them in “${activeSet}”`" @click="setMuted([...selected], true)"><i class="mdi mdi-eye-off-outline" /><span class="lbl">Mute</span></button>
+          <button class="chip-btn" :title="`Train on them again in “${activeSet}”`" @click="setMuted([...selected], false)"><i class="mdi mdi-eye-outline" /><span class="lbl">Unmute</span></button>
+          <button class="chip-btn" title="Open the mask editor on the first selected picture" @click="openMasks"><i class="mdi mdi-vector-selection" /><span class="lbl">Masks</span></button>
+          <button class="chip-btn danger" title="Delete the selected images with their captions and masks (asks first)" @click="removeMany([...selected])"><i class="mdi mdi-trash-can-outline" /><span class="lbl">Delete</span></button>
+          <span class="sel-sep" />
+          <button class="chip-btn" title="Clear the selection (Esc)" @click="selected.clear()"><i class="mdi mdi-close" /></button>
+        </div>
+      </Transition>
+    </div>
 
     <ZenContextMenu ref="menu" :items="menuItems" />
 
@@ -381,7 +381,7 @@ onUnmounted(() => {
       </template>
     </ZenLightbox>
 
-    <div v-if="dragging" class="dropzone"><i class="mdi mdi-tray-arrow-down" /> Drop to add to {{ name }}</div>
+    <div v-if="dragging" class="drop-cover"><i class="mdi mdi-tray-arrow-down" /> Drop to add to {{ name }}</div>
   </div>
 </template>
 
@@ -446,31 +446,6 @@ onUnmounted(() => {
 .reviewing > :nth-child(2) {
   flex: 1;
 }
-.notice {
-  align-self: flex-start;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--zen-ok) 18%, transparent);
-}
-.dropzone {
-  position: fixed;
-  inset: 16px;
-  z-index: 60;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  font-weight: 600;
-  border: 2px dashed var(--zen-accent);
-  border-radius: var(--r-xl);
-  background: color-mix(in srgb, var(--zen-bg) 75%, transparent);
-  backdrop-filter: blur(4px);
-  pointer-events: none;
-}
-.dropzone i {
-  font-size: 40px;
-  color: var(--zen-accent);
-}
 /* ---- page layout: a slim header, one fixed toolbar, the pictures and a side panel ---- */
 /* everything gives way before anything is cut off: the side panel's button is always there */
 .page-toolbar .zoom {
@@ -533,14 +508,70 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
 }
-/* the selection's actions float over the page bottom: selecting moves nothing. Its look (border,
-   corners, background, shadow) is the theme's floating surface, as the right-click menu's is */
-.sel-bar {
+/* a message (files added, captions changed) and the selection's actions float over the page
+   bottom, the message above the bar: neither moves anything, and one coming or going doesn't move
+   the other. Their look (border, corners, background, shadow) is the theme's floating surface, as
+   the right-click menu's is */
+.float {
   position: fixed;
-  left: 50%;
+  left: 0;
+  right: 0;
   bottom: 18px;
-  transform: translateX(-50%);
   z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.float > * {
+  pointer-events: auto;
+}
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw / var(--zen-page-zoom) - 32px);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+/* an upload's toast: the bar fills along its bottom edge, inside it, so nothing grows or moves */
+.notice.busy {
+  position: relative;
+  overflow: hidden;
+  padding-left: 10.5px;
+}
+/* the spinner sits midway between the border and the words */
+.notice.busy > .mdi {
+  margin-right: 3px;
+}
+/* as wide as "100%" from the start: the toast doesn't grow as it gets there */
+.notice .pct {
+  display: grid;
+  justify-items: end;
+  color: var(--zen-muted);
+  font-weight: 500;
+}
+.notice .pct::before {
+  content: '100%';
+  visibility: hidden;
+}
+.notice .pct::before,
+.notice .pct > span {
+  grid-area: 1 / 1;
+}
+.notice .bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--zen-accent);
+  transform-origin: left;
+  transition: transform 0.2s linear;
+}
+.sel-bar {
   display: flex;
   align-items: center;
   /* too many for the window (a phone, a large Text size): a second row, not buttons off screen */
@@ -565,14 +596,14 @@ onUnmounted(() => {
   height: 18px;
   background: var(--zen-border);
 }
-.selbar-enter-active,
-.selbar-leave-active {
+.float-enter-active,
+.float-leave-active {
   transition: opacity var(--zen-dur-fast), transform var(--zen-dur-fast);
 }
-.selbar-enter-from,
-.selbar-leave-to {
+.float-enter-from,
+.float-leave-to {
   opacity: 0;
-  transform: translate(-50%, 8px);
+  transform: translateY(8px);
 }
 @media (max-width: 900px) {
   .page-toolbar .zoom,

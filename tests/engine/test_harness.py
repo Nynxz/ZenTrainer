@@ -500,10 +500,10 @@ def test_an_added_folder_lands_as_a_subfolder(tmp_path, monkeypatch):
     buf = __import__("io").BytesIO()
     Image.new("RGB", (16, 8)).save(buf, "PNG")
     png = buf.getvalue()
-    assert Path(datasets.save_upload("chars", "a.png", png, "bob")) == Path("bob/a.png")
-    assert Path(datasets.save_upload("chars", "a.txt", b"[trigger] mid-air", "bob")) == Path("bob/a.txt")
-    assert Path(datasets.save_upload("chars", "a-masklabel.png", png, "bob")) == Path("bob/_masks/a.png")
-    assert Path(datasets.save_upload("chars", "b.png", png, "bob/closeups")) == Path("bob/closeups/b.png")
+    assert Path(datasets.save_upload("chars", "a.png", png, "bob")[0]) == Path("bob/a.png")
+    assert Path(datasets.save_upload("chars", "a.txt", b"[trigger] mid-air", "bob")[0]) == Path("bob/a.txt")
+    assert Path(datasets.save_upload("chars", "a-masklabel.png", png, "bob")[0]) == Path("bob/_masks/a.png")
+    assert Path(datasets.save_upload("chars", "b.png", png, "bob/closeups")[0]) == Path("bob/closeups/b.png")
     # outside, a folder training skips, or a file already there
     for bad in ("../evil", "_masks", ".hidden", "bob/_x", "bob/..", "bob/a.png", "bob/a.png/x", "nul\0byte"):
         with pytest.raises(datasets.DatasetError):
@@ -531,7 +531,7 @@ def test_dataset_editing_stays_inside_the_folder(tmp_path, monkeypatch):
             datasets.folder(bad)
     buf = __import__("io").BytesIO()
     Image.new("RGB", (16, 8)).save(buf, "PNG")
-    assert datasets.save_upload("cats", "../../evil/a.png", buf.getvalue()) == "a.png"
+    assert datasets.save_upload("cats", "../../evil/a.png", buf.getvalue()) == ("a.png", True)
     with pytest.raises(datasets.DatasetError):
         datasets.save_upload("cats", "run.sh", b"#!")
     datasets.set_caption("cats", "a.png", "a cat")
@@ -541,7 +541,7 @@ def test_dataset_editing_stays_inside_the_folder(tmp_path, monkeypatch):
     assert rows[0]["caption"] == "zt_cat, a cat" and rows[0]["width"] == 16
     with pytest.raises(datasets.DatasetError):
         datasets.set_caption("cats", "../../x.png", "nope")
-    assert datasets.save_upload("cats", "a-masklabel.png", buf.getvalue()) == "_masks/a.png"
+    assert datasets.save_upload("cats", "a-masklabel.png", buf.getvalue()) == ("_masks/a.png", True)
     assert datasets.items("cats")["items"][0]["mask"] == "_masks/a.png"
     thumb = datasets.thumbnail("cats", "a.png", 64, tmp_path / "thumbs")
     assert thumb.is_file() and datasets.thumbnail("cats", "a.png", 64, tmp_path / "thumbs") == thumb  # cached
