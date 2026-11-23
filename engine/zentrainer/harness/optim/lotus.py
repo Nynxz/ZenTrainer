@@ -124,7 +124,8 @@ class Lotus(torch.optim.Optimizer):
         """Scale- and size-invariant per-tensor cosine sum and valid count (zero GPU->CPU sync)."""
         dot, m2, g2 = align_rows[:, 0], align_rows[:, 1], align_rows[:, 2]
         valid = (m2 > 1e-24) & (g2 > 1e-24)
-        cos = torch.where(valid, dot / ((m2 * g2).clamp_min(1e-24).sqrt() + 1e-12), torch.zeros_like(dot))
+        denom = torch.where(valid, (m2 * g2).sqrt(), torch.ones_like(dot))
+        cos = torch.where(valid, dot / denom, torch.zeros_like(dot))
         return cos.sum(), valid.to(torch.float32).sum()
 
     @staticmethod
@@ -161,7 +162,7 @@ class Lotus(torch.optim.Optimizer):
         else:
             c_new, v_new = c_prev, v_prev
 
-        base_t = torch.tensor(base_lr, dtype=torch.float32, device=ctrl.device)
+        base_t = torch.full((), base_lr, dtype=torch.float32, device=ctrl.device)
         if step >= 8:
             denom = (v_new * se_scale + floor * floor).sqrt()
             z = (c_new / denom).clamp(-2.0, 2.0)
@@ -217,9 +218,7 @@ class Lotus(torch.optim.Optimizer):
                     torch.zeros((), dtype=torch.float32, device=ctrl.device),
                 )
 
-        # 2. Compute momentum updates and accumulate group cosine alignment (or finish in place via Triton)
-        chunk_records: list[tuple[int, list[torch.Tensor], torch.Tensor]] = []
-        chunk_mults: list[torch.Tensor | None] = []
+        # 2. Compute momentum updates, apply immediately per chunk, and accumulate group cosine alignment
         stepped_params: list[torch.Tensor] = []
 
         for key, ps, is_exact in [(k, v, False) for k, v in stacks.items()] + [(k, v, True) for k, v in exact.items()]:
@@ -258,6 +257,7 @@ class Lotus(torch.optim.Optimizer):
                     continue
 
             per = max(1, CHUNK // max(1, ps[0].numel()))
+            lr_base, wd = group["lr"], group["weight_decay"]
             for i in range(0, len(ps), per):
                 chunk = ps[i:i + per]
                 if is_exact:
@@ -270,35 +270,27 @@ class Lotus(torch.optim.Optimizer):
                     acc_s.add_(sc.to(acc_s.device))
                     acc_c.add_(cnt.to(acc_c.device))
                 mults = g_mult.to(chunk[0].device).expand(len(chunk)).contiguous() if g_mult is not None else None
-                chunk_records.append((gi, chunk, u_stack))
-                chunk_mults.append(mults)
+                dev, p_dtype = chunk[0].device, chunk[0].dtype
+                if _lotus_triton.supported(u_stack, p_dtype):
+                    _lotus_triton.apply_step(u_stack, chunk, mults, lr_base, wd)
+                else:
+                    new_p = torch.stack(chunk).to(torch.float32)
+                    if wd != 0.0:
+                        u_stack.add_(new_p, alpha=wd)
+                    if mults is not None:
+                        lr_eff = (mults * lr_base).view(-1, *([1] * (u_stack.dim() - 1)))
+                        new_p.addcmul_(u_stack, lr_eff, value=-1.0)
+                    else:
+                        new_p.add_(u_stack, alpha=-lr_base)
+                    if p_dtype == torch.float32:
+                        torch._foreach_copy_(chunk, list(new_p.unbind(0)))
+                    else:
+                        low = torch.empty((len(chunk),) + tuple(chunk[0].shape), dtype=p_dtype, device=dev)
+                        _sr_truncate_(low, new_p)
+                        torch._foreach_copy_(chunk, list(low.unbind(0)))
                 stepped_params.extend(chunk)
 
-        # 3. Apply decoupled weight decay, effective LR, and stochastic rounding to fallback chunks
-        for ci, (gi, chunk, u_stack) in enumerate(chunk_records):
-            group = self.param_groups[gi]
-            lr_base, wd = group["lr"], group["weight_decay"]
-            dev, p_dtype = chunk[0].device, chunk[0].dtype
-            mults = chunk_mults[ci]
-            if _lotus_triton.supported(u_stack, p_dtype):
-                _lotus_triton.apply_step(u_stack, chunk, mults, lr_base, wd)
-            else:
-                new_p = torch.stack(chunk).to(torch.float32)
-                if wd != 0.0:
-                    u_stack.add_(new_p, alpha=wd)
-                if mults is not None:
-                    lr_eff = (mults * lr_base).view(-1, *([1] * (u_stack.dim() - 1)))
-                    new_p.addcmul_(u_stack, lr_eff, value=-1.0)
-                else:
-                    new_p.add_(u_stack, alpha=-lr_base)
-                if p_dtype == torch.float32:
-                    torch._foreach_copy_(chunk, list(new_p.unbind(0)))
-                else:
-                    low = torch.empty((len(chunk),) + tuple(chunk[0].shape), dtype=p_dtype, device=dev)
-                    _sr_truncate_(low, new_p)
-                    torch._foreach_copy_(chunk, list(low.unbind(0)))
-
-        # 4. Update group-level hypergradient LR controller once per active auto_lr group
+        # 3. Update group-level hypergradient LR controller once per active auto_lr group
         for gi, (ctrl, host_st) in group_ctrls.items():
             acc_s, acc_c = align_acc[gi]
             self._update_group_lr_ctrl(ctrl, host_st, acc_s, acc_c, self.param_groups[gi])
@@ -431,13 +423,19 @@ class Lotus(torch.optim.Optimizer):
         return total / count if count else 0.0
 
     def load_state_dict(self, state_dict: dict) -> None:
+        # Preserve original state dtypes before super() casts floating state to param dtype
+        # (an fp16 adapter's second moments ~1e-11 would otherwise round to zero).
+        saved = {
+            i: {k: (v.clone() if torch.is_tensor(v) else v) for k, v in st.items()}
+            for i, st in state_dict["state"].items()
+        }
         super().load_state_dict(state_dict)
-        # The parent casts floating state to the param's dtype: an fp16 adapter's second moments
-        # (~1e-11) round to zero there. Take each tensor from the saved state at its own dtype.
-        saved = state_dict["state"]
+        for g in self.param_groups:
+            for k, v in self.defaults.items():
+                g.setdefault(k, v)
         ids = [i for g in state_dict["param_groups"] for i in g["params"]]
         params = [p for g in self.param_groups for p in g["params"]]
         for i, p in zip(ids, params):
             for k, v in saved.get(i, {}).items():
                 if torch.is_tensor(v):
-                    self.state[p][k] = v.to(p.device).clone()
+                    self.state[p][k] = v.to(p.device)

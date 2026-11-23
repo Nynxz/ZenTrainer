@@ -125,17 +125,34 @@ def test_lotus_auto_lr_handles_missing_first_param_grad_and_old_lr_ctrl_resume()
     opt.step()
     assert "exp_avg" in opt.state[p0]
 
-    # Resuming an older checkpoint that stored per-tensor lr_ctrl migrates its mean multiplier
+    # Resuming an older checkpoint that stored per-tensor lr_ctrl and lacked lr_floor in param_groups
     q0 = nn.Parameter(torch.randn(16, 16))
     q1 = nn.Parameter(torch.randn(16, 16))
     opt_old = Lotus([q0, q1], lr=1e-4, auto_lr=True)
     opt_old.state[q0]["lr_ctrl"] = torch.tensor([2.0, 0.0, 0.0])
     opt_old.state[q1]["lr_ctrl"] = torch.tensor([3.0, 0.0, 0.0])
-    assert opt_old.get_avg_learning_rate() == pytest.approx(2.5e-4)
+    sd = opt_old.state_dict()
+    sd["param_groups"][0].pop("lr_floor", None)
+    opt_loaded = Lotus([q0, q1], lr=1e-4, auto_lr=True)
+    opt_loaded.load_state_dict(sd)
+    assert "lr_floor" in opt_loaded.param_groups[0]
+    assert opt_loaded.get_avg_learning_rate() == pytest.approx(2.5e-4)
     q0.grad = torch.ones_like(q0) * 0.1
     q1.grad = torch.ones_like(q1) * 0.1
-    opt_old.step()
-    assert opt_old.state[q0]["group_lr_ctrl"][0].item() == pytest.approx(2.5)
+    opt_loaded.step()
+    assert opt_loaded.state[q0]["group_lr_ctrl"][0].item() == pytest.approx(2.5)
+
+    # build() with lotus_auto_lr=True uses a flat schedule so lr_floor bounds the actual effective LR
+    w_fl = nn.Parameter(torch.zeros(32, 32))
+    opt_fl, sched_fl = optim.build(
+        [w_fl], OptimSpec(optimizer="Lotus", learning_rate=1e-4, lr_scheduler="cosine", steps=40,
+                          lotus_auto_lr=True, lr_floor=0.5)
+    )
+    for i in range(40):
+        w_fl.grad = torch.ones_like(w_fl) * (0.1 if i % 2 == 0 else -0.1)
+        opt_fl.step()
+        sched_fl.step()
+    assert opt_fl.get_avg_learning_rate() >= 0.5e-4 - 1e-9
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -209,12 +226,16 @@ def test_lotus_cuda_triton_matches_fallback(auto_lr, dtype):
 
     g = torch.Generator(device="cpu").manual_seed(55)
     orig_can, orig_sup = _lotus_triton.can_fused_inplace, _lotus_triton.supported
-    for _ in range(15):
-        grads = [torch.randn(p.shape, generator=g).to(device=dev, dtype=dtype) * 0.2 + 0.05 for p in pa]
+    for step_i in range(15):
+        # Include an extreme 50x outlier spike on step 5 to verify clipped cautious/alignment parity
+        scale = 10.0 if step_i == 5 else 0.2
+        grads = [torch.randn(p.shape, generator=g).to(device=dev, dtype=dtype) * scale + 0.05 for p in pa]
         for p, gr in zip(pa, grads):
             p.grad = gr.clone()
         for p, gr in zip(pb, grads):
             p.grad = gr.clone()
+        if step_i == 0:
+            assert _lotus_triton.available(), "Triton must be available for CUDA parity test"
         opt_tri.step()
         _lotus_triton.can_fused_inplace = lambda ps, ms: False
         _lotus_triton.supported = lambda t, d: False

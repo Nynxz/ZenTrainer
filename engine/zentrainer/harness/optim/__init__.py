@@ -305,6 +305,7 @@ def build(params: Iterable[torch.nn.Parameter], spec: OptimSpec):
     if not available(d):
         raise RuntimeError(f"{d.label} needs `{d.pip}`: run `scripts/zt extras optimizers` (or pip install {d.pip})")
     opt = d.build(list(params), spec)
+    auto_adaptive = d.adaptive or (d.id == "Lotus" and spec.lotus_auto_lr)
     if d.adaptive and spec.lr_floor > 0:  # a group at a multiple of the LR floors at that multiple too
         for g in opt.param_groups:
             if "min_lr" in g:
@@ -314,7 +315,7 @@ def build(params: Iterable[torch.nn.Parameter], spec: OptimSpec):
         # dropped half the time) kept it climbing to hundreds and the run blew up
         for g in opt.param_groups:
             g["max_lr"] = spec.learning_rate * AUTOMAGIC3_CEILING * g.get("lr_mult", 1.0)
-    if d.schedule_free or d.adaptive:  # its own warmup / LR control; the schedule must stay flat
+    if d.schedule_free or auto_adaptive:  # its own warmup / LR control; the schedule must stay flat
         sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda i: 1.0)
     else:
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _schedule(spec))
@@ -384,7 +385,8 @@ def resume_cold(opt: torch.optim.Optimizer, sched, spec: OptimSpec, step: int) -
     seeds each weight's LR from the group's on its first step and then scales it by the schedule
     again, would count a ramp twice."""
     d = OPTIMIZERS.get(spec.optimizer)
-    ramp = d is not None and not (d.adaptive or d.schedule_free) and d.id != "Automagic"
+    auto_adaptive = d is not None and (d.adaptive or (d.id == "Lotus" and spec.lotus_auto_lr))
+    ramp = d is not None and not (auto_adaptive or d.schedule_free) and d.id != "Automagic"
     if ramp:
         rewarm(sched, step)
     seek(opt, sched, step)

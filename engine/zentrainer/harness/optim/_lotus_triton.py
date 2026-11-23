@@ -16,6 +16,7 @@ _AVAILABLE: bool | None = None
 _MOMENTUM_KERNEL = None
 _APPLY_KERNEL = None
 _FACTOR_SQ_KERNEL = None
+_RMS_KERNEL = None
 _PRESTATS_KERNEL = None
 _INPLACE_KERNEL = None
 _DTYPE_CODE = {torch.float32: 0, torch.bfloat16: 1, torch.float16: 2}
@@ -28,7 +29,7 @@ def available() -> bool:
             import triton  # noqa: F401
 
             _AVAILABLE = True
-        except Exception:
+        except (ImportError, OSError, RuntimeError):
             _AVAILABLE = False
     return _AVAILABLE
 
@@ -271,6 +272,45 @@ def _get_factor_sq_kernel():
     return _FACTOR_SQ_KERNEL
 
 
+def _get_rms_kernel():
+    global _RMS_KERNEL
+    if _RMS_KERNEL is not None:
+        return _RMS_KERNEL
+    import triton
+    import triton.language as tl
+
+    @triton.jit(do_not_specialize=("R", "C", "numel"))
+    def _lotus_rms_kernel(
+        g_ptrs,        # (N,) int64 pointers to (R, C) grad tensors
+        r_scale_ptr,   # (N, R) fp32 rsqrt(row / mean_row) * sqrt(bc2)
+        c_scale_ptr,   # (N, C) fp32 rsqrt(col)
+        sq_sum_ptr,    # (N,) fp32 sum(gh^2)
+        R,
+        C,
+        numel,
+        G_DTYPE: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        tid = tl.program_id(0)
+        pid = tl.program_id(1)
+        offs = pid * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < numel
+        r_idx = offs // C
+        c_idx = offs - r_idx * C
+
+        g_t: tl.constexpr = tl.float32 if G_DTYPE == 0 else (tl.bfloat16 if G_DTYPE == 1 else tl.float16)
+        g_base = tl.load(g_ptrs + tid).to(tl.pointer_type(g_t))
+        g = tl.load(g_base + offs, mask=mask, other=0.0).to(tl.float32)
+        g = tl.where((g == g) & (tl.abs(g) < 3.4e38), g, 0.0)
+        rs = tl.load(r_scale_ptr + tid * R + r_idx, mask=mask, other=0.0)
+        cs = tl.load(c_scale_ptr + tid * C + c_idx, mask=mask, other=0.0)
+        gh = g * (rs * cs)
+        tl.atomic_add(sq_sum_ptr + tid, tl.sum(gh * gh))
+
+    _RMS_KERNEL = _lotus_rms_kernel
+    return _RMS_KERNEL
+
+
 def _get_prestats_kernel():
     global _PRESTATS_KERNEL
     if _PRESTATS_KERNEL is not None:
@@ -278,20 +318,19 @@ def _get_prestats_kernel():
     import triton
     import triton.language as tl
 
-    @triton.jit(do_not_specialize=("R", "C", "numel", "b1", "inv_bc1", "clip", "cautious_min"))
+    @triton.jit(do_not_specialize=("R", "C", "numel", "b1", "clip", "cautious_min"))
     def _lotus_prestats_kernel(
         g_ptrs,        # (N,) int64 pointers to (R, C) grad tensors
         m_ptrs,        # (N,) int64 pointers to (R, C) momentum tensors
         r_scale_ptr,   # (N, R) fp32 rsqrt(row / mean_row) * sqrt(bc2)
         c_scale_ptr,   # (N, C) fp32 rsqrt(col)
-        sq_sum_ptr,    # (N,) fp32 sum(gh^2) or sum(u^2) when DO_CLIP
+        rms_scale_ptr, # (N,) fp32 1 / max(1, rms / clip) when DO_CLIP
         msq_ptr,       # (N,) fp32 sum(cm^2) when DO_CAUTIOUS
         align_ptr,     # (N, 3) fp32 [dot, m2, g2] when DO_ALIGN
         R,
         C,
         numel,
         b1,
-        inv_bc1,
         clip,
         cautious_min,
         G_DTYPE: tl.constexpr,
@@ -317,22 +356,21 @@ def _get_prestats_kernel():
         cs = tl.load(c_scale_ptr + tid * C + c_idx, mask=mask, other=0.0)
         gh = g * (rs * cs)
         if DO_CLIP:
-            tl.atomic_add(sq_sum_ptr + tid, tl.sum(gh * gh))
-        if DO_CAUTIOUS or DO_ALIGN:
-            m_t: tl.constexpr = tl.bfloat16 if M_BF16 else tl.float32
-            m_base = tl.load(m_ptrs + tid).to(tl.pointer_type(m_t))
-            mp = tl.load(m_base + offs, mask=mask, other=0.0).to(tl.float32)
-            if DO_ALIGN:
-                # cos(mp, gh) is scale-invariant under positive rms scaling
-                tl.atomic_add(align_ptr + tid * 3 + 0, tl.sum(mp * gh))
-                tl.atomic_add(align_ptr + tid * 3 + 1, tl.sum(mp * mp))
-                tl.atomic_add(align_ptr + tid * 3 + 2, tl.sum(gh * gh))
-            if DO_CAUTIOUS:
-                gh_c = tl.maximum(tl.minimum(gh, 3.0 * clip), -3.0 * clip) if DO_CLIP else gh
-                mn = mp * b1 + gh_c * (1.0 - b1)
-                cm = tl.where(mn * gh_c > 0.0, 1.0, cautious_min)
-                cm = tl.where(mask, cm, 0.0)
-                tl.atomic_add(msq_ptr + tid, tl.sum(cm * cm))
+            gh = gh * tl.load(rms_scale_ptr + tid)
+            gh = tl.maximum(tl.minimum(gh, 3.0 * clip), -3.0 * clip)
+
+        m_t: tl.constexpr = tl.bfloat16 if M_BF16 else tl.float32
+        m_base = tl.load(m_ptrs + tid).to(tl.pointer_type(m_t))
+        mp = tl.load(m_base + offs, mask=mask, other=0.0).to(tl.float32)
+        if DO_ALIGN:
+            tl.atomic_add(align_ptr + tid * 3 + 0, tl.sum(mp * gh))
+            tl.atomic_add(align_ptr + tid * 3 + 1, tl.sum(mp * mp))
+            tl.atomic_add(align_ptr + tid * 3 + 2, tl.sum(gh * gh))
+        if DO_CAUTIOUS:
+            mn = mp * b1 + gh * (1.0 - b1)
+            cm = tl.where(mn * gh > 0.0, 1.0, cautious_min)
+            cm = tl.where(mask, cm, 0.0)
+            tl.atomic_add(msq_ptr + tid, tl.sum(cm * cm))
 
     _PRESTATS_KERNEL = _lotus_prestats_kernel
     return _PRESTATS_KERNEL
@@ -475,9 +513,12 @@ def fused_inplace_step(
     g_code = _DTYPE_CODE[ps[0].grad.dtype]
     m_bf16 = ms[0].dtype == torch.bfloat16
 
-    p_ptrs = torch.tensor([p.data_ptr() for p in ps], dtype=torch.int64, device=dev)
-    g_ptrs = torch.tensor([p.grad.data_ptr() for p in ps], dtype=torch.int64, device=dev)
-    m_ptrs = torch.tensor([m.data_ptr() for m in ms], dtype=torch.int64, device=dev)
+    ptrs = torch.tensor(
+        [[p.data_ptr() for p in ps], [p.grad.data_ptr() for p in ps], [m.data_ptr() for m in ms]],
+        dtype=torch.int64,
+        device=dev,
+    )
+    p_ptrs, g_ptrs, m_ptrs = ptrs[0], ptrs[1], ptrs[2]
 
     # 1. Factored row/col squared-gradient reduction directly from g_ptrs
     sq_row = torch.zeros((n, R), dtype=torch.float32, device=dev)
@@ -499,24 +540,31 @@ def fused_inplace_step(
     r_scale = (row / row.mean(dim=-1, keepdim=True).clamp_min(eps)).rsqrt_().mul_(math.sqrt(bc2)).contiguous()
     c_scale = col.rsqrt().contiguous()
 
-    # 2. Optional pre-stats pass (rms clipping, cautious norm factor, per-tensor alignment)
+    # 2. Optional RMS reduction, then clipped cautious/alignment stats (exact match with eager)
     do_clip = clip < 1e8
     do_caut = cautious_min < 1.0
     BLOCK = 1024
     grid = (n, triton.cdiv(numel, BLOCK))
-    sq_sum = torch.zeros((n,), dtype=torch.float32, device=dev) if do_clip else r_scale
+    if do_clip:
+        sq_sum = torch.zeros((n,), dtype=torch.float32, device=dev)
+        _get_rms_kernel()[grid](
+            g_ptrs, r_scale, c_scale, sq_sum, R, C, numel,
+            G_DTYPE=g_code, BLOCK=BLOCK, num_warps=4,
+        )
+        rms_scale = (clip / (sq_sum / numel).sqrt().clamp_min(clip)).contiguous()
+    else:
+        rms_scale = r_scale
+
     msq = torch.zeros((n,), dtype=torch.float32, device=dev) if do_caut else r_scale
     align_buf = torch.zeros((n, 3), dtype=torch.float32, device=dev) if do_align else r_scale
-    if do_clip or do_caut or do_align:
+    if do_caut or do_align:
         _get_prestats_kernel()[grid](
-            g_ptrs, m_ptrs, r_scale, c_scale, sq_sum, msq, align_buf,
-            R, C, numel, float(b1), 1.0 / bc1, float(clip), float(cautious_min),
+            g_ptrs, m_ptrs, r_scale, c_scale, rms_scale, msq, align_buf,
+            R, C, numel, float(b1), float(clip), float(cautious_min),
             G_DTYPE=g_code, M_BF16=m_bf16,
             DO_CLIP=do_clip, DO_CAUTIOUS=do_caut, DO_ALIGN=do_align,
             BLOCK=BLOCK, num_warps=4,
         )
-
-    rms_scale = (clip / (sq_sum / numel).sqrt().clamp_min(clip)).contiguous() if do_clip else r_scale
     caut_scale = (msq / numel).clamp_min(0.1).rsqrt().contiguous() if do_caut else r_scale
     if lr_mult is not None:
         eff_lr = lr_mult.to(device=dev, dtype=torch.float32).mul(float(lr_base)).expand(n).contiguous()
