@@ -263,31 +263,34 @@ def test_shared_compiled_blocks_eager_probe_then_compile_gradients_match(monkeyp
     ref_grads = [p.grad.clone() for p in ref.parameters()]
 
     torch._dynamo.reset()
-    with compiled_blocks(dm, True), gradient_checkpointing(dm, True, depth=1, offloading=False, skip=0, save="attention") as ck:
-        # Step 1: eager probe with 1 block kept
-        torch.compiler.set_stance("force_eager")
-        ck.keep(1)
-        dm.zero_grad(set_to_none=True)
-        loss_eager = dm(x).pow(2).mean()
-        loss_eager.backward()
-        assert torch.allclose(loss_eager, ref_loss, atol=1e-5)
+    try:
+        with compiled_blocks(dm, True), gradient_checkpointing(dm, True, depth=1, offloading=False, skip=0, save="attention") as ck:
+            # Step 1: eager probe with 1 block kept
+            torch.compiler.set_stance("force_eager")
+            ck.keep(1)
+            dm.zero_grad(set_to_none=True)
+            loss_eager = dm(x).pow(2).mean()
+            loss_eager.backward()
+            assert torch.allclose(loss_eager, ref_loss, atol=1e-5)
 
-        # Jump to 2 kept (mixed compiled checkpointed + compiled un-checkpointed) and compile
-        ck.keep(2)
+            # Jump to 2 kept (mixed compiled checkpointed + compiled un-checkpointed) and compile
+            ck.keep(2)
+            torch.compiler.set_stance("default")
+            dm.zero_grad(set_to_none=True)
+            loss_mixed = dm(x).pow(2).mean()
+            loss_mixed.backward()
+            assert torch.allclose(loss_mixed, ref_loss, atol=1e-5)
+            for p, g in zip(dm.parameters(), ref_grads):
+                assert torch.allclose(p.grad, g, rtol=1e-4, atol=1e-5)
+
+            # Jump to all 4 un-checkpointed and run compiled
+            ck.keep(4)
+            dm.zero_grad(set_to_none=True)
+            loss_full = dm(x).pow(2).mean()
+            loss_full.backward()
+            assert torch.allclose(loss_full, ref_loss, atol=1e-5)
+            for p, g in zip(dm.parameters(), ref_grads):
+                assert torch.allclose(p.grad, g, rtol=1e-4, atol=1e-5)
+    finally:
         torch.compiler.set_stance("default")
-        dm.zero_grad(set_to_none=True)
-        loss_mixed = dm(x).pow(2).mean()
-        loss_mixed.backward()
-        assert torch.allclose(loss_mixed, ref_loss, atol=1e-5)
-        for p, g in zip(dm.parameters(), ref_grads):
-            assert torch.allclose(p.grad, g, rtol=1e-4, atol=1e-5)
-
-        # Jump to all 4 un-checkpointed and run compiled
-        ck.keep(4)
-        dm.zero_grad(set_to_none=True)
-        loss_full = dm(x).pow(2).mean()
-        loss_full.backward()
-        assert torch.allclose(loss_full, ref_loss, atol=1e-5)
-        for p, g in zip(dm.parameters(), ref_grads):
-            assert torch.allclose(p.grad, g, rtol=1e-4, atol=1e-5)
-    torch._dynamo.reset()
+        torch._dynamo.reset()

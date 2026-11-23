@@ -350,9 +350,9 @@ class Trainer:
                     self._ckpt = ckpt
                     self._keep_auto = (getattr(self, "_want_keep_auto", skip == "auto")
                                        and not m.offloading and bool(ckpt.all) and torch.cuda.is_available())
-                    self._arm_eager_keep_probe()
-                    self.enter_training()
                     try:
+                        self._arm_eager_keep_probe()
+                        self.enter_training()
                         for cb in self.callbacks:
                             cb.on_start(self)
                         self._drop_text_encoder()
@@ -1372,10 +1372,12 @@ class Trainer:
         import math
 
         buckets = getattr(self, "_step_buckets", None) or getattr(getattr(self, "dataset", None), "buckets", None)
-        key = getattr(self, "_step_key", None)
-        if not buckets or not key:
+        cur_shape = getattr(self, "_step_sample_shape", None)
+        if cur_shape is None:
+            key = getattr(self, "_step_key", None)
+            cur_shape = key[0][0] if key else None
+        if not buckets or not cur_shape:
             return 1.0
-        cur_shape = key[0][0]  # (B, C, [T,] h, w)
         cur_vol = cur_shape[0] * math.prod(cur_shape[2:]) if len(cur_shape) >= 4 else 0
         bs = max(1, getattr(getattr(self, "batches", None), "batch_size", cur_shape[0] if cur_shape else 1))
         max_vol = max((min(bs, len(idxs)) * math.prod(s[1:]) for s, idxs in buckets.items()
@@ -1389,7 +1391,7 @@ class Trainer:
         """Keep as many last blocks un-checkpointed as the measured spare VRAM holds (see KEEP_AT)."""
         ck = self._ckpt
         settle = getattr(self, "_keep_settle", 0)
-        if self._keep_warm == KEEP_AT[0] and not settle:
+        if self._keep_warm == KEEP_AT[0] and not settle and getattr(self, "_keep_ceiling", len(ck.all)) > 0:
             self._kept(1)  # the probe: next steps measure what a kept block holds
         else:
             raw_cost = max(getattr(self, "_keep_cost", {}).values(), default=0)
@@ -1576,6 +1578,11 @@ class Trainer:
                 keys.append((tuple(x0.shape), repr(shapes)))
                 self._step_key = tuple(keys)  # what this step's time depends on (the auto VRAM fit's trials)
                 self._step_buckets = getattr(self.dataset, "buckets", None)
+                samples = getattr(self.dataset, "samples", None)
+                if samples and idx and hasattr(samples[idx[0]], "latent"):
+                    self._step_sample_shape = (len(idx),) + tuple(samples[idx[0]].latent.shape)
+                else:
+                    self._step_sample_shape = tuple(x0.shape)
                 conds = [self._cond(i, x0, shapes) for i in idx]
 
                 noise = torch.randn(x0.shape, generator=self.generator).to(self.device)
@@ -1586,10 +1593,14 @@ class Trainer:
                 lap("data")
                 if s.slider.kind == "pairs":  # each picture at its own end, from the same noise
                     total_loss += self._pair_loss(idx, x0, conds, weight, noise, sigma, x_t, percents, acc)
+                    if hasattr(self, "_keep_step_cost"):
+                        self._keep_step_cost.clear()
                     lap("backward")
                     continue
                 if s.slider.kind:  # its own losses and backward passes (one per direction)
                     total_loss += self._slider_loss(x0, shapes, x_t, sigma, acc)
+                    if hasattr(self, "_keep_step_cost"):
+                        self._keep_step_cost.clear()
                     lap("backward")
                     continue
 
@@ -1603,9 +1614,13 @@ class Trainer:
                 scaled = loss / acc
                 (self.scaler.scale(scaled) if self.scaler else scaled).backward()
                 clear_recompute_weights()
+                if hasattr(self, "_keep_step_cost"):
+                    self._keep_step_cost.clear()  # backward freed this micro-batch's graph before the next one
                 total_loss += loss.detach().float()
                 del x0_pred, loss, scaled  # the preservation pass's graph needs the room
                 held = self._preserve_loss(idx, x0, shapes, x_t, sigma, noise, acc)
+                if hasattr(self, "_keep_step_cost"):
+                    self._keep_step_cost.clear()
                 if held is not None:
                     held_sum, held_n = held_sum + held, held_n + 1
                 lap("backward")
