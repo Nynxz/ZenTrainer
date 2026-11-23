@@ -70,3 +70,15 @@ def test_it_goes_when_training_still_has_weights_to_pin(mm, monkeypatch):
     s._alt = _Alt()
     s._let_sampler_go(_run(True))
     assert s._alt is None
+
+
+def test_it_stays_when_already_in_ram_and_free_ram_exceeds_spare(mm):
+    class _RamResident(_Alt):
+        def loaded_size(self):
+            return 0  # already in CPU RAM, so get_free_memory(cpu) already reflects it
+
+    mm["free"] = 10 * 1024 ** 3  # > 8 GB spare once resident bytes aren't subtracted twice
+    s = Samples(1)
+    s._alt = alt = _RamResident()
+    s._let_sampler_go(_run(False))
+    assert s._alt is alt and mm["calls"] == []

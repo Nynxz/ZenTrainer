@@ -347,8 +347,11 @@ class Samples(Callback):
         from .memory.offload import PIN_RAM_SPARE, pin_state
 
         size = self._alt.model_size()
+        # bytes still on the GPU will move into RAM when training reloads; weights already in RAM are
+        # already deducted from get_free_memory(cpu)
+        to_ram = getattr(self._alt, "loaded_size", self._alt.model_size)()
         to_pin = pin_state(t.models.patcher.model.diffusion_model)[1] if t.spec.memory.offloading else 0
-        if mm.get_free_memory(torch.device("cpu")) - to_pin > size + PIN_RAM_SPARE:
+        if mm.get_free_memory(torch.device("cpu")) - to_pin > to_ram + PIN_RAM_SPARE:
             return
         self._alt = None
         mm.cleanup_models_gc()
