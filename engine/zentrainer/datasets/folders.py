@@ -612,8 +612,11 @@ def save_upload(name: str, filename: str, data: bytes, into: str = "") -> tuple[
     # drop again after the connection dropped): not new, not written again. Else the first free name
     alt, n = target, 2
     while alt.exists():
-        if alt.is_file() and alt.stat().st_size == len(data) and alt.read_bytes() == data:
-            return str(alt.relative_to(d)), False
+        try:
+            if alt.is_file() and alt.stat().st_size == len(data) and alt.read_bytes() == data:
+                return str(alt.relative_to(d)), False
+        except PermissionError:
+            pass  # unreadable candidate: preserve it and keep looking for a free numbered name
         alt, n = target.with_name(f"{target.stem} ({n}){target.suffix}"), n + 1
     safeio.write_bytes(alt, data)
     return str(alt.relative_to(d)), True

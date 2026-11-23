@@ -210,7 +210,8 @@ async function send(name: string, files: File[], folders: string[], note: string
   if (errors.length) said += `, ${errors.length} skipped`
   const to = name === props.name ? '' : `${name}: ` // finished after going to another dataset's page
   flash(to + (stopped ? `${count(saved.length)} added, then the upload stopped` : said + (note ? `. ${note}` : '')))
-  if (stopped) errors.push(stopped, ...(note ? [note] : []))
+  if (stopped) errors.push(stopped)
+  if (note) errors.push(note)
   if (errors.length) error.value = errors.join('\n')
 }
 // what the server takes: pictures, videos and .txt captions (the engine's IMAGE_EXTS and VIDEO_EXTS)
