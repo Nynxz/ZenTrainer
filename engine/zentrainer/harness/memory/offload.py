@@ -17,6 +17,7 @@ Checked: identical first-step loss with and without, steps 1.74 -> 1.57 s.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 _original = None
@@ -70,41 +71,31 @@ RECOMPUTE_CACHE_MAX_BYTES = 512 * 1024 ** 2
 _RECOMPUTE_FORMATS = ("int8_tensorwise", "asym_w4a8_int8", "w6a8_int8")
 
 
+@contextlib.contextmanager
 def skip_guard():
     """Context manager: inside a checkpointed block's forward pass, autograd discards saved tensors,
     so streamed weights don't need a compute-stream clone."""
-    import contextlib
-
-    @contextlib.contextmanager
-    def _ctx():
-        global _skip_guard
-        _skip_guard += 1
-        try:
-            yield
-        finally:
-            _skip_guard -= 1
-
-    return _ctx()
+    global _skip_guard
+    _skip_guard += 1
+    try:
+        yield
+    finally:
+        _skip_guard -= 1
 
 
+@contextlib.contextmanager
 def recompute_scope():
     """Context manager around a checkpointed block's recompute forward pass: offloaded int8/packed
     weights streamed for recompute stay on the GPU for the block's immediately-following backward,
-    cutting offloaded int8/packed PCIe traffic from 3 passes per step to 2."""
-    import contextlib
-
-    @contextlib.contextmanager
-    def _ctx():
-        global _recompute_active
-        clear_recompute_weights()
-        prev = _recompute_active
-        _recompute_active = True
-        try:
-            yield
-        finally:
-            _recompute_active = prev
-
-    return _ctx()
+    cutting offloaded int8/packed PCIe traffic from 3 passes to 2."""
+    global _recompute_active
+    clear_recompute_weights()
+    prev = _recompute_active
+    _recompute_active = True
+    try:
+        yield
+    finally:
+        _recompute_active = prev
 
 
 def _weight_nbytes(w) -> int:

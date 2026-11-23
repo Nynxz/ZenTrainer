@@ -5,6 +5,7 @@ import torch
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available() or torch.version.hip is not None
                           or torch.cuda.get_device_capability() < (8, 0), reason="needs an NVIDIA card, sm_80+")
+gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
 
 
 def _regular_hadamard(size: int) -> torch.Tensor:  # ConvRot's: H4 x H4 x ..., normalised
@@ -212,7 +213,7 @@ def test_1pass_quantizers_match_2pass_bit_exact(n):
     assert torch.equal(gq0, gq1) and torch.equal(st0, st1)
 
 
-@cuda
+@gpu
 def test_triton_hadamard256_residual_and_int8_matmul_residual():
     """The Triton W8A8 path (ROCm's primary path) fuses residual into int8_matmul and hadamard256."""
     from zentrainer.harness.kernels import w8a8_backward as wb

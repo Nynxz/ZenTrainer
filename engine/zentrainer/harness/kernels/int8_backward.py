@@ -459,7 +459,7 @@ def _weight_input_grad(w, fmt: str | None, g: torch.Tensor, residual: torch.Tens
         if _mode == "w8a8" and g.is_cuda and fmt in INT8_FORMATS:
             try:
                 gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
-            except _BUGS:  # a mistake in the code, not the kernel: don't hide it behind the fallback
+            except (*_BUGS, torch.OutOfMemoryError):  # a code mistake or full card: don't hide behind dequantization
                 raise
             except Exception as e:  # a kernel that fails to compile or launch here: dequantize
                 _kernel_failed(e)
