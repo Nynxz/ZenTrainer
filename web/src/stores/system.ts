@@ -11,9 +11,16 @@ export const memLatest = computed(() => samples.value.at(-1))
 const MAX = 900
 
 function add(fresh: MemSample[]) {
-  const last = samples.value.at(-1)?.t ?? 0
-  fresh = fresh.filter((s) => s.t > last)
-  if (fresh.length) samples.value = [...samples.value, ...fresh].slice(-MAX)
+  if (!fresh.length) return
+  const byT = new Map(samples.value.map((s) => [s.t, s]))
+  let changed = false
+  for (const s of fresh) {
+    if (!byT.has(s.t)) {
+      byT.set(s.t, s)
+      changed = true
+    }
+  }
+  if (changed) samples.value = [...byT.values()].sort((a, b) => a.t - b.t).slice(-MAX)
 }
 
 /** free space where ZenTrainer writes; checked once a minute */

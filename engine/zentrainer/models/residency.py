@@ -48,7 +48,10 @@ def fingerprint() -> tuple:
             continue
         try:
             vbar = patcher._vbar_get() if patcher.is_dynamic() else None
-            out.append((id(patcher), patcher.loaded_size(), bytes(vbar.get_residency()) if vbar is not None else None))
+            # bit 0 is residency; mask out pin flags (e.g. comfy-aimdo status 3 vs 1) so pin flips
+            # don't invalidate the fingerprint when VRAM residency itself hasn't changed
+            res = bytes(b & 1 for b in vbar.get_residency()) if vbar is not None else None
+            out.append((id(patcher), patcher.loaded_size(), res))
         except Exception:  # mid-load or mid-unload: differs from anything, so it's reported
             out.append((id(patcher), object()))
     return tuple(out)

@@ -10,13 +10,21 @@ import { noPushes, startSystemSync } from './system'
 export const loadedModels = ref<LoadedModel[]>([])
 
 let started = false
+let gen = 0
 export function startLoadedSync(): void {
   if (started) return
   started = true
-  const take = (models: LoadedModel[]) => (loadedModels.value = models.filter((x) => x.bytes > 0))
+  const take = (models: LoadedModel[]) => {
+    gen++
+    loadedModels.value = models.filter((x) => x.bytes > 0)
+  }
   onComfyMessage((m) => m.type === EVENTS.loaded && take(m.data.models as LoadedModel[]))
   startSystemSync()
-  setInterval(() => noPushes.value && engine.loadedModels().then(take, () => {}), 3000)
+  setInterval(() => {
+    if (!noPushes.value) return
+    const g = gen
+    engine.loadedModels().then((models) => g === gen && take(models), () => {})
+  }, 3000)
 }
 
 export const loadedVram = computed(() => loadedModels.value.reduce((n, m) => n + m.vram, 0))

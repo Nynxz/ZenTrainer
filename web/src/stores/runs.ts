@@ -21,12 +21,14 @@ function pushLoss(id: string, loss: number | null | undefined) {
 }
 
 export const queue = ref<QueueState>({ paused: false, current: null, items: [] })
+let queueRetry = false
 
 export async function refreshQueue(): Promise<void> {
   try {
     queue.value = await engine.queue()
+    queueRetry = false
   } catch {
-    // engine unreachable; runs list reports it
+    queueRetry = true // retry on the next tick even while system pushes stay healthy
   }
 }
 
@@ -59,7 +61,7 @@ export function startRunSync(): void {
   started = true
   refreshRuns()
   refreshQueue()
-  setInterval(() => noPushes.value && refreshQueue(), 4000) // an engine that doesn't say (system.ts)
+  setInterval(() => (noPushes.value || queueRetry) && refreshQueue(), 4000) // an engine that doesn't say (system.ts) or a failed queue read
   onComfyMessage((m) => {
     // the engine says when its queue changes; ComfyUI's status comes when the socket (re)connects,
     // after a restart, say, when the queue may have changed unseen
