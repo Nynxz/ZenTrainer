@@ -55,18 +55,23 @@ def register(server) -> None:
 
     @routes.get("/zentrainer/api/system/models")
     async def loaded_models(_request):
-        """Each model ComfyUI holds: its size, how much is in VRAM, per block (see residency.py)."""
+        """Each model ComfyUI holds: its size, how much is in VRAM, per block (see residency.py).
+        The app has them pushed (system.watch); this is for scripts."""
         from ...models import residency
 
         return web.json_response({"models": await asyncio.to_thread(residency.report)})
 
     @routes.get("/zentrainer/api/system")
     async def get_system(request):
-        """Memory samples newer than ?since=<unix time> (all buffered ones by default)."""
+        """Memory samples newer than ?since=<unix time> (all buffered ones by default). With
+        ?client=<its websocket client id> the tab is sent each new one, and the loaded models when
+        they change, on the socket from then on (system.watch)."""
         try:
             since = float(request.query.get("since", 0))
         except ValueError:
             since = 0.0
+        if request.query.get("client"):
+            system.watch(request.query["client"])
         return web.json_response({"interval": system.INTERVAL, "samples": system.history(since)})
 
     # ---- storage --------------------------------------------------------------------------------

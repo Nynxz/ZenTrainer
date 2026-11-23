@@ -18,7 +18,7 @@ def test_emit_sends_no_infinity(monkeypatch):
 
     sent = []
     server = types.ModuleType("server")
-    server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda e, d: sent.append((e, d))))
+    server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda e, d, sid=None: sent.append((e, d))))
     monkeypatch.setitem(sys.modules, "server", server)
     events.emit(events.METRICS, {"run_id": "r", "step": 1, "grad_norm": math.inf})
     assert sent == [(events.METRICS, {"run_id": "r", "step": 1, "grad_norm": None})]

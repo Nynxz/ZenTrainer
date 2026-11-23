@@ -39,4 +39,7 @@ export const EVENTS = {
   caption: 'zentrainer.caption',
   download: 'zentrainer.download',
   faces: 'zentrainer.faces',
+  queue: 'zentrainer.queue',
+  system: 'zentrainer.system',
+  loaded: 'zentrainer.loaded',
 } as const

@@ -1,7 +1,7 @@
 """Websocket events the engine sends. The web client subscribes to these on
 ComfyUI's /ws alongside the stock progress/executing messages.
 
-Every event carries `run_id`, so a tab that connects mid-run can filter and rebuild
+Every run event carries `run_id`, so a tab that connects mid-run can filter and rebuild
 state (the run store keeps the full history in metrics.jsonl).
 """
 
@@ -21,6 +21,9 @@ SAMPLE_PROGRESS = "zentrainer.sample_progress"
 LIKENESS = "zentrainer.likeness"  # {run_id, step, index, score, manual?, base?}: a sample's face vs the dataset's
 FACES = "zentrainer.faces"  # {dataset, done, total}: a dataset's face check going through its pictures
 VALIDATION = "zentrainer.validation"  # {run_id, step, val_loss, by_noise: {noise level: loss}}
+SYSTEM = "zentrainer.system"  # a memory sample (server/system.py), to the tabs that asked for them
+LOADED = "zentrainer.loaded"  # {models}: what ComfyUI holds, when it changed, to the same tabs
+QUEUE = "zentrainer.queue"  # {}: the training queue changed (GET /queue for it), so tabs needn't poll
 ZENKIT_JOB = "zenkit.job"  # mirrored so ZenKit's taskbar shows the run too
 
 
@@ -37,11 +40,12 @@ def finite(obj: Any) -> Any:
     return obj
 
 
-def emit(event: str, data: dict[str, Any]) -> None:
-    """Best effort: telemetry must never be what fails a training run."""
+def emit(event: str, data: dict[str, Any], sid: str | None = None) -> None:
+    """To every tab, or the one with websocket client id `sid`. Best effort: telemetry must never
+    be what fails a training run."""
     try:
         from server import PromptServer
 
-        PromptServer.instance.send_sync(event, finite(data))
+        PromptServer.instance.send_sync(event, finite(data), sid)
     except Exception:  # outside ComfyUI, server not started, socket gone
         logging.debug("[ZenTrainer] dropped %s event", event, exc_info=True)

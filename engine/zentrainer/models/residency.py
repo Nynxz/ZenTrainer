@@ -35,6 +35,28 @@ def report() -> list[dict]:
     return out
 
 
+def fingerprint() -> tuple:
+    """What changes when `report` would: which models are loaded, how much of each, and which of
+    a dynamic one's pages are in VRAM. One call into comfy_aimdo a model, where `report` walks every
+    layer, so a caller can ask often and report only when this moves."""
+    import comfy.model_management as mm
+
+    out = []
+    for lm in list(mm.current_loaded_models):
+        patcher = lm.model
+        if patcher is None:
+            continue
+        try:
+            vbar = patcher._vbar_get() if patcher.is_dynamic() else None
+            # bit 0 is residency; mask out pin flags (e.g. comfy-aimdo status 3 vs 1) so pin flips
+            # don't invalidate the fingerprint when VRAM residency itself hasn't changed
+            res = bytes(b & 1 for b in vbar.get_residency()) if vbar is not None else None
+            out.append((id(patcher), patcher.loaded_size(), res))
+        except Exception:  # mid-load or mid-unload: differs from anything, so it's reported
+            out.append((id(patcher), object()))
+    return tuple(out)
+
+
 def _model(patcher) -> dict:
     model = patcher.model
     vbar = patcher._vbar_get() if patcher.is_dynamic() else None

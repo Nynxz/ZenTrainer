@@ -3,6 +3,7 @@
 
 import { computed, reactive, ref } from 'vue'
 import { onComfyMessage } from '@/api/comfy'
+import { noPushes } from './system'
 import { ACTIVE, EVENTS, engine, type MetricRow, type QueueState, type RunMeta, type RunStatus } from '@/api/engine'
 
 export const runs = ref<RunMeta[]>([])
@@ -20,12 +21,19 @@ function pushLoss(id: string, loss: number | null | undefined) {
 }
 
 export const queue = ref<QueueState>({ paused: false, current: null, items: [] })
+let queueSeq = 0
+let queueRetry = false
 
 export async function refreshQueue(): Promise<void> {
+  const seq = ++queueSeq
   try {
-    queue.value = await engine.queue()
+    const next = await engine.queue()
+    if (seq === queueSeq) {
+      queue.value = next
+      queueRetry = false
+    }
   } catch {
-    // engine unreachable; runs list reports it
+    if (seq === queueSeq) queueRetry = true // retry on the next tick even while system pushes stay healthy
   }
 }
 
@@ -58,16 +66,21 @@ export function startRunSync(): void {
   started = true
   refreshRuns()
   refreshQueue()
-  setInterval(refreshQueue, 4000)
+  setInterval(() => (noPushes.value || queueRetry) && refreshQueue(), 4000) // an engine that doesn't say (system.ts) or a failed queue read
   onComfyMessage((m) => {
+    // the engine says when its queue changes; ComfyUI's status comes when the socket (re)connects,
+    // after a restart, say, when the queue may have changed unseen
+    if (m.type === EVENTS.queue || m.type === 'status') return void refreshQueue()
     const id = m.data.run_id as string | undefined
     if (!id) return
     if (m.type === EVENTS.metrics) {
       latest[id] = m.data as unknown as MetricRow
       pushLoss(id, latest[id].loss)
     } else if (m.type === EVENTS.status) {
-      refreshQueue()
       const r = runs.value.find((x) => x.run_id === id)
+      // a run's progress messages (caching latents 5 of 18...) come as status events too: the queue
+      // moves only when its status does
+      if (r?.status !== m.data.status) refreshQueue()
       if (r) {
         r.status = m.data.status as RunStatus
         r.message = (m.data.message as string | null) ?? undefined
