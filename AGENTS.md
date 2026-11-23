@@ -132,16 +132,21 @@ already; anything else failing is new. New behaviour gets a test when it can bre
 (a module in harness/compat/) gets its family in tests/comfy/smoke.py, which also checks the patched model
 computes what ComfyUI's code does.
 
-## Commits, changelog, releases
+## Commits, PRs and releases
 
 - One topic per commit. Subject `Area: what changed` in plain words; a body when the why isn't
   obvious. Commit when asked; the user pushes.
 - Research, experiments and one-off scripts don't belong in this repository.
-- Anything a user would notice gets a line in the top section of CHANGELOG.md, written for them.
-- A release: the version in `pyproject.toml` and `engine/zentrainer/__init__.py` (kept equal by
-  `tests/engine/test_version.py`), its CHANGELOG section with a date, then the user pushes `main`
-  and a `vX.Y.Z` tag, which publishes to the ComfyUI Registry. A published version can't be
-  republished: a fix is the next patch version.
+- **Release notes come from PRs, not `CHANGELOG.md`.** Don't add a `CHANGELOG.md` entry in a PR.
+  Instead, give the PR a plain-English title (`Area: what changed`), a short user-facing summary in
+  the PR body (what changed and why — never naming a user, their files, folders or local setup),
+  and a label (`enhancement`, `performance`, `bug`, `documentation`, or `internal` to omit it from
+  release notes).
+- **A release:** bump the version in `pyproject.toml` and `engine/zentrainer/__init__.py` (kept
+  equal by `tests/engine/test_version.py`), push `main` and a `vX.Y.Z` tag (which publishes to the
+  ComfyUI Registry), and publish the GitHub Release for `vX.Y.Z` from the merged PRs since the
+  previous tag (`.github/release.yml` groups them by label, with highlights edited at the top if
+  needed). A published version can't be republished: a fix is the next patch version.
 - The Registry pack is what git tracks minus `.comfyignore` (plus `web/dist` and `engine/js` from
   `[tool.comfy] includes`). Anything only a clone needs goes in `.comfyignore`.
 - CI: `ci` runs the tests and the web build on every push; `comfyui` runs tests/comfy against the

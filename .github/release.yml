@@ -1,0 +1,26 @@
+# GitHub Release notes configuration: groups merged PRs since the previous tag when
+# "Generate release notes" or `gh release create --generate-notes` runs.
+changelog:
+  exclude:
+    labels:
+      - internal
+      - skip-changelog
+      - chore
+  categories:
+    - title: What's New
+      labels:
+        - enhancement
+        - feature
+    - title: Performance
+      labels:
+        - performance
+    - title: Fixes
+      labels:
+        - bug
+        - fix
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Other Changes
+      labels:
+        - "*"
