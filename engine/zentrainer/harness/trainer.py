@@ -1362,9 +1362,10 @@ class Trainer:
         cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
-        if getattr(self, "_keep_backoffs", 0) >= TIGHTEN_RETRIES - 1:  # the last retry: none kept, all checkpointed
+        attempt = max(getattr(self, "_keep_backoffs", 0), getattr(self, "_backoffs", 0))
+        if attempt >= TIGHTEN_RETRIES - 1:  # the last retry: none kept, all checkpointed
             drop = was
-        elif getattr(self, "_keep_backoffs", 0):  # the margin's worth wasn't enough: half of them, not one more
+        elif attempt:  # the margin's worth wasn't enough: half of them, not one more
             drop = max(drop, (was + 1) // 2)
         self._keep_ceiling = self._kept(max(0, was - drop))
         logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
