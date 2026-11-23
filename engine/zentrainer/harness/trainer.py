@@ -1259,16 +1259,20 @@ class Trainer:
             self._keep_warm = 0
             self._keep_cost = {}
             self.__dict__.pop("_keep_ceiling", None)
+            self._arm_eager_keep_probe()
             logging.info("[ZenTrainer] all model weights fit on the GPU: free VRAM will keep last blocks un-checkpointed")
 
     def _disable_free_vram(self) -> None:
         """Undo dynamic free-VRAM checkpointing before weights move back off the GPU."""
         ck = getattr(self, "_ckpt", None)
+        if getattr(self, "_keep_settle", 0):
+            self._finish_eager_settle()
         if getattr(self, "_keep_auto", False):
-            self._kept(0)
-            self._keep_auto = False
+            self._unhook_kept()
             if ck is not None:
+                ck.keep(0)
                 ck.allow_keep = False
+            self._keep_auto = False
         if ck is not None and getattr(ck, "saving_attention", False) and getattr(ck, "set_save_attention", None) is not None:
             if ck.set_save_attention(False) and getattr(self, "_compiled", 0):
                 torch._dynamo.reset()
