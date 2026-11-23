@@ -110,6 +110,8 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
     res = residual is not None
     if res:
         residual = residual.to(torch.bfloat16).reshape(m, k).contiguous()
+        if residual.data_ptr() % 16 != 0:
+            residual = residual.clone()  # uint2/uint4 vector loads require 16-byte alignment
     stream = torch.cuda.current_stream(grad_2d.device)
     if n <= 4096:
         qname, qblock = "zt_quantize_rows_4k", 256

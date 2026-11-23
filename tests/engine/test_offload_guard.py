@@ -162,3 +162,48 @@ def test_keep_small_resident_promotes_only_tiny_offloaded_modules(monkeypatch):
     assert not getattr(model.big, "comfy_patched_weights", False)
     assert set(unpinned) == {"norm.weight", "norm.bias"}
     assert model.model_loaded_weight_memory == 512
+
+
+def test_backoff_kept_blocks_budget_does_not_starve_attention_saving_or_offload(monkeypatch):
+    """Three kept-block OOM drops must not exhaust the retry budget before attention saving runs."""
+    from zentrainer.harness.trainer import Trainer
+
+    mm = types.ModuleType("comfy.model_management")
+    mm.soft_empty_cache = lambda: None
+    comfy = types.ModuleType("comfy")
+    comfy.model_management = mm
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+
+    class FakeCkpt:
+        def __init__(self):
+            self.all = list(range(10))
+            self.kept = 8
+            self.saving_attention = True
+
+        def keep(self, n):
+            self.kept = max(0, n)
+            return self.kept
+
+        def set_save_attention(self, on):
+            changed = self.saving_attention != on
+            self.saving_attention = on
+            return changed
+
+    t = Trainer.__new__(Trainer)
+    t._ckpt = FakeCkpt()
+    t._keep_auto = True
+    t._keep_cost = {0: 512 * 1024 ** 2}
+    t._kept = t._ckpt.keep
+    t._auto_vram = lambda: False
+    t.optimizer = types.SimpleNamespace(zero_grad=lambda set_to_none=True: None)
+
+    # First 3 OOMs drop kept blocks down to 0 (8 -> 5 -> 2 -> 0)
+    assert t._back_off(RuntimeError("oom")) and t._ckpt.kept > 0
+    assert t._back_off(RuntimeError("oom")) and t._ckpt.kept > 0
+    assert t._back_off(RuntimeError("oom")) and t._ckpt.kept == 0
+    assert t._ckpt.saving_attention is True
+    # 4th OOM must still be allowed to disable selective attention saving
+    assert t._back_off(RuntimeError("oom"))
+    assert t._ckpt.saving_attention is False

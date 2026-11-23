@@ -39,7 +39,17 @@ class EMA:
         for ss, ps in fp32.values():
             torch._foreach_lerp_(ss, ps, w)
         for ss, ps in other.values():
-            torch._foreach_lerp_(ss, [p.float() for p in ps], w)
+            # Convert low-precision adapters in bounded chunks (~16 MB fp32) to avoid peak VRAM spikes
+            cs, cp, n = [], [], 0
+            for s, p in zip(ss, ps):
+                if cs and n + p.numel() > (1 << 22):
+                    torch._foreach_lerp_(cs, cp, w)
+                    cs, cp, n = [], [], 0
+                cs.append(s)
+                cp.append(p.float())
+                n += p.numel()
+            if cs:
+                torch._foreach_lerp_(cs, cp, w)
 
     @contextlib.contextmanager
     def applied(self):

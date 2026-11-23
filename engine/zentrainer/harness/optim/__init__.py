@@ -40,14 +40,24 @@ class Lion(torch.optim.Optimizer):
                 gs.append(p.grad)
                 ms.append(m)
             for ps, gs, ms in buckets.values():
-                if wd:
-                    torch._foreach_mul_(ps, 1.0 - lr * wd)
-                upd = torch._foreach_mul(ms, b1)
-                torch._foreach_add_(upd, gs, alpha=1.0 - b1)
-                torch._foreach_sign_(upd)
-                torch._foreach_add_(ps, upd, alpha=-lr)
-                torch._foreach_mul_(ms, b2)
-                torch._foreach_add_(ms, gs, alpha=1.0 - b2)
+                # Process in bounded chunks (~32 MB fp32) so temporary update buffers can't OOM mid-step
+                i = 0
+                while i < len(ps):
+                    j, numel = i, 0
+                    while j < len(ps) and (j == i or numel + ps[j].numel() <= (1 << 23)):
+                        numel += ps[j].numel()
+                        j += 1
+                    cp, cg, cm = ps[i:j], gs[i:j], ms[i:j]
+                    upd = torch._foreach_mul(cm, b1)
+                    torch._foreach_add_(upd, cg, alpha=1.0 - b1)
+                    torch._foreach_sign_(upd)
+                    if wd:
+                        torch._foreach_mul_(cp, 1.0 - lr * wd)
+                    torch._foreach_add_(cp, upd, alpha=-lr)
+                    del upd
+                    torch._foreach_mul_(cm, b2)
+                    torch._foreach_add_(cm, cg, alpha=1.0 - b2)
+                    i = j
         return loss
 
 

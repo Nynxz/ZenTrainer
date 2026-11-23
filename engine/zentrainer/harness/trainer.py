@@ -1012,6 +1012,7 @@ class Trainer:
                     self._times = (getattr(self, "_times", []) +
                                    [(self._warm, time.perf_counter() - ts, getattr(self, "_step_key", None))])[-24:]
                     self._backoffs = 0  # the retries count in a row: a long run's sample passes don't use them up
+                    self._keep_backoffs = 0
                 except torch.OutOfMemoryError as e:
                     if not self._back_off(e):
                         raise
@@ -1361,9 +1362,9 @@ class Trainer:
         cost = max(getattr(self, "_keep_cost", {}).values(), default=0) * KEEP_SAFETY
         drop = max(1, -(-TIGHTEN_MARGIN // int(cost))) if cost > 0 else ck.kept
         was = ck.kept
-        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES - 1:  # the last retry: none kept, all checkpointed
+        if getattr(self, "_keep_backoffs", 0) >= TIGHTEN_RETRIES - 1:  # the last retry: none kept, all checkpointed
             drop = was
-        elif getattr(self, "_backoffs", 0):  # the margin's worth wasn't enough: half of them, not one more
+        elif getattr(self, "_keep_backoffs", 0):  # the margin's worth wasn't enough: half of them, not one more
             drop = max(drop, (was + 1) // 2)
         self._keep_ceiling = self._kept(max(0, was - drop))
         logging.warning("[ZenTrainer] out of VRAM: blocks un-checkpointed %d -> %d, retrying the step", was, ck.kept)
@@ -1376,19 +1377,19 @@ class Trainer:
         from .memory.offload import clear_recompute_weights
 
         clear_recompute_weights()
-        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES:
-            return False
-        if self._back_off_kept():
+        if getattr(self, "_keep_backoffs", 0) < TIGHTEN_RETRIES and self._back_off_kept():
             import comfy.model_management as mm
 
             _release_frames(e)
             del e
             self.optimizer.zero_grad(set_to_none=True)
-            self._backoffs = getattr(self, "_backoffs", 0) + 1
+            self._keep_backoffs = getattr(self, "_keep_backoffs", 0) + 1
             mm.soft_empty_cache()
             self._peak = 0
             torch.cuda.reset_peak_memory_stats()
             return True
+        if getattr(self, "_backoffs", 0) >= TIGHTEN_RETRIES:
+            return False
         ck = getattr(self, "_ckpt", None)
         if (ck is not None and getattr(ck, "saving_attention", False)
                 and getattr(ck, "set_save_attention", None) is not None and ck.set_save_attention(False)):
