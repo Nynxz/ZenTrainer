@@ -94,9 +94,12 @@ async def sampler() -> None:
                 now = await asyncio.to_thread(residency.fingerprint)
                 if now != seen or _loaded is None:
                     models = await asyncio.to_thread(residency.report)
-                    # only cache the fingerprint for complete reports; a transient mid-load error retries next tick
-                    if not any("error" in m for m in models):
+                    # only cache the fingerprint when the report is complete and state didn't move under it;
+                    # otherwise clear `seen` so the next tick retries even if residency settles back to its prior value
+                    if not any("error" in m for m in models) and await asyncio.to_thread(residency.fingerprint) == now:
                         seen = now
+                    else:
+                        seen = None
                     if models != _loaded:
                         _loaded = models
                         for sid in _watchers:

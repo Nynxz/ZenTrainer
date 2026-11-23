@@ -21,14 +21,19 @@ function pushLoss(id: string, loss: number | null | undefined) {
 }
 
 export const queue = ref<QueueState>({ paused: false, current: null, items: [] })
+let queueSeq = 0
 let queueRetry = false
 
 export async function refreshQueue(): Promise<void> {
+  const seq = ++queueSeq
   try {
-    queue.value = await engine.queue()
-    queueRetry = false
+    const next = await engine.queue()
+    if (seq === queueSeq) {
+      queue.value = next
+      queueRetry = false
+    }
   } catch {
-    queueRetry = true // retry on the next tick even while system pushes stay healthy
+    if (seq === queueSeq) queueRetry = true // retry on the next tick even while system pushes stay healthy
   }
 }
 
