@@ -5,6 +5,8 @@ and Manager show.
 
 ## Unreleased
 
+- **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
+  its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`
   picked as the captioning model, the Captions panel offers the 5 MB LoRA from
   [nynxz/Qwen3.8-27B](https://huggingface.co/nynxz/Qwen3.8-27B) (AEON-7's uncensored edit, as a

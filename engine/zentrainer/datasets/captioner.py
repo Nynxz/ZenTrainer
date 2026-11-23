@@ -442,7 +442,6 @@ def run(job: CaptionJob) -> None:
     import torch
 
     from ..harness.data import caption_path, scan
-    from ..harness.trainer import _comfy_compiler
 
     if job.status != "queued":  # cancelled while it waited
         return
@@ -453,10 +452,6 @@ def run(job: CaptionJob) -> None:
            else "the most likely answer (the same every run)")
         + (f", repetition penalty {job.repetition_penalty}" if job.repetition_penalty != 1.0 else ""))
     update(job, status="running", message=f"loading {job.clip_name}")
-    # ComfyUI's model compiler (CUDA graphs) breaks token-by-token generation: a device-side
-    # assert on the second token that takes the whole server down. Off while captioning, as
-    # it is while training.
-    _comfy_compiler(False)
     try:
         with torch.inference_mode():
             if job.rewrite:
@@ -525,8 +520,6 @@ def run(job: CaptionJob) -> None:
         update(job, status="stopped" if stopped else "error", queue=[], message=str(e) or type(e).__name__, finished=time.time())
         if not stopped:
             raise
-    finally:
-        _comfy_compiler(True)
 
 
 def _with_loras(clip, job: CaptionJob):
