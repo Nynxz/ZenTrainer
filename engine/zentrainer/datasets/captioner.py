@@ -559,6 +559,9 @@ TE_LORA_CATALOG = [
     {"id": "qwen35-9b-uncensored", "label": "Uncensored", "repo": "nynxz/Qwen3.5-9b",
      "file": "loras/qwen35-9b-hauhaucs_uncensored_lora_rank4_fp32.safetensors", "size": 14044264,
      "base": r"qwen3\.?5[-_]9b", "note": "Describes everything it sees instead of refusing or softening it"},
+    {"id": "qwen3.8-27b-uncensored", "label": "Uncensored", "repo": "nynxz/Qwen3.8-27B",
+     "file": "loras/qwen3.8-27b-aeon_uncensored_lora_rank1_fp32.safetensors", "size": 5610272,
+     "base": r"qwen3\.?8[-_]27b", "note": "Describes everything it sees instead of refusing or softening it"},
 ]
 
 
