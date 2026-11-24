@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **MOSS Image: faster training and lower VRAM.** `modulated_rms_norm` and `gated_residual` now
+  cast back to the training dtype (`bf16`) during training, matching inference instead of leaking
+  fp32 into `qkv`/`ffn_up_gate` and the residual stream (restoring fused int8 bypass on all layers
+  and avoiding a duplicate compiled graph after block 0).
 - **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
   its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`

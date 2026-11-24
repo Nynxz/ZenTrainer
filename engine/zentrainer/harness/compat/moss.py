@@ -1,7 +1,13 @@
-"""MOSS-Image (comfy/ldm/moss_image/model.py), with memory.fused_qk_rope:
-- Attention: the q/k RMSNorms and the rope run as one op that trains (kernels/qk_norm_rope.py)
-  instead of a norm, a cast and a rope each. Falls back to ComfyUI's for attention patches, a
-  norm weight that trains (or is patched), or no rope. Its sampling already fuses them.
+"""MOSS-Image (comfy/ldm/moss_image/model.py):
+- `modulated_rms_norm` and `gated_residual`: ComfyUI's training branches drop the cast back to
+  `x.dtype` that its fused inference ops (`ck.rms_adaln`, in-place `x.addcmul_`) do, leaking fp32
+  into the quantized `qkv` / `ffn_up_gate` layers and the residual stream (breaking fused bypass
+  adapters, doubling saved activation memory, and forcing a second compiled graph after block 0).
+  Cast back to `x.dtype`.
+- Attention (with memory.fused_qk_rope): the q/k RMSNorms and the rope run as one op that trains
+  (kernels/qk_norm_rope.py) instead of a norm, a cast and a rope each. Falls back to ComfyUI's for
+  attention patches, a norm weight that trains (or is patched), or no rope. Its sampling already
+  fuses them.
 """
 
 from __future__ import annotations
@@ -23,6 +29,24 @@ def apply() -> None:
     sampling_attention = getattr(moss, "attention", None)
     if sampling_attention is None:
         return
+
+    sampling_modulated_rms_norm = getattr(moss, "modulated_rms_norm", None)
+    if sampling_modulated_rms_norm is not None:
+        def modulated_rms_norm(x, norm, scale, shift):
+            if not mm.in_training:
+                return sampling_modulated_rms_norm(x, norm, scale, shift)
+            return (norm(x) * (1 + scale) + shift).to(x.dtype)
+
+        moss.modulated_rms_norm = modulated_rms_norm
+
+    sampling_gated_residual = getattr(moss, "gated_residual", None)
+    if sampling_gated_residual is not None:
+        def gated_residual(x, y, gate):
+            if not mm.in_training:
+                return sampling_gated_residual(x, y, gate)
+            return torch.addcmul(x, y, gate).to(x.dtype)
+
+        moss.gated_residual = gated_residual
 
     def plain(norm) -> bool:
         """A norm whose weight is a frozen tensor with nothing patched onto it."""
