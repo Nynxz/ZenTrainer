@@ -12,12 +12,15 @@ from .. import compat
 
 
 def _apply_rope_blhd(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
-    """Interleaved RoPE on (B, L, H, D) with freqs (B or 1, 1, L_f, D/2, 2, 2), out of place."""
+    """Interleaved RoPE on (B, L, H, D) with freqs (B or 1, 1, L_f, D/2, 2, 2), matching
+    ComfyUI's _apply_rope1 in-place accumulation to avoid materializing two fp32 products."""
     f = freqs.transpose(1, 2)
     if f.shape[1] != 1 and f.shape[1] != x.shape[1]:
         f = f[:, :x.shape[1]]
     x_ = x.to(dtype=f.dtype).reshape(*x.shape[:-1], -1, 1, 2)
-    return (f[..., 0] * x_[..., 0] + f[..., 1] * x_[..., 1]).reshape(x.shape).type_as(x)
+    x_out = f[..., 0] * x_[..., 0]
+    x_out.addcmul_(f[..., 1], x_[..., 1])
+    return x_out.reshape(x.shape).type_as(x)
 
 
 def apply() -> None:
@@ -35,7 +38,7 @@ def apply() -> None:
     sampling_forward = attention.forward
 
     def forward(self, x, freqs=None, mask=None, transformer_options={}):
-        if not mm.in_training:
+        if not (compat.in_run and mm.in_training):
             return sampling_forward(self, x, freqs, mask, transformer_options)
         patches = transformer_options.get("patches", {})
         has_attn1 = "block_index" in transformer_options and "attn1_patch" in patches

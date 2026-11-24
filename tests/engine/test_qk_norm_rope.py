@@ -56,9 +56,42 @@ def test_the_fused_op_trains_like_the_separate_ones(model):
     assert torch.allclose(a, separate(q0, wq, f)) and torch.allclose(b, separate(k0, wk, f))
     assert torch.allclose(q.grad, qs.grad, atol=1e-12) and torch.allclose(k.grad, ks.grad, atol=1e-12)
     if model == "krea2_seq_first":
-        # Verify _apply_rope_blhd matches Krea 2's (B, H, L, D) rope after transposing
+        # Verify _apply_rope_blhd forward and backward (gradcheck) match Krea 2's rope
         nq = F.rms_norm(q0, (D,), weight=wq, eps=1e-5)
         assert torch.allclose(_apply_rope_blhd(nq, _freqs()), a)
+        assert torch.autograd.gradcheck(lambda t: _apply_rope_blhd(t, _freqs()),
+                                        (nq.detach().clone().requires_grad_(),), eps=1e-6, atol=1e-7)
+
+
+def test_krea2_patch_delegates_outside_zentrainer_run(monkeypatch):
+    """Outside compat.in_run (e.g. a later native ComfyUI training job), Krea 2's patch delegates untouched."""
+    import sys
+    import types
+
+    from zentrainer.harness import compat
+    from zentrainer.harness.compat import krea2 as krea2_patch
+
+    calls = []
+
+    class FakeAttention:
+        def forward(self, x, freqs=None, mask=None, transformer_options={}):
+            calls.append(x)
+            return "comfy"
+
+    k2 = types.ModuleType("comfy.ldm.krea2.model")
+    k2.Attention = FakeAttention
+    mm = types.ModuleType("comfy.model_management")
+    mm.in_training = True
+    for name, mod in (("comfy", types.ModuleType("comfy")), ("comfy.ldm", types.ModuleType("comfy.ldm")),
+                      ("comfy.ldm.krea2", types.ModuleType("comfy.ldm.krea2")),
+                      ("comfy.ldm.krea2.model", k2), ("comfy.model_management", mm)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    sys.modules["comfy"].model_management = mm
+    monkeypatch.setattr(compat, "_applied", set())
+    monkeypatch.setattr(compat, "in_run", False)
+    krea2_patch.apply()
+
+    assert FakeAttention().forward("x") == "comfy" and calls == ["x"]
 
 
 @pytest.mark.parametrize("rot", [8, 12])  # H3 turns only the first rot dims; 12: pairs not a power of 2
