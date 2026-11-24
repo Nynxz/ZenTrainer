@@ -75,8 +75,20 @@ def _swiglu_forward(self, x):
     return self.down(F.silu(self.gate(x)) * self.up(x))
 
 
+def _ensure_grad(self, args):
+    """Ensure the first trainable block receives a floating-point input with requires_grad=True
+    (detached so backward never flows into frozen prefix blocks or embedders). Without this, the
+    first trainable block sees requires_grad=False while every subsequent block sees True, causing
+    dynamo to compile two full graphs per run."""
+    if (getattr(self, "_zt_ensure_grad", False) and torch.is_grad_enabled()
+            and args and isinstance(args[0], torch.Tensor)
+            and args[0].is_floating_point() and not args[0].is_nested and not args[0].requires_grad):
+        return (args[0].detach().requires_grad_(True), *args[1:])
+    return args
+
+
 @contextlib.contextmanager
-def compiled_blocks(diffusion_model, enabled: bool):
+def compiled_blocks(diffusion_model, enabled: bool, first_trainable=None):
     if not enabled:
         yield 0
         return
@@ -112,21 +124,36 @@ def compiled_blocks(diffusion_model, enabled: bool):
     by_cls: dict[type, object] = {}
     done = []
     for m in blocks:
-        if "forward" in m.__dict__:  # already wrapped by someone else: leave it
+        fwd = m.__dict__.get("forward")
+        # ComfyUI's unpatch(m) leaves a plain bound class method in m.__dict__["forward"]; treat
+        # that as unwrapped so cached models still compile on later runs.
+        if fwd is not None and not (getattr(fwd, "__func__", None) is type(m).forward
+                                    and getattr(fwd, "__self__", None) is m):
             continue
         cls = type(m)
-        compiled = by_cls.get(cls)
-        if compiled is None:
+        run = by_cls.get(cls)
+        if run is None:
             compiled = torch.compile(cls.forward, dynamic=True)
-            compiled._zt_orig_cls_fwd = cls.forward
-            by_cls[cls] = compiled
-        m.forward = types.MethodType(compiled, m)
+
+            def run(self, *args, _fn=compiled, **kwargs):
+                return _fn(self, *_ensure_grad(self, args), **kwargs)
+
+            run._zt_orig_cls_fwd = cls.forward
+            by_cls[cls] = run
+        m.forward = types.MethodType(run, m)
         done.append(m)
+    if first_trainable is None:
+        first_trainable = next((m for m in done if any(p.requires_grad for p in m.parameters())), None)
+    marked = first_trainable if first_trainable in done else None
+    if marked is not None:
+        marked._zt_ensure_grad = True
     logging.info("[ZenTrainer] torch.compile on the %d main blocks (%d shared graph%s)",
                  len(done), len(by_cls), "" if len(by_cls) == 1 else "s")
     try:
         yield len(done)
     finally:
+        if marked is not None:
+            marked.__dict__.pop("_zt_ensure_grad", None)
         for m in done + mlps:
             m.__dict__.pop("forward", None)
         for sub in casts:
@@ -165,3 +192,13 @@ def reset_if_moved(diffusion_model, before: tuple[bool, ...] | None, why: str = 
         logging.info("[ZenTrainer] step %d%s: %d weights moved onto the GPU and %d off it, so the compiled blocks "
                      "recompile", step, f" ({why})" if why else "", on, off)
     return now
+
+
+def compiled_frame_count() -> int:
+    """How many graphs dynamo has compiled so far in this process (0 if unavailable)."""
+    try:
+        import torch._dynamo.utils as du
+
+        return int(du.counters["frames"]["ok"])
+    except Exception:
+        return 0

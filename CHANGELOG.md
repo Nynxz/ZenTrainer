@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Faster `torch.compile` and compiled `checkpoint_save="none"`.** Fixes cached models silently
+  skipping block compilation after an earlier uncompiled run, eliminates the duplicate block-0
+  graph (`2 → 1` graphs, ~2x faster compile while keeping frozen prefix blocks grad-free), and
+  compiles a shared wrapper around `checkpoint_save="none"` blocks (~1.46x faster on Krea 2).
 - **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
   its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`

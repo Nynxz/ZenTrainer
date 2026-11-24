@@ -343,3 +343,118 @@ def test_deferred_eager_probe_waits_for_next_step_and_scales_already_kept_blocks
     budget = 20 * gb - tr_mod.TIGHTEN_MARGIN - (12 * gb - 8 * 0.5 * gb)
     assert ck.kept * 0.5 * gb * 2.0 * tr_mod.KEEP_SAFETY <= budget + 0.5 * gb * 2.0 * tr_mod.KEEP_SAFETY
     assert ck.kept < 12  # without subtracting already-kept growth, spare=8GB-margin would jump to 12
+
+
+def test_cached_model_unpatch_does_not_skip_subsequent_compile_and_save_none_shares_graph(monkeypatch):
+    from zentrainer.harness.kernels.compile import compiled_frame_count
+
+    nodes_train = types.ModuleType("comfy_extras.nodes_train")
+
+    def fake_patch(m, offloading=False):
+        m.org_forward = m.forward
+        m.forward = lambda *a, _f=m.forward, **kw: _f(*a, **kw)
+
+    def fake_unpatch(m):
+        if hasattr(m, "org_forward"):
+            m.forward = m.org_forward
+            delattr(m, "org_forward")
+
+    nodes_train.patch = fake_patch
+    nodes_train.unpatch = fake_unpatch
+    pkg = types.ModuleType("comfy_extras")
+    pkg.nodes_train = nodes_train
+    monkeypatch.setitem(sys.modules, "comfy_extras", pkg)
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", nodes_train)
+
+    class Block(nn.Module):
+        def __init__(self, d=16):
+            super().__init__()
+            self.w1 = nn.Linear(d, d)
+            self.w2 = nn.Linear(d, d)
+
+        def forward(self, x):
+            return x + self.w2(torch.nn.functional.silu(self.w1(x)))
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block() for _ in range(4)])
+
+        def forward(self, x):
+            for b in self.blocks:
+                x = b(x)
+            return x
+
+    torch.manual_seed(0)
+    ref = Net()
+    dm = Net()
+    dm.load_state_dict(ref.state_dict())
+    x = torch.randn(2, 8, 16)  # requires_grad=False (just like latent input from a frozen embedder)
+    ref_loss = ref(x).pow(2).mean()
+    ref_loss.backward()
+    ref_grads = [p.grad.clone() for p in ref.parameters()]
+
+    # Run 1 (uncompiled checkpointing, leaving cached model behind): unpatch must not leave stale m.__dict__["forward"]
+    with gradient_checkpointing(dm, True, depth=1, offloading=False, skip=0, save="none"):
+        pass
+    assert all("forward" not in b.__dict__ for b in dm.blocks)
+    # Even if an external unpatch left a plain bound class method on the instance, compile_blocks still compiles it
+    dm.blocks[0].forward = dm.blocks[0].forward
+
+    torch._dynamo.reset()
+    try:
+        before = compiled_frame_count()
+        with compiled_blocks(dm, True) as n_comp, \
+                gradient_checkpointing(dm, True, depth=1, offloading=False, skip=0, save="none") as ck:
+            assert n_comp == 4
+            # save="none" on compiled blocks shares ONE compiled checkpoint wrapper across all 4 blocks
+            assert len({b.forward.__func__ for b in dm.blocks}) == 1
+            dm.zero_grad(set_to_none=True)
+            loss = dm(x).pow(2).mean()
+            loss.backward()
+            assert torch.allclose(loss, ref_loss, atol=1e-5)
+            for p, g in zip(dm.parameters(), ref_grads):
+                assert torch.allclose(p.grad, g, rtol=1e-4, atol=1e-5)
+            # Only ONE graph compiled (not two for Block 0 requires_grad=False vs Blocks 1..3 True)
+            assert compiled_frame_count() - before == 1
+            assert not x.requires_grad  # caller's input tensor was never mutated
+        assert all("_zt_ensure_grad" not in b.__dict__ and "forward" not in b.__dict__ for b in dm.blocks)
+    finally:
+        torch._dynamo.reset()
+
+
+def test_first_trainable_does_not_enable_grad_on_frozen_prefix_blocks():
+    class Block(nn.Module):
+        def __init__(self, d=16):
+            super().__init__()
+            self.w = nn.Linear(d, d)
+
+        def forward(self, x):
+            return x + self.w(x)
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block() for _ in range(4)])
+
+        def forward(self, x):
+            for b in self.blocks:
+                x = b(x)
+            return x
+
+    torch.manual_seed(1)
+    dm = Net()
+    for b in dm.blocks[:2]:
+        b.requires_grad_(False)
+    x = torch.randn(2, 4, 16)
+    torch._dynamo.reset()
+    try:
+        with compiled_blocks(dm, True, first_trainable=dm.blocks[2]):
+            assert not getattr(dm.blocks[0], "_zt_ensure_grad", False)
+            assert getattr(dm.blocks[2], "_zt_ensure_grad", False)
+            out = dm(x)
+            out.pow(2).mean().backward()
+            assert all(p.grad is None for b in dm.blocks[:2] for p in b.parameters())
+            assert all(p.grad is not None for b in dm.blocks[2:] for p in b.parameters())
+    finally:
+        torch._dynamo.reset()
