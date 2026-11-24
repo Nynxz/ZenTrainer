@@ -280,3 +280,28 @@ def test_the_fused_lokr_skips_the_input_gradient_nothing_needs(monkeypatch):
     assert not calls
     for a, b in zip(got, ref):
         assert torch.allclose(a, b)
+
+
+@pytest.mark.parametrize("in_m,in_n,out_l,out_k", [(4, 16, 4, 32), (4, 32, 4, 16)])
+def test_lokr_fused_handles_noncontiguous_sliced_inputs(in_m, in_n, out_l, out_k, monkeypatch):
+    """Sliced activations and grad_out (e.g. stride (2*in_dim, 1)) must not raise view stride errors."""
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(5)
+    in_dim, out_dim = in_m * in_n, out_l * out_k
+    base = torch.randn(out_dim, in_dim, dtype=torch.float64)
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: g @ base + residual)
+    wide = torch.randn(16, in_dim * 2, dtype=torch.float64, requires_grad=True)
+    x = wide[:, :in_dim]  # shape [16, in_dim], stride (2*in_dim, 1)
+    assert not x.is_contiguous()
+    w1 = torch.randn(out_l, in_m, dtype=torch.float64, requires_grad=True)
+    w2 = torch.randn(out_k, in_n, dtype=torch.float64, requires_grad=True)
+    out = ib._LoKrInt8.apply(x, w1, w2, 0.75, None, None)
+    want = x @ base.t() + (x @ torch.kron(w1, w2).t()) * 0.75
+    assert torch.allclose(out, want)
+    g = torch.randn(16, out_dim * 2, dtype=torch.float64)[:, :out_dim]  # non-contiguous grad_out too
+    got = torch.autograd.grad(out, (wide, w1, w2), g)
+    ref = torch.autograd.grad(want, (wide, w1, w2), g)
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)

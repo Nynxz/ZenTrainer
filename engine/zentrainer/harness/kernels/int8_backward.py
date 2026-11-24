@@ -645,7 +645,7 @@ class _LoKrInt8(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, w1, w2, scale, m, original, frozen=()):
-        x2 = x.detach().reshape(-1, x.shape[-1])
+        x2 = x.detach().reshape(-1, x.shape[-1]).contiguous()
         M = x2.shape[0]
         out_l, in_m = w1.shape
         out_k, in_n = w2.shape
@@ -654,10 +654,10 @@ class _LoKrInt8(torch.autograd.Function):
         w1_first = in_m * out_k > out_l * in_n  # pick the smaller intermediate (M, out_l, in_n) vs (M, in_m, out_k)
         with torch.no_grad():
             if w1_first:
-                t = torch.matmul(w1s, x2.view(M, in_m, in_n))  # (M, out_l, in_n); scale already folded in
-                h = (t.reshape(M * out_l, in_n) @ w2_t.t()).view(M, out_l * out_k)
+                t = torch.matmul(w1s, x2.reshape(M, in_m, in_n))  # (M, out_l, in_n); scale already folded in
+                h = (t.reshape(M * out_l, in_n) @ w2_t.t()).reshape(M, out_l * out_k)
             else:
-                t = (x2.view(M * in_m, in_n) @ w2_t.t()).view(M, in_m, out_k)  # (M, in_m, out_k)
+                t = (x2.reshape(M * in_m, in_n) @ w2_t.t()).reshape(M, in_m, out_k)  # (M, in_m, out_k)
                 h = torch.matmul(w1s, t).reshape(M, out_l * out_k)
             h = _add_frozen_fwd(x2, h, frozen)
             out = _int8_forward(m, x2, h)
@@ -673,17 +673,17 @@ class _LoKrInt8(torch.autograd.Function):
     @torch.autograd.function.once_differentiable
     def backward(ctx, grad_out):
         x, t, w1s, w2_t = ctx.saved_tensors
-        x2 = x.detach().reshape(-1, x.shape[-1])
+        x2 = x.detach().reshape(-1, x.shape[-1]).contiguous()
         M = x2.shape[0]
         out_l, in_m = w1s.shape
         out_k, in_n = w2_t.shape
-        g = grad_out.reshape(-1, grad_out.shape[-1]).to(x2.dtype)
+        g = grad_out.reshape(-1, grad_out.shape[-1]).to(x2.dtype).contiguous()
         acc_dtype = torch.float64 if x2.dtype == torch.float64 else torch.float32
         if ctx.w1_first:
             g2 = g.reshape(M * out_l, out_k)
             d_w2 = g2.t() @ t.reshape(M * out_l, in_n)  # t already carries scale
-            u = (g2 @ w2_t).view(M, out_l, in_n)
-            d_w1 = torch.matmul(u, x2.view(M, in_m, in_n).transpose(-1, -2)).sum(0, dtype=acc_dtype)
+            u = (g2 @ w2_t).reshape(M, out_l, in_n)
+            d_w1 = torch.matmul(u, x2.reshape(M, in_m, in_n).transpose(-1, -2)).sum(0, dtype=acc_dtype)
             if ctx.scale != 1.0:
                 d_w1 = d_w1 * ctx.scale
             dx = torch.matmul(w1s.t().contiguous(), u).reshape(M, in_m * in_n) if ctx.needs_input_grad[0] else None
@@ -693,8 +693,8 @@ class _LoKrInt8(torch.autograd.Function):
             if ctx.scale != 1.0:
                 d_w1 = d_w1 * ctx.scale
             v = torch.matmul(w1s.t().contiguous(), g3).reshape(M * in_m, out_k)  # carries scale
-            d_w2 = v.t() @ x2.view(M * in_m, in_n)
-            dx = (v @ w2_t).view(M, in_m * in_n) if ctx.needs_input_grad[0] else None
+            d_w2 = v.t() @ x2.reshape(M * in_m, in_n)
+            dx = (v @ w2_t).reshape(M, in_m * in_n) if ctx.needs_input_grad[0] else None
         if ctx.needs_input_grad[0]:
             dx = _add_frozen_bwd(g, x2, dx, ctx.frozen)
             gi = _layer_input_grad(ctx.m, g, dx).to(grad_out.dtype).reshape(ctx.in_shape)
