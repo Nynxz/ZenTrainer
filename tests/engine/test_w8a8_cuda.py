@@ -235,3 +235,48 @@ def test_triton_hadamard256_residual_and_int8_matmul_residual():
     out_rot = wb.hadamard256_residual(wb.int8_matmul(a, b, steps), res).double()
     want_rot = (exact.view(m, k // 256, 256) @ _regular_hadamard(256).cuda().T).view(m, k) + res.double()
     assert ((out_rot - want_rot).norm() / want_rot.norm()).item() < 4e-3
+
+
+@pytest.mark.parametrize("in_m,in_n,out_l,out_k", [(4, 8, 4, 24), (4, 24, 4, 8), (4, 12, 4, 12)])
+def test_lokr_fused_with_an_int8_layer_has_the_bypass_gradients(in_m, in_n, out_l, out_k, monkeypatch):
+    """_LoKrInt8 matches base(x) + scale * kron(w1, w2) @ x in both contraction orders."""
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(in_n + out_k)
+    in_dim, out_dim = in_m * in_n, out_l * out_k
+    base = torch.randn(out_dim, in_dim, dtype=torch.float64)
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: g @ base + residual)
+    x = torch.randn(2, 5, in_dim, dtype=torch.float64, requires_grad=True)
+    w1 = torch.randn(out_l, in_m, dtype=torch.float64, requires_grad=True)
+    w2 = torch.randn(out_k, in_n, dtype=torch.float64, requires_grad=True)
+    scale = 0.75
+    out = ib._LoKrInt8.apply(x, w1, w2, scale, None, None)
+    want = x @ base.t() + (x @ torch.kron(w1, w2).t()) * scale
+    assert torch.allclose(out, want)
+    g = torch.randn_like(want)
+    got = torch.autograd.grad(out, (x, w1, w2), g)
+    ref = torch.autograd.grad(want, (x, w1, w2), g)
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)
+
+
+def test_the_fused_lokr_skips_the_input_gradient_nothing_needs(monkeypatch):
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(3)
+    base = torch.randn(64, 32, dtype=torch.float64)
+    calls = []
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: calls.append(1) or g @ base + residual)
+    x = torch.randn(2, 5, 32, dtype=torch.float64)  # no grad
+    w1 = torch.randn(4, 4, dtype=torch.float64, requires_grad=True)
+    w2 = torch.randn(16, 8, dtype=torch.float64, requires_grad=True)
+    out = ib._LoKrInt8.apply(x, w1, w2, 0.5, None, None)
+    want = x @ base.t() + (x @ torch.kron(w1, w2).t()) * 0.5
+    g = torch.randn_like(want)
+    got = torch.autograd.grad(out, (w1, w2), g)
+    ref = torch.autograd.grad(want, (w1, w2), g)
+    assert not calls
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)

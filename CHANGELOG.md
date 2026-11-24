@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Fused int8/packed bypass for direct 2D LoKr.** Direct LoKr adapters (alone or inside `_Assisted`)
+  now use a transpose-free batched `matmul` with optimal contraction order (5.3x smaller saved
+  intermediates on expansion layers like MOSS's `ffn_up_gate`) and fuse forward/backward residuals
+  into the int8 GEMM epilogues (~1.20x faster and less VRAM on MOSS LoKr).
 - **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
   its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`
