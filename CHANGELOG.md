@@ -7,8 +7,8 @@ and Manager show.
 
 - **Faster CUDA W8A8 backward kernels (1.09x–1.37x on RTX 5090).** Double-buffered software
   pipelining, a 4-stage shared-memory pipeline, lock-free two-phase Stream-K to remove tail-wave
-  quantization, hardware `cvt.rn.bf16x2.f32` epilogue conversion, a 128-thread `2k` row quantizer,
-  and pooled GPU RNG (no per-layer `randint` launch).
+  quantization, hardware `cvt.rn.bf16x2.f32` epilogue conversion, and a 128-thread `2k` row
+  quantizer.
 - **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
   its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`

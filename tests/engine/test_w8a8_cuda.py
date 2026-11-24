@@ -214,10 +214,23 @@ def test_1pass_quantizers_match_2pass_bit_exact(n):
     assert torch.equal(gq0, gq1) and torch.equal(st0, st1)
 
 
+def _stream_k_shape(device: torch.device) -> tuple[int, int, int]:
+    """Pick a (m, n, k) shape guaranteed to trigger the Stream-K branch on this device's SM count."""
+    sms = torch.cuda.get_device_properties(device).multi_processor_count
+    n, k = 3072, 3072  # kt = 48, n_k = 12
+    for n_m in range(4, sms + 8):
+        ctas = n_m * (k // 256)
+        waves = (ctas + sms - 1) // sms
+        sk_tiles = ctas - max(0, (ctas // sms) - 1) * sms
+        if ctas / (waves * sms) < 0.88 and sk_tiles * (n // 64) >= sms:
+            return n_m * 128, n, k
+    pytest.skip(f"no Stream-K shape found for {sms} SMs")
+
+
 @cuda
 @pytest.mark.parametrize("m,n,k", [(2432, 3072, 3072), (1152, 9216, 3072), (2432, 16384, 3072)])
-def test_stream_k_and_pooled_seed_match_exact_product(m, n, k):
-    """Stream-K (3-stage and 4-stage) and pooled RNG (seed=None) match exact rotated/unrotated products."""
+def test_stream_k_and_residual_match_exact_product(m, n, k):
+    """Stream-K (3-stage and 4-stage) matches exact rotated/unrotated products and resets done[] in-kernel."""
     from zentrainer.harness.kernels import w8a8_cuda
 
     torch.manual_seed(13)
@@ -231,43 +244,44 @@ def test_stream_k_and_pooled_seed_match_exact_product(m, n, k):
     for rotate, want in ((True, rotated), (False, exact)):
         out = w8a8_cuda.input_grad(g, q, s, seed, rotate).double()
         assert ((out - want).norm() / want.norm()).item() < 3e-3
-    # Pooled RNG path (seed=None) with residual across two calls (verifies done[] reset in-kernel)
+    # Repeated calls with residual verify in-kernel done[] reset
     r = torch.randn(m, k, device="cuda", dtype=torch.bfloat16) * rotated.std().item()
     want_r = rotated + r.double()
     for _ in range(2):
-        out_r = w8a8_cuda.input_grad(g, q, s, None, True, r).double()
-        assert ((out_r - want_r).norm() / want_r.norm()).item() < 2e-2
+        out_r = w8a8_cuda.input_grad(g, q, s, seed, True, r).double()
+        assert ((out_r - want_r).norm() / want_r.norm()).item() < 3e-3
 
 
 @cuda
-def test_stream_k_oom_fallback_and_pooled_seed_reproducibility(monkeypatch):
-    """Stream-K workspace OOM falls back to ordinary GEMM; reseeding CUDA replays pooled seeds;
-    separate streams get isolated seed pools and Stream-K done counters."""
-    from zentrainer.harness.kernels import w8a8_cuda
+def test_stream_k_oom_fallback_stream_isolation_and_rng_replay(monkeypatch):
+    """Stream-K workspace OOM falls back to ordinary GEMM; separate streams get isolated done
+    counters; CUDA RNG state save/restore replays w8a8_input_grad identically."""
+    from zentrainer.harness.kernels import int8_backward, w8a8_cuda
 
-    m, n, k = 1152, 9216, 3072
+    dev = torch.device("cuda")
+    m, n, k = _stream_k_shape(dev)
     torch.manual_seed(21)
-    g = torch.randn(m, n, device="cuda", dtype=torch.bfloat16)
-    s = torch.rand(n, device="cuda") * 0.01 + 0.001
-    q = torch.randint(-127, 128, (n, k), device="cuda", dtype=torch.int8)
+    g = torch.randn(m, n, device=dev, dtype=torch.bfloat16)
+    s = torch.rand(n, device=dev) * 0.01 + 0.001
+    q = torch.randint(-127, 128, (n, k), device=dev, dtype=torch.int8)
 
-    # 1. Reseeding replays the exact same stochastic-rounding output (even after intervening CUDA RNG draws)
-    torch.manual_seed(77)
-    _ = torch.randn(1024, device="cuda")
-    a1 = w8a8_cuda.input_grad(g, q, s, None, True)
-    torch.manual_seed(77)
-    _ = torch.randn(1024, device="cuda")
-    a2 = w8a8_cuda.input_grad(g, q, s, None, True)
+    # 1. Saving and restoring CUDA RNG state mid-stream replays w8a8_input_grad bit-for-bit
+    _ = int8_backward.w8a8_input_grad(g, q, s, 256)
+    rng_state = torch.cuda.get_rng_state(dev)
+    a1 = int8_backward.w8a8_input_grad(g, q, s, 256)
+    torch.cuda.set_rng_state(rng_state, dev)
+    a2 = int8_backward.w8a8_input_grad(g, q, s, 256)
     assert torch.equal(a1, a2)
 
-    # 2. Separate streams isolate _seed_pool and _sk_done
+    # 2. Separate streams isolate _sk_done on a shape guaranteed to hit Stream-K for this GPU's SMs
+    seed = torch.tensor([5], device=dev, dtype=torch.int32)
     s1, s2 = torch.cuda.Stream(), torch.cuda.Stream()
     with torch.cuda.stream(s1):
-        b1 = w8a8_cuda.input_grad(g, q, s, None, True)
+        b1 = w8a8_cuda.input_grad(g, q, s, seed, True)
     with torch.cuda.stream(s2):
-        b2 = w8a8_cuda.input_grad(g, q, s, None, True)
+        b2 = w8a8_cuda.input_grad(g, q, s, seed, True)
     torch.cuda.synchronize()
-    assert b1.shape == (m, k) and b2.shape == (m, k) and torch.isfinite(b1).all() and torch.isfinite(b2).all()
+    assert torch.equal(b1, b2) and torch.isfinite(b1).all()
     idx = g.device.index
     assert (idx, s1.cuda_stream) in w8a8_cuda._sk_done and (idx, s2.cuda_stream) in w8a8_cuda._sk_done
     assert w8a8_cuda._sk_done[(idx, s1.cuda_stream)] is not w8a8_cuda._sk_done[(idx, s2.cuda_stream)]
@@ -280,7 +294,6 @@ def test_stream_k_oom_fallback_and_pooled_seed_reproducibility(monkeypatch):
             raise torch.OutOfMemoryError("simulated Stream-K workspace OOM")
         return real_empty(shape, *args, **kwargs)
 
-    seed = torch.tensor([5], device="cuda", dtype=torch.int32)
     ref = w8a8_cuda.input_grad(g, q, s, seed, True)
     monkeypatch.setattr(torch, "empty", fail_partials)
     fallback = w8a8_cuda.input_grad(g, q, s, seed, True)

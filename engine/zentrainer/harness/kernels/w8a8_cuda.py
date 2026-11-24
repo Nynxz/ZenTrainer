@@ -32,8 +32,6 @@ _kernels: dict[int, dict | None] = {}  # by device: its kernels, or None if they
 _sms: dict[int, int] = {}  # SM count per device, to schedule Stream-K and BM=64
 _has_s4: dict[int, bool] = {}  # whether device opt-in shared memory fits SMEM4 (96 KB)
 _sk_done: dict[tuple[int, int], torch.Tensor] = {}  # per-(device, stream) zeroed arrival counters (reset in-kernel)
-_seed_pool: dict[tuple[int, int], list] = {}  # per-(device, stream) [pool, cursor, gen_seed, gen_offset]
-_SEED_POOL_SIZE = 512
 
 
 def _load(device: torch.device) -> dict | None:
@@ -74,22 +72,6 @@ def _load(device: torch.device) -> dict | None:
     return _kernels[idx]
 
 
-def _next_seed(device: torch.device, idx: int, stream_id: int) -> torch.Tensor:
-    """Return a 1-element int32 seed tensor from a per-stream pool, refilled every 512 calls or
-    whenever the CUDA generator's seed or offset changes (preserving deterministic replay)."""
-    gen = torch.cuda.default_generators[idx]
-    gen_seed, gen_off = gen.initial_seed(), gen.get_offset()
-    key = (idx, stream_id)
-    entry = _seed_pool.get(key)
-    if entry is None or entry[1] >= _SEED_POOL_SIZE or entry[2] != gen_seed or entry[3] != gen_off:
-        pool = torch.randint(0, 2**31 - 1, (_SEED_POOL_SIZE,), device=device, dtype=torch.int32)
-        entry = [pool, 0, gen.initial_seed(), gen.get_offset()]
-        _seed_pool[key] = entry
-    pos = entry[1]
-    entry[1] = pos + 1
-    return entry[0][pos : pos + 1]
-
-
 def _done_buf(device: torch.device, idx: int, stream_id: int, need: int) -> torch.Tensor:
     """Per-stream zero-initialized Stream-K arrival counters (reset back to 0 in-kernel by each last finisher)."""
     key = (idx, stream_id)
@@ -126,12 +108,12 @@ def _aligned(grad_2d: torch.Tensor, q: torch.Tensor) -> bool:
 
 
 @torch.library.custom_op("zentrainer::w8a8_input_grad", mutates_args=())
-def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed: torch.Tensor | None,
+def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed: torch.Tensor,
                rotate: bool, residual: torch.Tensor | None = None) -> torch.Tensor:
     """bf16 (M, in): (quantized grad_2d * scale) @ q, rescaled, rotated by ConvRot's 256-wide
     Hadamard when `rotate`, plus `residual` (M, in) when given. grad_2d (M, out) bf16, q (out, in)
-    int8, scale (out,) the weight's per row, seed a one-element int32 tensor on the device (or None
-    to draw from the pooled RNG without a per-layer launch). See supported()."""
+    int8, scale (out,) the weight's per row, seed a one-element int32 tensor on the device.
+    See supported()."""
     ks = _load(grad_2d.device)
     m, n = grad_2d.shape
     k = q.shape[1]
@@ -145,8 +127,6 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
         scale = scale.reshape(-1).float().contiguous()
     stream = torch.cuda.current_stream(grad_2d.device)
     stream_id = stream.cuda_stream
-    if seed is None:
-        seed = _next_seed(grad_2d.device, idx, stream_id)
     gq = torch.empty((m, n), device=grad_2d.device, dtype=torch.int8)
     steps = torch.empty((m,), device=grad_2d.device, dtype=torch.float32)
     out = torch.empty((m, k), device=grad_2d.device, dtype=torch.bfloat16)
