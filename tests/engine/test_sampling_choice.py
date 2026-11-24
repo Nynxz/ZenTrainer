@@ -82,3 +82,33 @@ def test_a_training_run_changes_only_its_live_sample_settings():
     for bad in ({}, {"width": 512}, {"turbo_lora": None}, {"steps": 0}, {"turbo_strength": -1}):
         with pytest.raises(SpecError):
             live_samples(s, bad)
+
+
+def test_sampling_reuses_training_patcher_when_preview_model_matches():
+    from zentrainer.harness.callbacks import Samples
+
+    def fake_trainer(kind="split", unet="moss.safetensors", ckpt=None, train_dt="default",
+                     sample_model="moss.safetensors", sample_dt="default", lora_strength=1.0):
+        d = TrainSpec().to_dict()
+        d["dataset"]["folder"] = "d"
+        d["model"].update(kind=kind, unet_name=unet, ckpt_name=ckpt, unet_weight_dtype=train_dt,
+                          clip_name="c.safetensors" if kind == "split" else None,
+                          clip_type="moss_image" if kind == "split" else None,
+                          vae_name="v.safetensors" if kind == "split" else None)
+        d["samples"].update(model_name=sample_model, model_weight_dtype=sample_dt, lora_strength=lora_strength)
+        patcher = object()
+        return types.SimpleNamespace(spec=TrainSpec.from_dict(d), models=types.SimpleNamespace(patcher=patcher))
+
+    cb = Samples(every=100)
+    # Same split model + dtype + lora_strength=1.0 -> reuses training patcher without loading a second copy
+    t_same = fake_trainer()
+    assert not cb._uses_alt_model(t_same)
+    assert cb._sampling_model(t_same) is t_same.models.patcher
+    # Same checkpoint model + lora_strength=1.0 -> reuses training patcher
+    t_ckpt = fake_trainer(kind="checkpoint", unet=None, ckpt="sd.safetensors", sample_model="sd.safetensors")
+    assert not cb._uses_alt_model(t_ckpt)
+    assert cb._sampling_model(t_ckpt) is t_ckpt.models.patcher
+    # Different model, different weight dtype, or non-1.0 lora_strength -> still loads alternate model
+    assert cb._uses_alt_model(fake_trainer(sample_model="moss_turbo.safetensors"))
+    assert cb._uses_alt_model(fake_trainer(sample_dt="fp8_e4m3fn"))
+    assert cb._uses_alt_model(fake_trainer(lora_strength=0.8))

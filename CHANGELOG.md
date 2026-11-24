@@ -5,6 +5,9 @@ and Manager show.
 
 ## Unreleased
 
+- **Samples reuse the training model when `samples.model_name` matches it.** Setting the preview
+  model to the same file and weight dtype as the training model (at LoRA strength 1.0) now reuses
+  the already-loaded model instead of loading a duplicate copy from disk.
 - **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
   its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`

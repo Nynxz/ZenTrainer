@@ -264,6 +264,21 @@ class Samples(Callback):
         except OSError:
             pass
 
+    @staticmethod
+    def _uses_alt_model(t) -> bool:
+        """Whether samples need a separate model loaded instead of reusing the training patcher.
+        When `samples.model_name` names the exact same model and weight dtype as training (at
+        `lora_strength == 1.0`), reuse `t.models.patcher` directly instead of loading a second copy."""
+        s = t.spec.samples
+        if not s.model_name:
+            return False
+        m = getattr(t.spec, "model", None)
+        if m is None:
+            return True
+        train_name = m.unet_name if m.kind == "split" else m.ckpt_name
+        same_dtype = True if m.kind != "split" else s.model_weight_dtype == m.unet_weight_dtype
+        return not (s.model_name == train_name and same_dtype and s.lora_strength == 1.0)
+
     @contextlib.contextmanager
     def _at_strength(self, t, model, strength: float):
         """The sampling model with the LoRA at `strength`: the training patcher's own adapters set to
@@ -271,7 +286,7 @@ class Samples(Callback):
         cost ComfyUI's dynamic loading 12.9 GB of RAM each on Krea 2 (it ran a 128 GB machine out);
         rescaled patches with a new patches_uuid are the same model, refreshed. A base LoRA's
         patches keep their own strength."""
-        if not t.spec.samples.model_name:
+        if not self._uses_alt_model(t):
             with t.network.at_strength(strength):
                 yield model
             return
@@ -293,7 +308,7 @@ class Samples(Callback):
     def _sampling_model(self, t):
         """The training patcher itself, or the alternate model with the current LoRA."""
         s = t.spec.samples
-        if not s.model_name:
+        if not self._uses_alt_model(t):
             return t.models.patcher
         import comfy.sd
         import folder_paths
