@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Krea 2: native `(B, L, H, D)` attention layout and GQA.** Passes compact KV heads directly to
+  grouped-query attention and keeps `q/k/v` in FlashAttention's native `(B, L, H, D)` layout
+  through QK-norm and RoPE instead of transposing to contiguous `(B, H, L, D)` and back on every
+  block.
 - **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
   its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`
