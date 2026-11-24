@@ -75,16 +75,34 @@ def _swiglu_forward(self, x):
     return self.down(F.silu(self.gate(x)) * self.up(x))
 
 
-def _ensure_grad(self, args):
+_HIDDEN_KWARGS = ("hidden_states", "x", "img")
+
+
+def _needs_grad(t) -> bool:
+    return isinstance(t, torch.Tensor) and t.is_floating_point() and not t.is_nested and not t.requires_grad
+
+
+def _ensure_grad(self, args, kwargs):
     """Ensure the first trainable block receives a floating-point input with requires_grad=True
     (detached so backward never flows into frozen prefix blocks or embedders). Without this, the
     first trainable block sees requires_grad=False while every subsequent block sees True, causing
-    dynamo to compile two full graphs per run."""
-    if (getattr(self, "_zt_ensure_grad", False) and torch.is_grad_enabled()
-            and args and isinstance(args[0], torch.Tensor)
-            and args[0].is_floating_point() and not args[0].is_nested and not args[0].requires_grad):
-        return (args[0].detach().requires_grad_(True), *args[1:])
-    return args
+    dynamo to compile two full graphs per run. Handles both positional (`block(x, ...)`) and
+    keyword-only (`block(hidden_states=x, ...)`, e.g. Qwen Image) callers."""
+    if not (getattr(self, "_zt_ensure_grad", False) and torch.is_grad_enabled()):
+        return args, kwargs
+    if args:
+        if _needs_grad(args[0]):
+            return (args[0].detach().requires_grad_(True), *args[1:]), kwargs
+        return args, kwargs
+    if kwargs:
+        for key in _HIDDEN_KWARGS:
+            if key in kwargs:
+                val = kwargs[key]
+                return (args, {**kwargs, key: val.detach().requires_grad_(True)}) if _needs_grad(val) else (args, kwargs)
+        for key, val in kwargs.items():
+            if isinstance(val, torch.Tensor) and val.is_floating_point() and not val.is_nested:
+                return (args, {**kwargs, key: val.detach().requires_grad_(True)}) if not val.requires_grad else (args, kwargs)
+    return args, kwargs
 
 
 @contextlib.contextmanager
@@ -136,7 +154,8 @@ def compiled_blocks(diffusion_model, enabled: bool, first_trainable=None):
             compiled = torch.compile(cls.forward, dynamic=True)
 
             def run(self, *args, _fn=compiled, **kwargs):
-                return _fn(self, *_ensure_grad(self, args), **kwargs)
+                args, kwargs = _ensure_grad(self, args, kwargs)
+                return _fn(self, *args, **kwargs)
 
             run._zt_orig_cls_fwd = cls.forward
             by_cls[cls] = run

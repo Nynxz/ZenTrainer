@@ -120,7 +120,8 @@ def _patch_checkpoint(m, save_attention: bool) -> None:
             compiled = torch.compile(ckpt_cls_run, dynamic=True)
 
             def wrapper(self, *args, _fn=compiled, **kwargs):
-                return _fn(self, *_ensure_grad(self, args), **kwargs)
+                args, kwargs = _ensure_grad(self, args, kwargs)
+                return _fn(self, *args, **kwargs)
 
             setattr(org_func, attr, wrapper)
         m.forward = types.MethodType(wrapper, m)
