@@ -114,8 +114,7 @@ def w8a8_input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor,
 
     if w8a8_cuda.supported(grad_2d, q, group):  # raw CUDA, the rotation inside (kernels/w8a8_cuda.py)
         _count("w8a8: cuda")
-        seed = torch.randint(0, 2**31 - 1, (1,), device=grad_2d.device, dtype=torch.int32)
-        return w8a8_cuda.input_grad(grad_2d, q, scale, seed, group == 256, residual)
+        return w8a8_cuda.input_grad(grad_2d, q, scale, None, group == 256, residual)
     return _w8a8_input_grad(grad_2d, q, scale, group, residual)
 
 

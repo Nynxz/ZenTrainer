@@ -193,9 +193,9 @@ def test_the_fused_lora_skips_the_input_gradient_nothing_needs(monkeypatch):
 
 
 @cuda
-@pytest.mark.parametrize("n", [256, 4096, 6144, 16384])
+@pytest.mark.parametrize("n", [256, 1536, 2048, 4096, 6144, 16384])
 def test_1pass_quantizers_match_2pass_bit_exact(n):
-    """Single-pass register-cached quantizers (4k, 8k, 16k) must match zt_quantize_rows bit-for-bit."""
+    """Single-pass register-cached quantizers (2k, 4k, 8k, 16k) must match zt_quantize_rows bit-for-bit."""
     from zentrainer.harness.kernels import w8a8_cuda
 
     torch.manual_seed(7)
@@ -207,10 +207,36 @@ def test_1pass_quantizers_match_2pass_bit_exact(n):
     gq0, st0 = torch.empty((m, n), device="cuda", dtype=torch.int8), torch.empty(m, device="cuda")
     gq1, st1 = torch.empty_like(gq0), torch.empty_like(st0)
     ks["zt_quantize_rows"](grid=(m, 1, 1), block=(256, 1, 1), args=[g, s, gq0, st0, seed, n, g.stride(0)])
-    qname, qblk = (("zt_quantize_rows_4k", 256) if n <= 4096 else
+    qname, qblk = (("zt_quantize_rows_2k", 128) if n <= 2048 else
+                   ("zt_quantize_rows_4k", 256) if n <= 4096 else
                    ("zt_quantize_rows_8k", 256) if n <= 8192 else ("zt_quantize_rows_16k", 512))
     ks[qname](grid=(m, 1, 1), block=(qblk, 1, 1), args=[g, s, gq1, st1, seed, n, g.stride(0)])
     assert torch.equal(gq0, gq1) and torch.equal(st0, st1)
+
+
+@cuda
+@pytest.mark.parametrize("m,n,k", [(2432, 3072, 3072), (1152, 9216, 3072), (2432, 16384, 3072)])
+def test_stream_k_and_pooled_seed_match_exact_product(m, n, k):
+    """Stream-K (3-stage and 4-stage) and pooled RNG (seed=None) match exact rotated/unrotated products."""
+    from zentrainer.harness.kernels import w8a8_cuda
+
+    torch.manual_seed(13)
+    g = torch.randn(m, n, device="cuda", dtype=torch.bfloat16)
+    s = torch.rand(n, device="cuda") * 0.01 + 0.001
+    q = torch.randint(-127, 128, (n, k), device="cuda", dtype=torch.int8)
+    seed = torch.tensor([19], device="cuda", dtype=torch.int32)
+    gq, steps = _quantized(g, s, seed)
+    exact = (gq.double() @ q.double()) * steps.double()[:, None]
+    rotated = (exact.view(m, k // 256, 256) @ _regular_hadamard(256).cuda().T).view(m, k)
+    for rotate, want in ((True, rotated), (False, exact)):
+        out = w8a8_cuda.input_grad(g, q, s, seed, rotate).double()
+        assert ((out - want).norm() / want.norm()).item() < 3e-3
+    # Pooled RNG path (seed=None) with residual across two calls (verifies done[] reset in-kernel)
+    r = torch.randn(m, k, device="cuda", dtype=torch.bfloat16) * rotated.std().item()
+    want_r = rotated + r.double()
+    for _ in range(2):
+        out_r = w8a8_cuda.input_grad(g, q, s, None, True, r).double()
+        assert ((out_r - want_r).norm() / want_r.norm()).item() < 2e-2
 
 
 @gpu

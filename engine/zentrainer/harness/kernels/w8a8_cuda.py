@@ -4,12 +4,6 @@ on int8 tensor cores, scaled, and ConvRot's Hadamard rotation applied, all in tw
 Triton path (w8a8_backward.py) takes three: its matmul, then the rotation as a bf16 matmul, which
 also rounds twice.
 
-Measured on an RTX 5090 at 4352 tokens (Krea 2's and MOSS's layer shapes), matmul and rotation:
-6144 -> 6144 512 us against Triton's 734, 16384 -> 6144 1328 against 1875, 3072 -> 3072 166
-against 223 (600-660 int8 TOPS on the big ones, cuBLAS's speed without its transposed weight
-copy); the quantize 23 us against 60. One rounding to bf16 at the end: 1.66e-3 relative error
-against the exact product, the Triton path's 2.35e-3.
-
 Compiled at first use with NVRTC, which PyTorch ships (torch.cuda._compile_kernel's machinery),
 so nothing needs building or a CUDA toolkit; about 1.5 s once per process. Needs an NVIDIA card
 of compute capability 8.0 or newer. Anything else, any shape it doesn't take, a failure to
@@ -25,12 +19,21 @@ from pathlib import Path
 
 import torch
 
-SMEM = 3 * (128 * 64 + 64 * 256)  # the BM=128 GEMM's pipeline: three stages of 128x64 and 64x256
-SMEM64 = 2 * (64 * 64 + 64 * 256)  # the BM=64 GEMM's pipeline: two stages of 64x64 and 64x256 (2 CTAs/SM)
-_NAMES = ("zt_quantize_rows", "zt_quantize_rows_4k", "zt_quantize_rows_8k", "zt_quantize_rows_16k",
-          "zt_w8a8_gemm_rot", "zt_w8a8_gemm", "zt_w8a8_gemm64_rot", "zt_w8a8_gemm64")
+SMEM = 3 * (128 * 64 + 64 * 256)  # BM=128 3-stage pipeline: 72 KB (works on all sm_80+)
+SMEM4 = 4 * (128 * 64 + 64 * 256)  # BM=128 4-stage pipeline: 96 KB (sm_80/86/89/90/120 with >= 96 KB opt-in)
+SMEM64 = 2 * (64 * 64 + 64 * 256)  # BM=64 2-stage pipeline: 40 KB (2 CTAs/SM)
+_NAMES = (
+    "zt_quantize_rows", "zt_quantize_rows_2k", "zt_quantize_rows_4k", "zt_quantize_rows_8k", "zt_quantize_rows_16k",
+    "zt_w8a8_gemm_rot", "zt_w8a8_gemm", "zt_w8a8_gemm_s4_rot", "zt_w8a8_gemm_s4",
+    "zt_w8a8_gemm_sk_rot", "zt_w8a8_gemm_sk", "zt_w8a8_gemm_s4_sk_rot", "zt_w8a8_gemm_s4_sk",
+    "zt_w8a8_gemm64_rot", "zt_w8a8_gemm64",
+)
 _kernels: dict[int, dict | None] = {}  # by device: its kernels, or None if they couldn't load
-_sms: dict[int, int] = {}  # SM count per device, to pick BM=64 when BM=128 under-fills the card
+_sms: dict[int, int] = {}  # SM count per device, to schedule Stream-K and BM=64
+_has_s4: dict[int, bool] = {}  # whether device opt-in shared memory fits SMEM4 (96 KB)
+_sk_done: dict[int, torch.Tensor] = {}  # tiny zeroed arrival-counter buffer per device (reset in-kernel)
+_seed_pool: dict[int, list] = {}  # [tensor(4096, int32), cursor] to avoid a randint kernel launch per layer
+_SEED_POOL_SIZE = 4096
 
 
 def _load(device: torch.device) -> dict | None:
@@ -48,19 +51,48 @@ def _load(device: torch.device) -> dict | None:
 
         src = Path(__file__).with_name("w8a8_cuda.cu").read_text()
         major, minor = torch.cuda.get_device_capability(idx)
+        props = torch.cuda.get_device_properties(idx)
+        optin = getattr(props, "shared_memory_per_block_optin", props.shared_memory_per_block)
+        can_s4 = optin >= SMEM4 + 256  # leaves headroom for static __shared__ (s_arrived) in Stream-K kernels
         with torch.cuda.device(idx):
             ptx, _ = _nvrtc_compile(src, _NAMES[0], f"{major}{minor}", None, ["-std=c++17"])
             ks = _cuda_load_module(ptx, list(_NAMES))
-            for n in ("zt_w8a8_gemm_rot", "zt_w8a8_gemm"):
+            for n in ("zt_w8a8_gemm_rot", "zt_w8a8_gemm", "zt_w8a8_gemm_sk_rot", "zt_w8a8_gemm_sk"):
                 ks[n].set_shared_memory_config(SMEM)
+            if can_s4:
+                for n in ("zt_w8a8_gemm_s4_rot", "zt_w8a8_gemm_s4", "zt_w8a8_gemm_s4_sk_rot", "zt_w8a8_gemm_s4_sk"):
+                    ks[n].set_shared_memory_config(SMEM4)
             for n in ("zt_w8a8_gemm64_rot", "zt_w8a8_gemm64"):
                 ks[n].set_shared_memory_config(SMEM64)
-        _sms[idx] = torch.cuda.get_device_properties(idx).multi_processor_count
+        _sms[idx] = props.multi_processor_count
+        _has_s4[idx] = can_s4
         _kernels[idx] = ks
-        logging.info("[ZenTrainer] int8 backward: CUDA kernels compiled for sm_%d%d", major, minor)
+        logging.info("[ZenTrainer] int8 backward: CUDA kernels compiled for sm_%d%d (%d SMs, 4-stage=%s)",
+                     major, minor, _sms[idx], "on" if can_s4 else "off")
     except Exception:
         logging.warning("[ZenTrainer] int8 backward's CUDA kernels didn't load; using Triton's", exc_info=True)
     return _kernels[idx]
+
+
+def _next_seed(device: torch.device, idx: int) -> torch.Tensor:
+    """Return a 1-element int32 seed tensor from a cached pool, refilled once every 4096 calls."""
+    entry = _seed_pool.get(idx)
+    if entry is None or entry[1] >= _SEED_POOL_SIZE:
+        pool = torch.randint(0, 2**31 - 1, (_SEED_POOL_SIZE,), device=device, dtype=torch.int32)
+        entry = [pool, 0]
+        _seed_pool[idx] = entry
+    pos = entry[1]
+    entry[1] = pos + 1
+    return entry[0][pos : pos + 1]
+
+
+def _done_buf(device: torch.device, idx: int, need: int) -> torch.Tensor:
+    """Zero-initialized Stream-K arrival counters (reset back to 0 in-kernel by each last finisher)."""
+    buf = _sk_done.get(idx)
+    if buf is None or buf.shape[0] < need:
+        buf = torch.zeros(max(need, 512), device=device, dtype=torch.int32)
+        _sk_done[idx] = buf
+    return buf
 
 
 def supported(grad_2d: torch.Tensor, q: torch.Tensor, group: int) -> bool:
@@ -89,12 +121,12 @@ def _aligned(grad_2d: torch.Tensor, q: torch.Tensor) -> bool:
 
 
 @torch.library.custom_op("zentrainer::w8a8_input_grad", mutates_args=())
-def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed: torch.Tensor,
+def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed: torch.Tensor | None,
                rotate: bool, residual: torch.Tensor | None = None) -> torch.Tensor:
     """bf16 (M, in): (quantized grad_2d * scale) @ q, rescaled, rotated by ConvRot's 256-wide
     Hadamard when `rotate`, plus `residual` (M, in) when given. grad_2d (M, out) bf16, q (out, in)
-    int8, scale (out,) the weight's per row, seed a one-element int32 tensor on the device (the
-    rounding noise's). See supported()."""
+    int8, scale (out,) the weight's per row, seed a one-element int32 tensor on the device (or None
+    to draw from the pooled RNG without a per-layer launch). See supported()."""
     ks = _load(grad_2d.device)
     m, n = grad_2d.shape
     k = q.shape[1]
@@ -103,17 +135,24 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
 
         g = _w8a8_input_grad(grad_2d, q, scale, 256 if rotate else 0)
         return g if residual is None else g + residual.to(g.dtype)
-    scale = scale.reshape(-1).float().contiguous()
+    idx = grad_2d.device.index if grad_2d.device.index is not None else torch.cuda.current_device()
+    if scale.dtype != torch.float32 or not scale.is_contiguous():
+        scale = scale.reshape(-1).float().contiguous()
+    if seed is None:
+        seed = _next_seed(grad_2d.device, idx)
     gq = torch.empty((m, n), device=grad_2d.device, dtype=torch.int8)
     steps = torch.empty((m,), device=grad_2d.device, dtype=torch.float32)
     out = torch.empty((m, k), device=grad_2d.device, dtype=torch.bfloat16)
     res = residual is not None
     if res:
-        residual = residual.to(torch.bfloat16).reshape(m, k).contiguous()
+        if residual.dtype != torch.bfloat16 or not residual.is_contiguous():
+            residual = residual.to(torch.bfloat16).reshape(m, k).contiguous()
         if residual.data_ptr() % 16 != 0:
             residual = residual.clone()  # uint2/uint4 vector loads require 16-byte alignment
     stream = torch.cuda.current_stream(grad_2d.device)
-    if n <= 4096:
+    if n <= 2048:
+        qname, qblock = "zt_quantize_rows_2k", 128
+    elif n <= 4096:
         qname, qblock = "zt_quantize_rows_4k", 256
     elif n <= 8192:
         qname, qblock = "zt_quantize_rows_8k", 256
@@ -123,15 +162,38 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
         qname, qblock = "zt_quantize_rows", 256
     ks[qname](grid=(m, 1, 1), block=(qblock, 1, 1), args=[grad_2d, scale, gq, steps, seed, n, grad_2d.stride(0)],
               stream=stream)
-    idx = grad_2d.device.index if grad_2d.device.index is not None else torch.cuda.current_device()
+
+    sms = _sms.get(idx, 64)
     n_k = k // 256
     ctas_128 = n_k * ((m + 127) // 128)
-    # BM=64 (128 threads, 40 KB SMEM -> 2 CTAs/SM) fills the SMs on small-M shapes (512 px, text blocks)
-    if ctas_128 < _sms.get(idx, 64) * 2 and m <= 2048:
+    kt = n // 64
+    waves = (ctas_128 + sms - 1) // sms
+    eff = ctas_128 / (waves * sms)
+    use_s4 = _has_s4.get(idx, False) and n >= 2048
+    # Two-phase Stream-K eliminates tail-wave quantization (e.g. 1.34 / 2.40 waves on 170-SM GPUs)
+    # whenever wave efficiency is low and the reduction dimension is deep enough to amortize partial sums.
+    dp_waves = max(0, (ctas_128 // sms) - 1)
+    dp_tiles = dp_waves * sms
+    sk_tiles = ctas_128 - dp_tiles
+    if eff < 0.88 and kt >= 48 and sk_tiles * kt >= sms and m >= 512:
+        gname = (("zt_w8a8_gemm_s4_sk_rot" if rotate else "zt_w8a8_gemm_s4_sk") if use_s4
+                 else ("zt_w8a8_gemm_sk_rot" if rotate else "zt_w8a8_gemm_sk"))
+        partials = torch.empty((sms * 2 * 32768,), device=grad_2d.device, dtype=torch.int32)
+        done = _done_buf(grad_2d.device, idx, sk_tiles)
+        ks[gname](grid=(sms, 1, 1), block=(256, 1, 1),
+                  args=[gq, q, steps, out, residual if res else out, int(res), m, n, k, partials, done, dp_tiles],
+                  shared_mem=SMEM4 if use_s4 else SMEM, stream=stream)
+    elif ctas_128 < sms * 2 and m <= 2048:
+        # BM=64 (128 threads, 40 KB SMEM -> 2 CTAs/SM) fills SMs on small-M / short-N shapes
         gname = "zt_w8a8_gemm64_rot" if rotate else "zt_w8a8_gemm64"
         ks[gname](grid=(n_k * ((m + 63) // 64), 1, 1), block=(128, 1, 1),
                   args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
                   shared_mem=SMEM64, stream=stream)
+    elif use_s4:
+        gname = "zt_w8a8_gemm_s4_rot" if rotate else "zt_w8a8_gemm_s4"
+        ks[gname](grid=(ctas_128, 1, 1), block=(256, 1, 1),
+                  args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
+                  shared_mem=SMEM4, stream=stream)
     else:
         gname = "zt_w8a8_gemm_rot" if rotate else "zt_w8a8_gemm"
         ks[gname](grid=(ctas_128, 1, 1), block=(256, 1, 1),

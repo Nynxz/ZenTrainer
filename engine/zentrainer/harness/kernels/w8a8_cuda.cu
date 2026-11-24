@@ -10,9 +10,11 @@
 //                  with ldmatrix.trans in 16-bit pairs and split into bytes with two prmt each.
 //                  H: ConvRot's rotation, the regular Hadamard H4 x H4 x H4 x H4 / 16 on each 256
 //                  output columns (a CTA's tile), as a fast transform in fp32 (padded shared memory
-//                  for conflict-free digit-3 exchange and coalesced global residual/output access);
-//                  then bf16 once. Two M-tiles: BM=128 (3-stage, 256 threads) for large token
-//                  counts and BM=64 (2-stage, 128 threads, 2 CTAs/SM) when BM=128 under-fills the SMs.
+//                  for conflict-free digit-3 exchange, named half-CTA barriers, hardware bf16x2
+//                  conversion, and coalesced global residual/output access); then bf16 once.
+//                  Two M-tiles: BM=128 (3- or 4-stage, 256 threads) for large token counts, plus
+//                  lock-free two-phase Stream-K to eliminate tail wave quantization on high-SM GPUs,
+//                  and BM=64 (2-stage, 128 threads, 2 CTAs/SM) for very small token counts.
 //
 // Compiled at run time with NVRTC (kernels/w8a8_cuda.py): no compiler needed beside PyTorch's.
 // The 16-column order: ldmatrix.trans hands each lane two adjacent weight columns at reductions
@@ -47,10 +49,11 @@ __device__ __forceinline__ void ldsm_x4_t(u32 addr, u32& r0, u32& r1, u32& r2, u
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                  : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3) : "r"(addr));
 }
+// Non-volatile register-only MMA so ptxas can overlap PRMT and ldmatrix with IMMA issue.
 __device__ __forceinline__ void mma_s8(int* c, const u32* a, u32 b0, u32 b1) {
-    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-                 : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
-                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+    asm("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+        : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
 // H4 regular: out_k = sum - 2 x_(3-k)
@@ -66,10 +69,11 @@ __device__ __forceinline__ u32 hash32(u32 x) {  // lowbias32 (C. Wellons)
 }
 
 __device__ __forceinline__ float bf16_to_f(u16 v) { return __uint_as_float(((u32)v) << 16); }
-__device__ __forceinline__ u16 f_to_bf16(float f) {  // round to nearest even
-    u32 u = __float_as_uint(f);
-    u += 0x7fffU + ((u >> 16) & 1U);
-    return (u16)(u >> 16);
+// Hardware sm_80+ round-to-nearest-even conversion of two floats to packed bf16x2 (lo = a, hi = b).
+__device__ __forceinline__ u32 f2_to_bf16x2(float a, float b) {
+    u32 out;
+    asm("cvt.rn.bf16x2.f32 %0, %2, %1;" : "=r"(out) : "f"(a), "f"(b));
+    return out;
 }
 
 __device__ __forceinline__ uint4 pack_quant16(const float x[16], float inv, u32 seed, int c0) {
@@ -136,6 +140,11 @@ __device__ __forceinline__ void quantize_rows_1pass(
     }
 }
 
+extern "C" __global__ void __launch_bounds__(128) zt_quantize_rows_2k(
+        const u16* __restrict__ grad, const float* __restrict__ scale, signed char* __restrict__ q,
+        float* __restrict__ steps, const int* __restrict__ seed_p, int N, int stride_g) {
+    quantize_rows_1pass<128, 1>(grad, scale, q, steps, seed_p, N, stride_g);
+}
 extern "C" __global__ void __launch_bounds__(256) zt_quantize_rows_4k(
         const u16* __restrict__ grad, const float* __restrict__ scale, signed char* __restrict__ q,
         float* __restrict__ steps, const int* __restrict__ seed_p, int N, int stride_g) {
@@ -194,36 +203,37 @@ extern "C" __global__ void __launch_bounds__(256) zt_quantize_rows(
     }
 }
 
-// out (M, K) bf16 = H((A @ B) * step) + R: A (M, N) int8 from zt_quantize_rows, B (N, K) int8 row-major,
-// R (M, K) bf16 when has_res. N % 64 == 0, K % 256 == 0.
-// WARPS_M = 2 (BM=128, 256 threads) or WARPS_M = 1 (BM=64, 128 threads, 2 CTAs/SM).
-template <int BM, int WARPS_M, int STAGES, bool ROTATE>
-__device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, const signed char* __restrict__ B,
-                                          const float* __restrict__ steps, u16* __restrict__ out,
-                                          const u16* __restrict__ R, int has_res, int M, int N, int K) {
+// Grouped launch order: GROUP row bands at a time walk the weight's column tiles together,
+// so tiles in flight share the weight in L2.
+__device__ __forceinline__ void tile_coords(int tile, int n_m, int n_k, int BM, int& m0, int& k0) {
+    const int per = GROUP * n_k;
+    const int first = (tile / per) * GROUP;
+    const int rows = min(n_m - first, GROUP);
+    const int rem = tile % per;
+    m0 = (first + rem % rows) * BM;
+    k0 = (rem / rows) * BK;
+}
+
+// Software-pipelined GEMM K-loop over reduction tiles [k_start, k_end).
+// Double-buffers A fragments across ks=0/1 and streams B's ldmatrix.trans into a 2-slot ring
+// so every SMEM load and byte-permute overlaps the 8 independent mma_s8 instructions of the prior slot.
+template <int BM, int WARPS_M, int STAGES>
+__device__ __forceinline__ void gemm_kloop(
+        const signed char* __restrict__ A, const signed char* __restrict__ B,
+        u8* sA, u8* sB, int acc[4][8][4],
+        int m0, int k0, int k_start, int k_end, int M, int N, int K,
+        int tid, int lane, int wm, int wn) {
     constexpr int A_STAGE = BM * BR;
     constexpr int B_STAGE = BR * BK;
     constexpr int THREADS = WARPS_M * 4 * 32;
     constexpr int MI = (BM / WARPS_M) / 16;  // 4 (each warp holds 64 x 64)
+    constexpr int A_ITERS = (BM * (BR / 16)) / THREADS;
+    constexpr int B_ITERS = (BR * (BK / 16)) / THREADS;
 
-    extern __shared__ __align__(128) u8 smem[];
-    u8* sA = smem;
-    u8* sB = smem + STAGES * A_STAGE;
-    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    const int wm = warp >> 2, wn = warp & 3;
-    // grouped launch order: GROUP row bands at a time walk the weight's column tiles together, so
-    // the tiles in flight share the weight in L2 (a band at a time re-read all of it per band)
-    const int n_m = (M + BM - 1) / BM, n_k = K / BK, per = GROUP * n_k;
-    const int pid = blockIdx.x, first = (pid / per) * GROUP, rows = min(n_m - first, GROUP);
-    const int m0 = (first + (pid % per) % rows) * BM, k0 = ((pid % per) / rows) * BK;
-    const int KT = N / BR;
-
-    auto load = [&](int stage, int kt) {
+    auto load_stage = [&](int stage, int kt) {
         const int r0 = kt * BR;
         u8* a = sA + stage * A_STAGE;
         u8* b = sB + stage * B_STAGE;
-        constexpr int A_ITERS = (BM * (BR / 16)) / THREADS;
-        constexpr int B_ITERS = (BR * (BK / 16)) / THREADS;
 #pragma unroll
         for (int i = 0; i < A_ITERS; i++) {  // A: BM rows x 4 chunks of 16 B
             const int c = tid + i * THREADS, row = c >> 2, ch = c & 3;
@@ -239,68 +249,127 @@ __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, con
         }
     };
 
-    int acc[MI][8][4];
-#pragma unroll
-    for (int i = 0; i < MI; i++)
-#pragma unroll
-        for (int j = 0; j < 8; j++)
-#pragma unroll
-            for (int e = 0; e < 4; e++) acc[i][j][e] = 0;
+    const int n_iters = k_end - k_start;
+    if (n_iters <= 0) return;
 
 #pragma unroll
     for (int s = 0; s < STAGES - 1; s++) {
-        if (s < KT) load(s, s);
+        if (s < n_iters) load_stage(s, k_start + s);
         cp_commit();
     }
 
     const int mi_l = lane >> 3, l7 = lane & 7;
-    for (int kt = 0; kt < KT; kt++) {
-        cp_wait<STAGES - 2>();
-        __syncthreads();
-        const int nxt = kt + STAGES - 1;
-        if (nxt < KT) load(nxt % STAGES, nxt);
-        cp_commit();
-        const u8* a = sA + (kt % STAGES) * A_STAGE;
-        const u8* b = sB + (kt % STAGES) * B_STAGE;
+    u32 a_off0[MI], b_off0[4];
 #pragma unroll
-        for (int ks = 0; ks < 2; ks++) {
-            u32 af[MI][4], bf[4][4];
+    for (int i = 0; i < MI; i++) {
+        const int row = wm * 64 + i * 16 + (mi_l & 1) * 8 + l7;
+        const int ch = mi_l >> 1;
+        a_off0[i] = (u32)(row * BR + ((ch ^ ((row >> 1) & 3)) << 4));
+    }
+#pragma unroll
+    for (int q = 0; q < 4; q++) {
+        const int row = mi_l * 8 + l7;
+        const int ch = wn * 4 + q;
+        b_off0[q] = (u32)(row * BK + ((ch ^ (row & 7)) << 4));
+    }
+
+    const u32 sA_base = smem_u32(sA);
+    const u32 sB_base = smem_u32(sB);
+
+    cp_wait<STAGES - 2>();
+    __syncthreads();
+
+    u32 af[2][MI][4];
+    u32 br_raw[2][4];
+#pragma unroll
+    for (int i = 0; i < MI; i++) ldsm_x4(sA_base + a_off0[i], af[0][i][0], af[0][i][1], af[0][i][2], af[0][i][3]);
+    ldsm_x4_t(sB_base + b_off0[0], br_raw[0][0], br_raw[0][1], br_raw[0][2], br_raw[0][3]);
+
+    for (int it = 0; it < n_iters; it++) {
+        const int cur_s = it % STAGES;
+        const u32 a_s = sA_base + cur_s * A_STAGE;
+        const u32 b_s = sB_base + cur_s * B_STAGE;
+
+        const int nxt = it + STAGES - 1;
+        if (nxt < n_iters) load_stage(nxt % STAGES, k_start + nxt);
+        cp_commit();
+
+        // ks=1 A chunk is ks=0's chunk XOR 2 -> byte offset XOR 32
+#pragma unroll
+        for (int i = 0; i < MI; i++) ldsm_x4(a_s + (a_off0[i] ^ 32u), af[1][i][0], af[1][i][1], af[1][i][2], af[1][i][3]);
+
+        // ks = 0: overlap each q's MMAs with the next q's ldmatrix.trans
+#pragma unroll
+        for (int q = 0; q < 4; q++) {
+            const int cur = q & 1, nxt_b = cur ^ 1;
+            if (q < 3) {
+                ldsm_x4_t(b_s + b_off0[q + 1], br_raw[nxt_b][0], br_raw[nxt_b][1], br_raw[nxt_b][2], br_raw[nxt_b][3]);
+            } else {
+                ldsm_x4_t(b_s + b_off0[0] + 32 * BK, br_raw[nxt_b][0], br_raw[nxt_b][1], br_raw[nxt_b][2], br_raw[nxt_b][3]);
+            }
+            const u32 e0 = __byte_perm(br_raw[cur][0], br_raw[cur][1], 0x6420);  // even column, k 0-15
+            const u32 e1 = __byte_perm(br_raw[cur][2], br_raw[cur][3], 0x6420);  // even column, k 16-31
+            const u32 o0 = __byte_perm(br_raw[cur][0], br_raw[cur][1], 0x7531);  // odd column
+            const u32 o1 = __byte_perm(br_raw[cur][2], br_raw[cur][3], 0x7531);
 #pragma unroll
             for (int i = 0; i < MI; i++) {
-                const int row = wm * 64 + i * 16 + (mi_l & 1) * 8 + l7;
-                const int ch = ks * 2 + (mi_l >> 1);
-                ldsm_x4(smem_u32(a + row * BR + ((ch ^ ((row >> 1) & 3)) << 4)), af[i][0], af[i][1], af[i][2], af[i][3]);
+                mma_s8(acc[i][2 * q], af[0][i], e0, e1);
+                mma_s8(acc[i][2 * q + 1], af[0][i], o0, o1);
+            }
+        }
+
+        // ks = 1: preload next stage's ks=0 right before the final q=3 MMAs
+#pragma unroll
+        for (int q = 0; q < 4; q++) {
+            const int cur = q & 1, nxt_b = cur ^ 1;
+            if (q < 3) {
+                ldsm_x4_t(b_s + b_off0[q + 1] + 32 * BK, br_raw[nxt_b][0], br_raw[nxt_b][1], br_raw[nxt_b][2], br_raw[nxt_b][3]);
+            }
+            const u32 e0 = __byte_perm(br_raw[cur][0], br_raw[cur][1], 0x6420);
+            const u32 e1 = __byte_perm(br_raw[cur][2], br_raw[cur][3], 0x6420);
+            const u32 o0 = __byte_perm(br_raw[cur][0], br_raw[cur][1], 0x7531);
+            const u32 o1 = __byte_perm(br_raw[cur][2], br_raw[cur][3], 0x7531);
+            if (q == 3 && it + 1 < n_iters) {
+                cp_wait<STAGES - 2>();
+                __syncthreads();
+                const int ns = (it + 1) % STAGES;
+                const u32 na_s = sA_base + ns * A_STAGE;
+                const u32 nb_s = sB_base + ns * B_STAGE;
+#pragma unroll
+                for (int i = 0; i < MI; i++) ldsm_x4(na_s + a_off0[i], af[0][i][0], af[0][i][1], af[0][i][2], af[0][i][3]);
+                ldsm_x4_t(nb_s + b_off0[0], br_raw[0][0], br_raw[0][1], br_raw[0][2], br_raw[0][3]);
             }
 #pragma unroll
-            for (int q = 0; q < 4; q++) {
-                const int row = ks * 32 + mi_l * 8 + l7;
-                const int ch = wn * 4 + q;
-                u32 r0, r1, r2, r3;
-                ldsm_x4_t(smem_u32(b + row * BK + ((ch ^ (row & 7)) << 4)), r0, r1, r2, r3);
-                bf[q][0] = __byte_perm(r0, r1, 0x6420);  // even column, k 0-15
-                bf[q][1] = __byte_perm(r2, r3, 0x6420);  // even column, k 16-31
-                bf[q][2] = __byte_perm(r0, r1, 0x7531);  // odd column
-                bf[q][3] = __byte_perm(r2, r3, 0x7531);
+            for (int i = 0; i < MI; i++) {
+                mma_s8(acc[i][2 * q], af[1][i], e0, e1);
+                mma_s8(acc[i][2 * q + 1], af[1][i], o0, o1);
             }
-#pragma unroll
-            for (int i = 0; i < MI; i++)
-#pragma unroll
-                for (int q = 0; q < 4; q++) {
-                    mma_s8(acc[i][2 * q], af[i], bf[q][0], bf[q][1]);
-                    mma_s8(acc[i][2 * q + 1], af[i], bf[q][2], bf[q][3]);
-                }
         }
     }
     cp_wait<0>();
     __syncthreads();
+}
 
-    // Epilogue: 16 rows per strip (i = 0..3) keeps live floats to 32 regs instead of 128;
-    // +4 floats padding per SMEM row removes the 8-way bank conflict in digit 3 and stages
-    // coalesced global residual loads and output stores.
+// Epilogue: 16 rows per strip (i = 0..3) keeps live floats to 32 regs instead of 128;
+// +4 floats padding per SMEM row removes the 8-way bank conflict in digit 3 and stages
+// coalesced global residual loads and output stores. Named half-CTA barriers decouple wm=0/1.
+template <int BM, int WARPS_M, bool ROTATE>
+__device__ __forceinline__ void gemm_epilogue(
+        int acc[4][8][4], u8* smem, const float* __restrict__ steps,
+        u16* __restrict__ out, const u16* __restrict__ R, int has_res,
+        int m0, int k0, int M, int K, int lane, int wm, int wn) {
+    constexpr int MI = (BM / WARPS_M) / 16;  // 4
     const int g = lane >> 2, tig = lane & 3;
     const int half_w = lane >> 4, l16 = lane & 15;
     constexpr int STRIDE = 260;
     float* x = reinterpret_cast<float*>(smem);  // [WARPS_M][16][260] (33.3 KB for BM=128, 16.6 KB for BM=64)
+    auto half_sync = [&]() {
+        if constexpr (WARPS_M == 2) {
+            asm volatile("bar.sync %0, 128;" :: "r"(wm + 1) : "memory");
+        } else {
+            __syncthreads();
+        }
+    };
 
 #pragma unroll
     for (int i = 0; i < MI; i++) {
@@ -340,7 +409,7 @@ __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, con
                 for (int q = 0; q < 4; q++)
                     *reinterpret_cast<float4*>(x + (wm * 16 + g + 8 * h) * STRIDE + wn * 64 + q * 16 + tig * 4) =
                         make_float4(v[q][h][0], v[q][h][1], v[q][h][2], v[q][h][3]);
-            __syncthreads();
+            half_sync();
             // digit 3 + coalesced residual/output: 16 lanes walk 64 cols (x4 quarters = 256 cols), 2 rows/warp
 #pragma unroll
             for (int iter = 0; iter < 2; iter++) {
@@ -371,13 +440,13 @@ __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, con
                             o[q].w += bf16_to_f((u16)(rv.y >> 16));
                         }
                         uint2 ov;
-                        ov.x = (u32)f_to_bf16(o[q].x) | ((u32)f_to_bf16(o[q].y) << 16);
-                        ov.y = (u32)f_to_bf16(o[q].z) | ((u32)f_to_bf16(o[q].w) << 16);
+                        ov.x = f2_to_bf16x2(o[q].x, o[q].y);
+                        ov.y = f2_to_bf16x2(o[q].z, o[q].w);
                         *reinterpret_cast<uint2*>(out + (long long)gm * K + gk) = ov;
                     }
                 }
             }
-            if (i < MI - 1) __syncthreads();
+            if (i < MI - 1) half_sync();
         } else {
             // stage through SMEM for coalesced 128-byte stores (32 lanes x 8 bf16 = 512 B/warp)
 #pragma unroll
@@ -386,7 +455,7 @@ __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, con
                 for (int q = 0; q < 4; q++)
                     *reinterpret_cast<float4*>(x + (wm * 16 + g + 8 * h) * STRIDE + wn * 64 + q * 16 + tig * 4) =
                         make_float4(v[q][h][0], v[q][h][1], v[q][h][2], v[q][h][3]);
-            __syncthreads();
+            half_sync();
 #pragma unroll
             for (int iter = 0; iter < 4; iter++) {
                 const int lr = wn * 4 + iter;
@@ -403,14 +472,164 @@ __device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, con
                         for (int j = 0; j < 8; j++) vals[j] += bf16_to_f(rh[j]);
                     }
                     uint4 ov;
-                    u16* oh = reinterpret_cast<u16*>(&ov);
-#pragma unroll
-                    for (int j = 0; j < 8; j++) oh[j] = f_to_bf16(vals[j]);
+                    ov.x = f2_to_bf16x2(vals[0], vals[1]);
+                    ov.y = f2_to_bf16x2(vals[2], vals[3]);
+                    ov.z = f2_to_bf16x2(vals[4], vals[5]);
+                    ov.w = f2_to_bf16x2(vals[6], vals[7]);
                     *reinterpret_cast<uint4*>(out + (long long)gm * K + gk) = ov;
                 }
             }
-            if (i < MI - 1) __syncthreads();
+            if (i < MI - 1) half_sync();
         }
+    }
+}
+
+// out (M, K) bf16 = H((A @ B) * step) + R: A (M, N) int8 from zt_quantize_rows, B (N, K) int8 row-major,
+// R (M, K) bf16 when has_res. N % 64 == 0, K % 256 == 0.
+template <int BM, int WARPS_M, int STAGES, bool ROTATE>
+__device__ __forceinline__ void gemm_body(const signed char* __restrict__ A, const signed char* __restrict__ B,
+                                          const float* __restrict__ steps, u16* __restrict__ out,
+                                          const u16* __restrict__ R, int has_res, int M, int N, int K) {
+    constexpr int A_STAGE = BM * BR;
+    extern __shared__ __align__(128) u8 smem[];
+    u8* sA = smem;
+    u8* sB = smem + STAGES * A_STAGE;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int wm = warp >> 2, wn = warp & 3;
+    const int n_m = (M + BM - 1) / BM, n_k = K / BK;
+    int m0, k0;
+    tile_coords(blockIdx.x, n_m, n_k, BM, m0, k0);
+    int acc[4][8][4];
+#pragma unroll
+    for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 8; j++)
+#pragma unroll
+            for (int e = 0; e < 4; e++) acc[i][j][e] = 0;
+    gemm_kloop<BM, WARPS_M, STAGES>(A, B, sA, sB, acc, m0, k0, 0, N / BR, M, N, K, tid, lane, wm, wn);
+    gemm_epilogue<BM, WARPS_M, ROTATE>(acc, smem, steps, out, R, has_res, m0, k0, M, K, lane, wm, wn);
+}
+
+// Two-phase lock-free Stream-K GEMM (no spin-wait, no memset, bit-exact int32 reduction):
+//   Phase 1: dp_tiles (a multiple of gridDim.x) run standard zero-overhead data-parallel tiles.
+//   Phase 2: remaining sk_tiles are partitioned evenly across all gridDim.x CTAs at BR=64 granularity.
+//   Requires sk_tiles * (N / BR) >= gridDim.x so every CTA owns >= 1 iteration and peers is exact.
+//   Each split tile's CTAs store their registers to partials[cta * 2 + (k_start == 0)] and increment
+//   done[sk_idx]; the last finisher resets done[sk_idx] = 0, sums peers' int32 partials, and runs
+//   the normal Hadamard + residual + bf16 epilogue.
+template <int BM, int WARPS_M, int STAGES, bool ROTATE>
+__device__ __forceinline__ void gemm_sk_body(const signed char* __restrict__ A, const signed char* __restrict__ B,
+                                             const float* __restrict__ steps, u16* __restrict__ out,
+                                             const u16* __restrict__ R, int has_res, int M, int N, int K,
+                                             int* __restrict__ partials, int* __restrict__ done, int dp_tiles) {
+    constexpr int A_STAGE = BM * BR;
+    constexpr int THREADS = WARPS_M * 4 * 32;
+    constexpr int TILE_INTS = THREADS * 128;  // 32768 ints (128 KB) per BM=128 tile
+    extern __shared__ __align__(128) u8 smem[];
+    u8* sA = smem;
+    u8* sB = smem + STAGES * A_STAGE;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int wm = warp >> 2, wn = warp & 3;
+    const int cta = blockIdx.x, num_ctas = gridDim.x;
+    const int n_m = (M + BM - 1) / BM, n_k = K / BK;
+    const int total_tiles = n_m * n_k;
+    const int KT = N / BR;
+
+    for (int tile = cta; tile < dp_tiles; tile += num_ctas) {
+        int m0, k0;
+        tile_coords(tile, n_m, n_k, BM, m0, k0);
+        int acc[4][8][4];
+#pragma unroll
+        for (int i = 0; i < 4; i++)
+#pragma unroll
+            for (int j = 0; j < 8; j++)
+#pragma unroll
+                for (int e = 0; e < 4; e++) acc[i][j][e] = 0;
+        gemm_kloop<BM, WARPS_M, STAGES>(A, B, sA, sB, acc, m0, k0, 0, KT, M, N, K, tid, lane, wm, wn);
+        gemm_epilogue<BM, WARPS_M, ROTATE>(acc, smem, steps, out, R, has_res, m0, k0, M, K, lane, wm, wn);
+        __syncthreads();
+    }
+
+    const int sk_tiles = total_tiles - dp_tiles;
+    if (sk_tiles <= 0) return;
+    const long long total_iters = (long long)sk_tiles * KT;
+    const long long iter_start = ((long long)cta * total_iters) / num_ctas;
+    const long long iter_end = ((long long)(cta + 1) * total_iters) / num_ctas;
+    __shared__ int s_arrived;
+
+    long long it = iter_start;
+    while (it < iter_end) {
+        const int sk_idx = (int)(it / KT);
+        const int tile = dp_tiles + sk_idx;
+        const int k_start = (int)(it % KT);
+        const long long tile_end_iter = (long long)(sk_idx + 1) * KT;
+        const int k_end = (int)(min(iter_end, tile_end_iter) - (long long)sk_idx * KT);
+
+        int m0, k0;
+        tile_coords(tile, n_m, n_k, BM, m0, k0);
+        int acc[4][8][4];
+#pragma unroll
+        for (int i = 0; i < 4; i++)
+#pragma unroll
+            for (int j = 0; j < 8; j++)
+#pragma unroll
+                for (int e = 0; e < 4; e++) acc[i][j][e] = 0;
+
+        gemm_kloop<BM, WARPS_M, STAGES>(A, B, sA, sB, acc, m0, k0, k_start, k_end, M, N, K, tid, lane, wm, wn);
+
+        if (k_start == 0 && k_end == KT) {
+            gemm_epilogue<BM, WARPS_M, ROTATE>(acc, smem, steps, out, R, has_res, m0, k0, M, K, lane, wm, wn);
+            if (it + (k_end - k_start) < iter_end) __syncthreads();
+        } else {
+            const long long t_lo = (long long)sk_idx * KT;
+            const long long t_hi = t_lo + KT - 1;
+            const int first_cta = (int)(((t_lo + 1) * num_ctas - 1) / total_iters);
+            const int last_cta = (int)(((t_hi + 1) * num_ctas - 1) / total_iters);
+            const int peers = last_cta - first_cta + 1;
+
+            const int my_slot = cta * 2 + (k_start == 0 ? 1 : 0);
+            int4* dst = reinterpret_cast<int4*>(partials + (long long)my_slot * TILE_INTS);
+            int idx = 0;
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+#pragma unroll
+                for (int j = 0; j < 8; j++) {
+                    dst[idx * THREADS + tid] = make_int4(acc[i][j][0], acc[i][j][1], acc[i][j][2], acc[i][j][3]);
+                    idx++;
+                }
+            __threadfence();
+            __syncthreads();
+            if (tid == 0) {
+                s_arrived = atomicAdd(done + sk_idx, 1) + 1;
+            }
+            __syncthreads();
+            if (s_arrived == peers) {
+                if (tid == 0) done[sk_idx] = 0;
+                for (int p = first_cta; p <= last_cta; p++) {
+                    if (p == cta) continue;
+                    const int p_slot = p * 2 + (p == first_cta ? 1 : 0);
+                    const int4* src = reinterpret_cast<const int4*>(partials + (long long)p_slot * TILE_INTS);
+                    int sidx = 0;
+#pragma unroll
+                    for (int i = 0; i < 4; i++)
+#pragma unroll
+                        for (int j = 0; j < 8; j++) {
+                            int v0, v1, v2, v3;
+                            asm volatile("ld.global.cg.v4.s32 {%0,%1,%2,%3}, [%4];"
+                                         : "=r"(v0), "=r"(v1), "=r"(v2), "=r"(v3)
+                                         : "l"(src + sidx * THREADS + tid));
+                            acc[i][j][0] += v0;
+                            acc[i][j][1] += v1;
+                            acc[i][j][2] += v2;
+                            acc[i][j][3] += v3;
+                            sidx++;
+                        }
+                }
+                gemm_epilogue<BM, WARPS_M, ROTATE>(acc, smem, steps, out, R, has_res, m0, k0, M, K, lane, wm, wn);
+                if (it + (k_end - k_start) < iter_end) __syncthreads();
+            }
+        }
+        it += (k_end - k_start);
     }
 }
 
@@ -421,6 +640,34 @@ extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_rot(const sign
 extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm(const signed char* A, const signed char* B,
         const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
     gemm_body<128, 2, 3, false>(A, B, steps, out, R, has_res, M, N, K);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4_rot(const signed char* A, const signed char* B,
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
+    gemm_body<128, 2, 4, true>(A, B, steps, out, R, has_res, M, N, K);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4(const signed char* A, const signed char* B,
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
+    gemm_body<128, 2, 4, false>(A, B, steps, out, R, has_res, M, N, K);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_sk_rot(const signed char* A, const signed char* B,
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
+        int* partials, int* done, int dp_tiles) {
+    gemm_sk_body<128, 2, 3, true>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_sk(const signed char* A, const signed char* B,
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
+        int* partials, int* done, int dp_tiles) {
+    gemm_sk_body<128, 2, 3, false>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4_sk_rot(const signed char* A, const signed char* B,
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
+        int* partials, int* done, int dp_tiles) {
+    gemm_sk_body<128, 2, 4, true>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4_sk(const signed char* A, const signed char* B,
+        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
+        int* partials, int* done, int dp_tiles) {
+    gemm_sk_body<128, 2, 4, false>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
 }
 extern "C" __global__ void __launch_bounds__(128, 2) zt_w8a8_gemm64_rot(const signed char* A, const signed char* B,
         const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
