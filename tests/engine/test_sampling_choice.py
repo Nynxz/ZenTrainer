@@ -112,3 +112,52 @@ def test_sampling_reuses_training_patcher_when_preview_model_matches():
     assert cb._uses_alt_model(fake_trainer(sample_model="moss_turbo.safetensors"))
     assert cb._uses_alt_model(fake_trainer(sample_dt="fp8_e4m3fn"))
     assert cb._uses_alt_model(fake_trainer(lora_strength=0.8))
+
+
+def test_alt_sampling_model_applies_turbo_lora_at_requested_strength(monkeypatch):
+    """When sampling loads the alternate model (e.g. lora_strength=0.99 or different preview model),
+    samples.turbo_lora is still applied at s.turbo_strength (and omitted when strength is 0)."""
+    from zentrainer.harness.callbacks import Samples
+
+    applied = []
+    fake_alt = types.SimpleNamespace(patches={}, model=object())
+
+    comfy_pkg = types.ModuleType("comfy")
+    comfy_sd = types.ModuleType("comfy.sd")
+    comfy_utils = types.ModuleType("comfy.utils")
+    folder_paths = types.ModuleType("folder_paths")
+    comfy_sd.load_diffusion_model = lambda path, model_options=None: fake_alt
+
+    def fake_load_lora(model, clip, weights, strength, clip_strength):
+        applied.append((weights, strength))
+        return types.SimpleNamespace(patches={}, model=model.model), clip
+
+    comfy_sd.load_lora_for_models = fake_load_lora
+    comfy_utils.load_torch_file = lambda path, safe_load=True: f"sd:{path}"
+    folder_paths.get_full_path_or_raise = lambda kind, name: f"{kind}/{name}"
+    comfy_pkg.sd = comfy_sd
+    comfy_pkg.utils = comfy_utils
+    for name, mod in (("comfy", comfy_pkg), ("comfy.sd", comfy_sd), ("comfy.utils", comfy_utils),
+                      ("folder_paths", folder_paths)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    d = TrainSpec().to_dict()
+    d["dataset"]["folder"] = "d"
+    d["model"].update(kind="split", unet_name="moss.safetensors", clip_name="c.safetensors",
+                      clip_type="moss_image", vae_name="v.safetensors")
+    d["samples"].update(model_name="moss.safetensors", lora_strength=0.99,
+                        turbo_lora="turbo.safetensors", turbo_strength=0.75)
+    t = types.SimpleNamespace(
+        spec=TrainSpec.from_dict(d),
+        models=types.SimpleNamespace(patcher=object()),
+        network=types.SimpleNamespace(state_dict=lambda: {"w": 1}, wide=None),
+    )
+    cb = Samples(every=100)
+    cb._sampling_model(t)
+    assert applied == [({"w": 1}, 0.99), ("sd:loras/turbo.safetensors", 0.75)]
+
+    # Overriding turbo_strength to 0 omits turbo_lora while keeping trained LoRA at 0.99
+    applied.clear()
+    over = SampleSpec(**{**d["samples"], "turbo_strength": 0.0})
+    cb._sampling_model(t, over)
+    assert applied == [({"w": 1}, 0.99)]

@@ -156,6 +156,7 @@ class Samples(Callback):
         self._conds = None
         self._alt = None  # base patcher of the alternate sampling model, loaded once
         self._base_sd = None  # the base LoRA (network.base_lora), for the alternate model
+        self._turbo_sd = None  # the turbo LoRA (samples.turbo_lora), for the alternate model
 
     def _like(self, t, row: dict) -> None:
         """Hand a landed sample to the likeness worker, started on first use."""
@@ -265,11 +266,11 @@ class Samples(Callback):
             pass
 
     @staticmethod
-    def _uses_alt_model(t) -> bool:
+    def _uses_alt_model(t, s=None) -> bool:
         """Whether samples need a separate model loaded instead of reusing the training patcher.
         When `samples.model_name` names the exact same model and weight dtype as training (at
         `lora_strength == 1.0`), reuse `t.models.patcher` directly instead of loading a second copy."""
-        s = t.spec.samples
+        s = s or t.spec.samples
         if not s.model_name:
             return False
         m = getattr(t.spec, "model", None)
@@ -305,10 +306,10 @@ class Samples(Callback):
         finally:
             scale(1.0)
 
-    def _sampling_model(self, t):
+    def _sampling_model(self, t, s=None):
         """The training patcher itself, or the alternate model with the current LoRA."""
-        s = t.spec.samples
-        if not self._uses_alt_model(t):
+        s = s or t.spec.samples
+        if not self._uses_alt_model(t, s):
             return t.models.patcher
         import comfy.sd
         import folder_paths
@@ -348,6 +349,13 @@ class Samples(Callback):
 
                 self._base_sd = comfy.utils.load_torch_file(folder_paths.get_full_path_or_raise("loras", base), safe_load=True)
             patched, _ = comfy.sd.load_lora_for_models(patched, None, self._base_sd, t.spec.network.base_strength, 0)
+        if s.turbo_lora and s.turbo_strength:
+            if getattr(self, "_turbo_sd", None) is None:
+                import comfy.utils
+
+                self._turbo_sd = comfy.utils.load_torch_file(
+                    folder_paths.get_full_path_or_raise("loras", s.turbo_lora), safe_load=True)
+            patched, _ = comfy.sd.load_lora_for_models(patched, None, self._turbo_sd, s.turbo_strength, 0)
         return patched
 
     def _let_sampler_go(self, t) -> None:
@@ -570,7 +578,7 @@ class Samples(Callback):
         t.network.turbo = s.turbo_strength  # a try's own, or the run's (changeable while it trains)
         try:
             with torch.no_grad(), quiet_reloads():
-                model = self._sampling_model(t)
+                model = self._sampling_model(t, s)
                 guided = self._guided_options(model, s)
                 plain_options = model.model_options
                 if guided is not None:
