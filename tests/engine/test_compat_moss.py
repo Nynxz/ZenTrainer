@@ -72,6 +72,7 @@ def test_modulated_rms_norm_keeps_input_dtype_in_training(monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
     sys.modules["comfy"].model_management = mm
     monkeypatch.setattr(compat, "_applied", set())
+    monkeypatch.setattr(compat, "in_run", True)
     moss_patch.apply()
 
     norm = torch.nn.RMSNorm(8, dtype=torch.bfloat16)
@@ -85,6 +86,12 @@ def test_modulated_rms_norm_keeps_input_dtype_in_training(monkeypatch):
     res = moss.gated_residual(x, y, scale)
     assert res.dtype == torch.bfloat16
     assert torch.allclose(res, torch.addcmul(x, y, scale).to(torch.bfloat16))
+    # Outside a ZenTrainer run (e.g. a subsequent stock ComfyUI TrainLoraNode run): delegates untouched
+    compat.in_run = False
+    assert moss.modulated_rms_norm(x, norm, scale, shift) == "sampling"
+    assert moss.gated_residual(x, y, scale) == "sampling_gate"
+    # Sampling inside a run: also delegates untouched
+    compat.in_run = True
     mm.in_training = False
     assert moss.modulated_rms_norm(x, norm, scale, shift) == "sampling"
-    assert moss.gated_residual(x, y, scale) == "sampling_gate" and sampling_calls == [1, 2]
+    assert moss.gated_residual(x, y, scale) == "sampling_gate" and sampling_calls == [1, 2, 1, 2]

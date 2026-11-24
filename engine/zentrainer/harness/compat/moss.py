@@ -33,7 +33,7 @@ def apply() -> None:
     sampling_modulated_rms_norm = getattr(moss, "modulated_rms_norm", None)
     if sampling_modulated_rms_norm is not None:
         def modulated_rms_norm(x, norm, scale, shift):
-            if not mm.in_training:
+            if not (compat.in_run and mm.in_training):
                 return sampling_modulated_rms_norm(x, norm, scale, shift)
             return (norm(x) * (1 + scale) + shift).to(x.dtype)
 
@@ -42,7 +42,7 @@ def apply() -> None:
     sampling_gated_residual = getattr(moss, "gated_residual", None)
     if sampling_gated_residual is not None:
         def gated_residual(x, y, gate):
-            if not mm.in_training:
+            if not (compat.in_run and mm.in_training):
                 return sampling_gated_residual(x, y, gate)
             return torch.addcmul(x, y, gate).to(x.dtype)
 
