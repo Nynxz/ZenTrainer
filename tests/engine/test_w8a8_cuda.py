@@ -239,6 +239,54 @@ def test_stream_k_and_pooled_seed_match_exact_product(m, n, k):
         assert ((out_r - want_r).norm() / want_r.norm()).item() < 2e-2
 
 
+@cuda
+def test_stream_k_oom_fallback_and_pooled_seed_reproducibility(monkeypatch):
+    """Stream-K workspace OOM falls back to ordinary GEMM; reseeding CUDA replays pooled seeds;
+    separate streams get isolated seed pools and Stream-K done counters."""
+    from zentrainer.harness.kernels import w8a8_cuda
+
+    m, n, k = 1152, 9216, 3072
+    torch.manual_seed(21)
+    g = torch.randn(m, n, device="cuda", dtype=torch.bfloat16)
+    s = torch.rand(n, device="cuda") * 0.01 + 0.001
+    q = torch.randint(-127, 128, (n, k), device="cuda", dtype=torch.int8)
+
+    # 1. Reseeding replays the exact same stochastic-rounding output (even after intervening CUDA RNG draws)
+    torch.manual_seed(77)
+    _ = torch.randn(1024, device="cuda")
+    a1 = w8a8_cuda.input_grad(g, q, s, None, True)
+    torch.manual_seed(77)
+    _ = torch.randn(1024, device="cuda")
+    a2 = w8a8_cuda.input_grad(g, q, s, None, True)
+    assert torch.equal(a1, a2)
+
+    # 2. Separate streams isolate _seed_pool and _sk_done
+    s1, s2 = torch.cuda.Stream(), torch.cuda.Stream()
+    with torch.cuda.stream(s1):
+        b1 = w8a8_cuda.input_grad(g, q, s, None, True)
+    with torch.cuda.stream(s2):
+        b2 = w8a8_cuda.input_grad(g, q, s, None, True)
+    torch.cuda.synchronize()
+    assert b1.shape == (m, k) and b2.shape == (m, k) and torch.isfinite(b1).all() and torch.isfinite(b2).all()
+    idx = g.device.index
+    assert (idx, s1.cuda_stream) in w8a8_cuda._sk_done and (idx, s2.cuda_stream) in w8a8_cuda._sk_done
+    assert w8a8_cuda._sk_done[(idx, s1.cuda_stream)] is not w8a8_cuda._sk_done[(idx, s2.cuda_stream)]
+
+    # 3. OOM on Stream-K partials workspace falls back cleanly to ordinary GEMM with matching output
+    real_empty = torch.empty
+
+    def fail_partials(shape, *args, **kwargs):
+        if kwargs.get("dtype") == torch.int32 and isinstance(shape, tuple) and len(shape) == 1 and shape[0] >= 32768:
+            raise torch.OutOfMemoryError("simulated Stream-K workspace OOM")
+        return real_empty(shape, *args, **kwargs)
+
+    seed = torch.tensor([5], device="cuda", dtype=torch.int32)
+    ref = w8a8_cuda.input_grad(g, q, s, seed, True)
+    monkeypatch.setattr(torch, "empty", fail_partials)
+    fallback = w8a8_cuda.input_grad(g, q, s, seed, True)
+    assert torch.equal(fallback, ref)
+
+
 @gpu
 def test_triton_hadamard256_residual_and_int8_matmul_residual():
     """The Triton W8A8 path (ROCm's primary path) fuses residual into int8_matmul and hadamard256."""

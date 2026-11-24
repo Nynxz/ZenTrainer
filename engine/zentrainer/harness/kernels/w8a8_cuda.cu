@@ -600,10 +600,14 @@ __device__ __forceinline__ void gemm_sk_body(const signed char* __restrict__ A, 
             __threadfence();
             __syncthreads();
             if (tid == 0) {
-                s_arrived = atomicAdd(done + sk_idx, 1) + 1;
+                int prev;
+                asm volatile("atom.acq_rel.gpu.global.add.s32 %0, [%1], 1;"
+                             : "=r"(prev) : "l"(done + sk_idx) : "memory");
+                s_arrived = prev + 1;
             }
             __syncthreads();
             if (s_arrived == peers) {
+                asm volatile("fence.acq_rel.gpu;" ::: "memory");
                 if (tid == 0) done[sk_idx] = 0;
                 for (int p = first_cta; p <= last_cta; p++) {
                     if (p == cta) continue;

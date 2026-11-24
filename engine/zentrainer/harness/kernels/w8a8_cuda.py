@@ -31,9 +31,9 @@ _NAMES = (
 _kernels: dict[int, dict | None] = {}  # by device: its kernels, or None if they couldn't load
 _sms: dict[int, int] = {}  # SM count per device, to schedule Stream-K and BM=64
 _has_s4: dict[int, bool] = {}  # whether device opt-in shared memory fits SMEM4 (96 KB)
-_sk_done: dict[int, torch.Tensor] = {}  # tiny zeroed arrival-counter buffer per device (reset in-kernel)
-_seed_pool: dict[int, list] = {}  # [tensor(4096, int32), cursor] to avoid a randint kernel launch per layer
-_SEED_POOL_SIZE = 4096
+_sk_done: dict[tuple[int, int], torch.Tensor] = {}  # per-(device, stream) zeroed arrival counters (reset in-kernel)
+_seed_pool: dict[tuple[int, int], list] = {}  # per-(device, stream) [pool, cursor, gen_seed, gen_offset]
+_SEED_POOL_SIZE = 512
 
 
 def _load(device: torch.device) -> dict | None:
@@ -74,24 +74,29 @@ def _load(device: torch.device) -> dict | None:
     return _kernels[idx]
 
 
-def _next_seed(device: torch.device, idx: int) -> torch.Tensor:
-    """Return a 1-element int32 seed tensor from a cached pool, refilled once every 4096 calls."""
-    entry = _seed_pool.get(idx)
-    if entry is None or entry[1] >= _SEED_POOL_SIZE:
+def _next_seed(device: torch.device, idx: int, stream_id: int) -> torch.Tensor:
+    """Return a 1-element int32 seed tensor from a per-stream pool, refilled every 512 calls or
+    whenever the CUDA generator's seed or offset changes (preserving deterministic replay)."""
+    gen = torch.cuda.default_generators[idx]
+    gen_seed, gen_off = gen.initial_seed(), gen.get_offset()
+    key = (idx, stream_id)
+    entry = _seed_pool.get(key)
+    if entry is None or entry[1] >= _SEED_POOL_SIZE or entry[2] != gen_seed or entry[3] != gen_off:
         pool = torch.randint(0, 2**31 - 1, (_SEED_POOL_SIZE,), device=device, dtype=torch.int32)
-        entry = [pool, 0]
-        _seed_pool[idx] = entry
+        entry = [pool, 0, gen.initial_seed(), gen.get_offset()]
+        _seed_pool[key] = entry
     pos = entry[1]
     entry[1] = pos + 1
     return entry[0][pos : pos + 1]
 
 
-def _done_buf(device: torch.device, idx: int, need: int) -> torch.Tensor:
-    """Zero-initialized Stream-K arrival counters (reset back to 0 in-kernel by each last finisher)."""
-    buf = _sk_done.get(idx)
+def _done_buf(device: torch.device, idx: int, stream_id: int, need: int) -> torch.Tensor:
+    """Per-stream zero-initialized Stream-K arrival counters (reset back to 0 in-kernel by each last finisher)."""
+    key = (idx, stream_id)
+    buf = _sk_done.get(key)
     if buf is None or buf.shape[0] < need:
         buf = torch.zeros(max(need, 512), device=device, dtype=torch.int32)
-        _sk_done[idx] = buf
+        _sk_done[key] = buf
     return buf
 
 
@@ -138,8 +143,10 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
     idx = grad_2d.device.index if grad_2d.device.index is not None else torch.cuda.current_device()
     if scale.dtype != torch.float32 or not scale.is_contiguous():
         scale = scale.reshape(-1).float().contiguous()
+    stream = torch.cuda.current_stream(grad_2d.device)
+    stream_id = stream.cuda_stream
     if seed is None:
-        seed = _next_seed(grad_2d.device, idx)
+        seed = _next_seed(grad_2d.device, idx, stream_id)
     gq = torch.empty((m, n), device=grad_2d.device, dtype=torch.int8)
     steps = torch.empty((m,), device=grad_2d.device, dtype=torch.float32)
     out = torch.empty((m, k), device=grad_2d.device, dtype=torch.bfloat16)
@@ -149,7 +156,6 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
             residual = residual.to(torch.bfloat16).reshape(m, k).contiguous()
         if residual.data_ptr() % 16 != 0:
             residual = residual.clone()  # uint2/uint4 vector loads require 16-byte alignment
-    stream = torch.cuda.current_stream(grad_2d.device)
     if n <= 2048:
         qname, qblock = "zt_quantize_rows_2k", 128
     elif n <= 4096:
@@ -176,14 +182,19 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
     dp_tiles = dp_waves * sms
     sk_tiles = ctas_128 - dp_tiles
     if eff < 0.88 and kt >= 48 and sk_tiles * kt >= sms and m >= 512:
-        gname = (("zt_w8a8_gemm_s4_sk_rot" if rotate else "zt_w8a8_gemm_s4_sk") if use_s4
-                 else ("zt_w8a8_gemm_sk_rot" if rotate else "zt_w8a8_gemm_sk"))
-        partials = torch.empty((sms * 2 * 32768,), device=grad_2d.device, dtype=torch.int32)
-        done = _done_buf(grad_2d.device, idx, sk_tiles)
-        ks[gname](grid=(sms, 1, 1), block=(256, 1, 1),
-                  args=[gq, q, steps, out, residual if res else out, int(res), m, n, k, partials, done, dp_tiles],
-                  shared_mem=SMEM4 if use_s4 else SMEM, stream=stream)
-    elif ctas_128 < sms * 2 and m <= 2048:
+        try:
+            partials = torch.empty((sms * 2 * 32768,), device=grad_2d.device, dtype=torch.int32)
+            done = _done_buf(grad_2d.device, idx, stream_id, sk_tiles)
+        except torch.OutOfMemoryError:
+            partials = None  # fall back to the workspace-free ordinary GEMM instead of aborting the step
+        if partials is not None:
+            gname = (("zt_w8a8_gemm_s4_sk_rot" if rotate else "zt_w8a8_gemm_s4_sk") if use_s4
+                     else ("zt_w8a8_gemm_sk_rot" if rotate else "zt_w8a8_gemm_sk"))
+            ks[gname](grid=(sms, 1, 1), block=(256, 1, 1),
+                      args=[gq, q, steps, out, residual if res else out, int(res), m, n, k, partials, done, dp_tiles],
+                      shared_mem=SMEM4 if use_s4 else SMEM, stream=stream)
+            return out
+    if ctas_128 < sms * 2 and m <= 2048:
         # BM=64 (128 threads, 40 KB SMEM -> 2 CTAs/SM) fills SMs on small-M / short-N shapes
         gname = "zt_w8a8_gemm64_rot" if rotate else "zt_w8a8_gemm64"
         ks[gname](grid=(n_k * ((m + 63) // 64), 1, 1), block=(128, 1, 1),
