@@ -75,7 +75,7 @@ def _swiglu_forward(self, x):
     return self.down(F.silu(self.gate(x)) * self.up(x))
 
 
-_HIDDEN_KWARGS = ("hidden_states", "x", "img")
+_STREAM_KWARGS = ("hidden_states", "encoder_hidden_states", "img", "txt", "x")
 
 
 def _needs_grad(t) -> bool:
@@ -83,11 +83,11 @@ def _needs_grad(t) -> bool:
 
 
 def _ensure_grad(self, args, kwargs):
-    """Ensure the first trainable block receives a floating-point input with requires_grad=True
+    """Ensure the first trainable block receives floating-point stream input(s) with requires_grad=True
     (detached so backward never flows into frozen prefix blocks or embedders). Without this, the
     first trainable block sees requires_grad=False while every subsequent block sees True, causing
-    dynamo to compile two full graphs per run. Handles both positional (`block(x, ...)`) and
-    keyword-only (`block(hidden_states=x, ...)`, e.g. Qwen Image) callers."""
+    dynamo to compile two full graphs per run. Handles positional (`block(x, ...)`) and keyword
+    (`block(hidden_states=..., encoder_hidden_states=...)`, `block(img=..., txt=...)`) callers."""
     if not (getattr(self, "_zt_ensure_grad", False) and torch.is_grad_enabled()):
         return args, kwargs
     if args:
@@ -95,10 +95,10 @@ def _ensure_grad(self, args, kwargs):
             return (args[0].detach().requires_grad_(True), *args[1:]), kwargs
         return args, kwargs
     if kwargs:
-        for key in _HIDDEN_KWARGS:
-            if key in kwargs:
-                val = kwargs[key]
-                return (args, {**kwargs, key: val.detach().requires_grad_(True)}) if _needs_grad(val) else (args, kwargs)
+        matched = [k for k in _STREAM_KWARGS if k in kwargs]
+        if matched:
+            updated = {k: kwargs[k].detach().requires_grad_(True) for k in matched if _needs_grad(kwargs[k])}
+            return (args, {**kwargs, **updated}) if updated else (args, kwargs)
         for key, val in kwargs.items():
             if isinstance(val, torch.Tensor) and val.is_floating_point() and not val.is_nested:
                 return (args, {**kwargs, key: val.detach().requires_grad_(True)}) if not val.requires_grad else (args, kwargs)

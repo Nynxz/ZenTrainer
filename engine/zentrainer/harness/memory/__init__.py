@@ -227,6 +227,8 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
                              "(q x k norm weights %.0f)", name, peak)
             if i not in sharp:
                 _patch_saving(m)
+            elif getattr(getattr(m.forward, "__func__", None), "_zt_orig_cls_fwd", None) is not None:
+                _patch_checkpoint(m, save_attention=False)
             else:
                 comfy_patch(m, offloading=False)
         elif offloading and not isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):

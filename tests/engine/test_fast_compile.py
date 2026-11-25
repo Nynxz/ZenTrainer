@@ -461,35 +461,41 @@ def test_first_trainable_does_not_enable_grad_on_frozen_prefix_blocks():
 
 
 def test_single_graph_compile_works_for_keyword_called_blocks():
-    """Models calling blocks by keyword (e.g. Qwen Image hidden_states=...) also compile 1 graph."""
+    """Models calling blocks by keyword — both single-stream (`hidden_states=...`) and dual-stream
+    (`hidden_states=..., encoder_hidden_states=...` like Qwen Image / `img=..., txt=...` like FLUX)
+    — compile 1 graph."""
     from zentrainer.harness.kernels.compile import compiled_frame_count
 
-    class KwBlock(nn.Module):
+    class DualKwBlock(nn.Module):
         def __init__(self, d=16):
             super().__init__()
-            self.w1 = nn.Linear(d, d)
-            self.w2 = nn.Linear(d, d)
+            self.li = nn.Linear(d, d)
+            self.lt = nn.Linear(d, d)
+            self.cross = nn.Linear(d, d)
 
-        def forward(self, *, hidden_states, temb):
-            return hidden_states + self.w2(torch.nn.functional.silu(self.w1(hidden_states)) + temb)
+        def forward(self, *, hidden_states, encoder_hidden_states, temb):
+            hi = hidden_states + self.li(torch.nn.functional.silu(hidden_states) + temb) + self.cross(encoder_hidden_states)
+            ht = encoder_hidden_states + self.lt(torch.nn.functional.silu(encoder_hidden_states)) + self.cross(hidden_states)
+            return ht, hi
 
-    class KwNet(nn.Module):
+    class DualKwNet(nn.Module):
         def __init__(self):
             super().__init__()
-            self.blocks = nn.ModuleList([KwBlock() for _ in range(4)])
+            self.blocks = nn.ModuleList([DualKwBlock() for _ in range(4)])
 
-        def forward(self, x, temb):
+        def forward(self, x, txt, temb):
             for b in self.blocks:
-                x = b(hidden_states=x, temb=temb)
-            return x
+                txt, x = b(hidden_states=x, encoder_hidden_states=txt, temb=temb)
+            return x + txt
 
     torch.manual_seed(2)
-    ref = KwNet()
-    dm = KwNet()
+    ref = DualKwNet()
+    dm = DualKwNet()
     dm.load_state_dict(ref.state_dict())
     x = torch.randn(2, 8, 16)  # requires_grad=False
+    txt = torch.randn(2, 8, 16)  # requires_grad=False
     temb = torch.randn(2, 1, 16)  # requires_grad=False (stays grad-free)
-    ref_loss = ref(x, temb).pow(2).mean()
+    ref_loss = ref(x, txt, temb).pow(2).mean()
     ref_loss.backward()
     ref_grads = [p.grad.clone() for p in ref.parameters()]
 
@@ -499,12 +505,65 @@ def test_single_graph_compile_works_for_keyword_called_blocks():
         with compiled_blocks(dm, True) as n_comp:
             assert n_comp == 4
             dm.zero_grad(set_to_none=True)
-            loss = dm(x, temb).pow(2).mean()
+            loss = dm(x, txt, temb).pow(2).mean()
             loss.backward()
             assert compiled_frame_count() - before == 1
             assert torch.allclose(loss, ref_loss, atol=1e-5)
             for p, g in zip(dm.parameters(), ref_grads):
                 assert torch.allclose(p.grad, g, rtol=1e-4, atol=1e-5)
-            assert not x.requires_grad and not temb.requires_grad
+            assert not x.requires_grad and not txt.requires_grad and not temb.requires_grad
     finally:
         torch._dynamo.reset()
+
+
+def test_sharp_compiled_block_under_save_attention_uses_compiled_ckpt_none(monkeypatch):
+    """Under checkpoint_save='attention', a sharp block (q*k norm > SHARP_QK) gets the compiled
+    save_attention=False checkpoint wrapper rather than falling back to uncompiled comfy_patch."""
+    nodes_train = types.ModuleType("comfy_extras.nodes_train")
+    comfy_patched = []
+
+    def fake_patch(m, offloading=False):
+        comfy_patched.append(m)
+        m.org_forward = m.forward
+        m.forward = lambda *a, _f=m.forward, **kw: _f(*a, **kw)
+
+    def fake_unpatch(m):
+        if hasattr(m, "org_forward"):
+            m.forward = m.org_forward
+            delattr(m, "org_forward")
+
+    nodes_train.patch = fake_patch
+    nodes_train.unpatch = fake_unpatch
+    pkg = types.ModuleType("comfy_extras")
+    pkg.nodes_train = nodes_train
+    monkeypatch.setitem(sys.modules, "comfy_extras", pkg)
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_train", nodes_train)
+
+    class Norm(nn.Module):
+        def __init__(self, scale_val):
+            super().__init__()
+            self.scale = nn.Parameter(torch.full((8,), scale_val))
+
+    class SharpBlock(nn.Module):
+        def __init__(self, sharp=False):
+            super().__init__()
+            self.qnorm = Norm(30.0 if sharp else 1.0)
+            self.knorm = Norm(30.0 if sharp else 1.0)
+            self.w = nn.Linear(8, 8)
+
+        def forward(self, x):
+            return x + self.w(x)
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([SharpBlock(sharp=True), SharpBlock(), SharpBlock()])
+
+    dm = Model()
+    with compiled_blocks(dm, True), gradient_checkpointing(dm, True, depth=1, offloading=False, skip=0, save="attention"):
+        assert not comfy_patched
+        # Sharp block 0 uses the save=False compiled checkpoint wrapper; blocks 1..2 share the save=True one
+        assert dm.blocks[0].forward.__func__ is not dm.blocks[1].forward.__func__
+        assert dm.blocks[1].forward.__func__ is dm.blocks[2].forward.__func__
+        assert getattr(dm.blocks[0].org_forward.__func__, "_zt_ckpt_none_compiled", None) is dm.blocks[0].forward.__func__
+        assert getattr(dm.blocks[1].org_forward.__func__, "_zt_ckpt_attn_compiled", None) is dm.blocks[1].forward.__func__
