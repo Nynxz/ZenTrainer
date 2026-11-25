@@ -31,6 +31,9 @@ typedef unsigned short u16;
 #define BK 256
 #define BR 64
 #define GROUP 8
+#ifndef ZT_STAGES
+#define ZT_STAGES 3
+#endif
 
 __device__ __forceinline__ u32 smem_u32(const void* p) { return (u32)__cvta_generic_to_shared(p); }
 
@@ -639,39 +642,21 @@ __device__ __forceinline__ void gemm_sk_body(const signed char* __restrict__ A, 
 
 extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_rot(const signed char* A, const signed char* B,
         const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
-    gemm_body<128, 2, 3, true>(A, B, steps, out, R, has_res, M, N, K);
+    gemm_body<128, 2, ZT_STAGES, true>(A, B, steps, out, R, has_res, M, N, K);
 }
 extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm(const signed char* A, const signed char* B,
         const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
-    gemm_body<128, 2, 3, false>(A, B, steps, out, R, has_res, M, N, K);
-}
-extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4_rot(const signed char* A, const signed char* B,
-        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
-    gemm_body<128, 2, 4, true>(A, B, steps, out, R, has_res, M, N, K);
-}
-extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4(const signed char* A, const signed char* B,
-        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {
-    gemm_body<128, 2, 4, false>(A, B, steps, out, R, has_res, M, N, K);
+    gemm_body<128, 2, ZT_STAGES, false>(A, B, steps, out, R, has_res, M, N, K);
 }
 extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_sk_rot(const signed char* A, const signed char* B,
         const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
         int* partials, int* done, int dp_tiles) {
-    gemm_sk_body<128, 2, 3, true>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
+    gemm_sk_body<128, 2, ZT_STAGES, true>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
 }
 extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_sk(const signed char* A, const signed char* B,
         const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
         int* partials, int* done, int dp_tiles) {
-    gemm_sk_body<128, 2, 3, false>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
-}
-extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4_sk_rot(const signed char* A, const signed char* B,
-        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
-        int* partials, int* done, int dp_tiles) {
-    gemm_sk_body<128, 2, 4, true>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
-}
-extern "C" __global__ void __launch_bounds__(256, 1) zt_w8a8_gemm_s4_sk(const signed char* A, const signed char* B,
-        const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K,
-        int* partials, int* done, int dp_tiles) {
-    gemm_sk_body<128, 2, 4, false>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
+    gemm_sk_body<128, 2, ZT_STAGES, false>(A, B, steps, out, R, has_res, M, N, K, partials, done, dp_tiles);
 }
 extern "C" __global__ void __launch_bounds__(128, 2) zt_w8a8_gemm64_rot(const signed char* A, const signed char* B,
         const float* steps, u16* out, const u16* R, int has_res, int M, int N, int K) {

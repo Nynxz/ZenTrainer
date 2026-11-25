@@ -34,8 +34,8 @@ def _quantized(g, s, seed):
 # rows: one, under and over a tile (128), odd; the layer shapes of Krea 2 and MOSS (out, in)
 @cuda
 @pytest.mark.parametrize("m,n,k", [(1, 64, 256), (17, 128, 256), (127, 128, 512), (129, 192, 256), (300, 128, 256),
-                                   (1000, 1536, 768), (4097, 1536, 6144), (512, 6144, 1536), (512, 16384, 6144),
-                                   (512, 6144, 16384), (512, 9216, 3072), (512, 3072, 8192)])
+                                   (2560, 64, 256), (1000, 1536, 768), (4097, 1536, 6144), (512, 6144, 1536),
+                                   (512, 16384, 6144), (512, 6144, 16384), (512, 9216, 3072), (512, 3072, 8192)])
 def test_quantized_product_matches_the_exact_one_rotated(m, n, k):
     from zentrainer.harness.kernels import w8a8_cuda
 
@@ -230,7 +230,7 @@ def _stream_k_shape(device: torch.device) -> tuple[int, int, int]:
 @cuda
 @pytest.mark.parametrize("m,n,k", [(2432, 3072, 3072), (1152, 9216, 3072), (2432, 16384, 3072)])
 def test_stream_k_and_residual_match_exact_product(m, n, k):
-    """Stream-K (3-stage and 4-stage) matches exact rotated/unrotated products and resets done[] in-kernel."""
+    """Stream-K matches exact rotated/unrotated products and resets done[] in-kernel."""
     from zentrainer.harness.kernels import w8a8_cuda
 
     torch.manual_seed(13)

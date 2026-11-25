@@ -24,13 +24,12 @@ SMEM4 = 4 * (128 * 64 + 64 * 256)  # BM=128 4-stage pipeline: 96 KB (sm_80/86/89
 SMEM64 = 2 * (64 * 64 + 64 * 256)  # BM=64 2-stage pipeline: 40 KB (2 CTAs/SM)
 _NAMES = (
     "zt_quantize_rows", "zt_quantize_rows_2k", "zt_quantize_rows_4k", "zt_quantize_rows_8k", "zt_quantize_rows_16k",
-    "zt_w8a8_gemm_rot", "zt_w8a8_gemm", "zt_w8a8_gemm_s4_rot", "zt_w8a8_gemm_s4",
-    "zt_w8a8_gemm_sk_rot", "zt_w8a8_gemm_sk", "zt_w8a8_gemm_s4_sk_rot", "zt_w8a8_gemm_s4_sk",
+    "zt_w8a8_gemm_rot", "zt_w8a8_gemm", "zt_w8a8_gemm_sk_rot", "zt_w8a8_gemm_sk",
     "zt_w8a8_gemm64_rot", "zt_w8a8_gemm64",
 )
 _kernels: dict[int, dict | None] = {}  # by device: its kernels, or None if they couldn't load
 _sms: dict[int, int] = {}  # SM count per device, to schedule Stream-K and BM=64
-_has_s4: dict[int, bool] = {}  # whether device opt-in shared memory fits SMEM4 (96 KB)
+_smem: dict[int, int] = {}  # BM=128 dynamic shared memory per device (SMEM4 when opt-in >= 96 KB, else SMEM)
 _sk_done: dict[tuple[int, int], torch.Tensor] = {}  # per-(device, stream) zeroed arrival counters (reset in-kernel)
 
 
@@ -52,21 +51,20 @@ def _load(device: torch.device) -> dict | None:
         props = torch.cuda.get_device_properties(idx)
         optin = getattr(props, "shared_memory_per_block_optin", props.shared_memory_per_block)
         can_s4 = optin >= SMEM4 + 256  # leaves headroom for static __shared__ (s_arrived) in Stream-K kernels
+        stages = 4 if can_s4 else 3
+        smem = SMEM4 if can_s4 else SMEM
         with torch.cuda.device(idx):
-            ptx, _ = _nvrtc_compile(src, _NAMES[0], f"{major}{minor}", None, ["-std=c++17"])
+            ptx, _ = _nvrtc_compile(src, _NAMES[0], f"{major}{minor}", None, ["-std=c++17", f"-DZT_STAGES={stages}"])
             ks = _cuda_load_module(ptx, list(_NAMES))
             for n in ("zt_w8a8_gemm_rot", "zt_w8a8_gemm", "zt_w8a8_gemm_sk_rot", "zt_w8a8_gemm_sk"):
-                ks[n].set_shared_memory_config(SMEM)
-            if can_s4:
-                for n in ("zt_w8a8_gemm_s4_rot", "zt_w8a8_gemm_s4", "zt_w8a8_gemm_s4_sk_rot", "zt_w8a8_gemm_s4_sk"):
-                    ks[n].set_shared_memory_config(SMEM4)
+                ks[n].set_shared_memory_config(smem)
             for n in ("zt_w8a8_gemm64_rot", "zt_w8a8_gemm64"):
                 ks[n].set_shared_memory_config(SMEM64)
         _sms[idx] = props.multi_processor_count
-        _has_s4[idx] = can_s4
+        _smem[idx] = smem
         _kernels[idx] = ks
-        logging.info("[ZenTrainer] int8 backward: CUDA kernels compiled for sm_%d%d (%d SMs, 4-stage=%s)",
-                     major, minor, _sms[idx], "on" if can_s4 else "off")
+        logging.info("[ZenTrainer] int8 backward: CUDA kernels compiled for sm_%d%d (%d SMs, %d-stage)",
+                     major, minor, _sms[idx], stages)
     except Exception:
         logging.warning("[ZenTrainer] int8 backward's CUDA kernels didn't load; using Triton's", exc_info=True)
     return _kernels[idx]
@@ -150,12 +148,12 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
               stream=stream)
 
     sms = _sms.get(idx, 64)
+    smem = _smem.get(idx, SMEM)
     n_k = k // 256
     ctas_128 = n_k * ((m + 127) // 128)
     kt = n // 64
     waves = (ctas_128 + sms - 1) // sms
     eff = ctas_128 / (waves * sms)
-    use_s4 = _has_s4.get(idx, False) and n >= 2048
     # Two-phase Stream-K eliminates tail-wave quantization (e.g. 1.34 / 2.40 waves on 170-SM GPUs)
     # whenever wave efficiency is low and the reduction dimension is deep enough to amortize partial sums.
     dp_waves = max(0, (ctas_128 // sms) - 1)
@@ -168,11 +166,10 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
         except torch.OutOfMemoryError:
             partials = None  # fall back to the workspace-free ordinary GEMM instead of aborting the step
         if partials is not None:
-            gname = (("zt_w8a8_gemm_s4_sk_rot" if rotate else "zt_w8a8_gemm_s4_sk") if use_s4
-                     else ("zt_w8a8_gemm_sk_rot" if rotate else "zt_w8a8_gemm_sk"))
+            gname = "zt_w8a8_gemm_sk_rot" if rotate else "zt_w8a8_gemm_sk"
             ks[gname](grid=(sms, 1, 1), block=(256, 1, 1),
                       args=[gq, q, steps, out, residual if res else out, int(res), m, n, k, partials, done, dp_tiles],
-                      shared_mem=SMEM4 if use_s4 else SMEM, stream=stream)
+                      shared_mem=smem, stream=stream)
             return out
     if ctas_128 < sms * 2 and m <= 2048:
         # BM=64 (128 threads, 40 KB SMEM -> 2 CTAs/SM) fills SMs on small-M / short-N shapes
@@ -180,16 +177,11 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, seed
         ks[gname](grid=(n_k * ((m + 63) // 64), 1, 1), block=(128, 1, 1),
                   args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
                   shared_mem=SMEM64, stream=stream)
-    elif use_s4:
-        gname = "zt_w8a8_gemm_s4_rot" if rotate else "zt_w8a8_gemm_s4"
-        ks[gname](grid=(ctas_128, 1, 1), block=(256, 1, 1),
-                  args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
-                  shared_mem=SMEM4, stream=stream)
     else:
         gname = "zt_w8a8_gemm_rot" if rotate else "zt_w8a8_gemm"
         ks[gname](grid=(ctas_128, 1, 1), block=(256, 1, 1),
                   args=[gq, q, steps, out, residual if res else out, int(res), m, n, k],
-                  shared_mem=SMEM, stream=stream)
+                  shared_mem=smem, stream=stream)
     return out
 
 
