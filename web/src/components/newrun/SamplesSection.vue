@@ -8,7 +8,7 @@ import SamplePromptList from '@/components/SamplePromptList.vue'
 import { downloadFor, fmtBytes } from '@/stores/downloads'
 import { items, merge, useRunFormContext } from './form'
 
-const { spec, choices, sampleSuggestion, promptSets, pairItems, runInputs, isVideoModel, folderWords } = useRunFormContext()
+const { spec, choices, dataset, sampleSuggestion, promptSets, pairItems, runInputs, isVideoModel, folderWords } = useRunFormContext()
 
 const advanced = reactive({ samples: false })
 const usingSuggestion = computed(
@@ -230,6 +230,7 @@ async function savePromptSet(name: string) {
     :trigger="spec.dataset.trigger"
     :words="spec.dataset.folder_triggers ? folderWords.filter((f) => f.trains).map((f) => f.word) : undefined"
     :controls="spec.dataset.edit ? controlOptions : undefined"
+    :likeness="(!dataset || !!dataset.faces) && spec.samples.likeness !== false"
   />
   <div v-if="sampleSuggestion && !usingSuggestion" class="suggest">
     <i class="mdi mdi-lightning-bolt-outline" />

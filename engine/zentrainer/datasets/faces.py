@@ -221,16 +221,26 @@ def dataset_centroid(name: str, face_model: str | None = None) -> np.ndarray | N
     return _centroid(list(embs.values()))
 
 
+def likeness_detail(path: Path, centroid: np.ndarray, frames: int = 4,
+                    face_model: str | None = None) -> tuple[float | None, int]:
+    """(score, faces): how much a rendered sample's main face looks like the dataset's (cosine,
+    -1..1; same person is typically above 0.5), plus the peak face count seen across sampled
+    frames (0 when no face was detected). The centroid must come from the same face model."""
+    scores = []
+    peak_faces = 0
+    for rgb in _frames(path, frames):
+        fs = detect(rgb, face_model)
+        if fs:
+            peak_faces = max(peak_faces, len(fs))
+            scores.append(max(float(np.dot(f["emb"], centroid)) for f in fs[:3]))
+    return (round(float(np.mean(scores)), 4) if scores else None), peak_faces
+
+
 def likeness(path: Path, centroid: np.ndarray, frames: int = 4, face_model: str | None = None) -> float | None:
     """How much a rendered sample's main face looks like the dataset's (cosine, -1..1; same
     person is typically above 0.5): the best face in each of a few frames, averaged. The centroid
     must come from the same face model."""
-    scores = []
-    for rgb in _frames(path, frames):
-        fs = detect(rgb, face_model)
-        if fs:
-            scores.append(max(float(np.dot(f["emb"], centroid)) for f in fs[:3]))
-    return round(float(np.mean(scores)), 4) if scores else None
+    return likeness_detail(path, centroid, frames, face_model)[0]
 
 
 class LikenessWorker:
@@ -286,9 +296,9 @@ class LikenessWorker:
                 path = paths.resolve_view(row.get("type", "output"), row["subfolder"], row["filename"])
                 if path is None:
                     raise FileNotFoundError(row["filename"])
-                score = likeness(path, self.centroid, face_model=self.model)
+                score, face_count = likeness_detail(path, self.centroid, face_model=self.model)
                 out = {"run_id": self.run_id, "step": row["step"], "index": row["index"], "score": score,
-                       "model": self.model, "ceiling": self.ceiling}
+                       "faces": face_count, "model": self.model, "ceiling": self.ceiling}
                 if row.get("manual"):
                     out.update(manual=True, base=bool(row.get("base")))
                 self.store.append(self.run_id, "likeness", out)

@@ -294,7 +294,7 @@ class MemorySpec:
 
 @dataclass
 class SamplePrompt:
-    """One sample: its prompt and, optionally, its own size/length/seed (else the run's)."""
+    """One sample: its prompt and, optionally, its own size/length/seed/likeness (else the run's)."""
     prompt: str
     width: int | None = None
     height: int | None = None
@@ -302,6 +302,8 @@ class SamplePrompt:
     seed: int | None = None
     # edit runs: the picture to edit (a path in the dataset folder, or under ComfyUI's input dir)
     control: str | None = None
+    # false excludes this prompt from face likeness scoring (e.g. an untriggered bleed-check prompt)
+    likeness: bool = True
 
 
 @dataclass
@@ -310,8 +312,9 @@ class SampleSpec:
     likeness: bool = setting(True, "Score each sample's face against the dataset's (with faces on for the dataset).")
     every: int = setting(0, "Sample every this many steps. 0 = off.", ge=0)
     prompts: list[str | dict] = setting(doc='The samples: each a prompt, or {"prompt", "width", "height", "frames", '
-                                            '"seed", "control"} with its own size, length, seed or (edit runs) '
-                                            "picture to edit.", factory=list)
+                                            '"seed", "control", "likeness"} with its own size, length, seed, (edit '
+                                            "runs) picture to edit, or whether it counts toward average likeness.",
+                                        factory=list)
     negative: str = setting("", "The negative prompt.")
     width: int = setting(1024, "Sample width.", ge=16)
     height: int = setting(1024, "Sample height.", ge=16)
@@ -523,9 +526,10 @@ class TrainSpec:
             if isinstance(p, dict):
                 if not isinstance(p.get("prompt"), str):
                     raise SpecError("each sample needs a prompt")
-                if set(p) - {"prompt", "width", "height", "frames", "seed", "control"}:
-                    raise SpecError(f"a sample takes prompt, width, height, frames, seed and control, not "
-                                    f"{', '.join(sorted(set(p) - {'prompt', 'width', 'height', 'frames', 'seed', 'control'}))}")
+                allowed = {"prompt", "width", "height", "frames", "seed", "control", "likeness"}
+                if set(p) - allowed:
+                    raise SpecError(f"a sample takes prompt, width, height, frames, seed, control and likeness, not "
+                                    f"{', '.join(sorted(set(p) - allowed))}")
                 for k in ("width", "height", "frames", "seed"):
                     if p.get(k) is not None and (not isinstance(p[k], int) or isinstance(p[k], bool) or p[k] < (0 if k == "seed" else 1)):
                         raise SpecError(f"sample {k} must be a positive whole number")
@@ -533,11 +537,15 @@ class TrainSpec:
                     raise SpecError("sample width/height must be multiples of 16")
                 if p.get("control") is not None and not isinstance(p["control"], str):
                     raise SpecError("a sample's control is a picture's path")
+                if p.get("likeness") is not None and not isinstance(p["likeness"], bool):
+                    raise SpecError("a sample's likeness must be true or false")
         out = self.output
         if out.keep in ("val_loss", "val_loss_new_best") and not self.validation.every:
             raise SpecError("keeping the best checkpoints by validation loss needs validation on (validation.every)")
-        if out.keep in ("likeness", "likeness_new_best") and not (sa.prompts and sa.likeness):
-            raise SpecError("keeping the best checkpoints by likeness needs sample prompts with likeness on "
+        if out.keep in ("likeness", "likeness_new_best") and not (
+            sa.prompts and sa.likeness and any(it.likeness for it in sample_prompts(sa))
+        ):
+            raise SpecError("keeping the best checkpoints by likeness needs at least one sample prompt with likeness on "
                             "(samples.prompts, samples.likeness)")
         if self.validation.dataset and self.validation.dataset == d.folder:
             raise SpecError("validation.dataset is the training dataset: pick a held-out one, or leave it empty "
@@ -972,7 +980,7 @@ def sample_prompts(s: SampleSpec) -> list[SamplePrompt]:
         d = p if isinstance(p, dict) else {"prompt": p}
         out.append(SamplePrompt(d["prompt"], d.get("width") or s.width, d.get("height") or s.height,
                                 d.get("frames") or s.frames, s.seed + i if d.get("seed") is None else d["seed"],
-                                d.get("control") or None))
+                                d.get("control") or None, True if d.get("likeness") is None else bool(d["likeness"])))
     return out
 
 

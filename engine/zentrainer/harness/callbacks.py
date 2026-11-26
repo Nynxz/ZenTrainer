@@ -161,6 +161,15 @@ class Samples(Callback):
         """Hand a landed sample to the likeness worker, started on first use."""
         if not t.spec.samples.likeness or not t.store or row.get("sweep"):  # a slider's strip: five faces
             return
+        if not row.get("manual"):
+            idx = row.get("index")
+            items = getattr(self, "items", None)
+            if items is None:
+                from ..spec import sample_prompts
+
+                items = sample_prompts(t.spec.samples)
+            if isinstance(idx, int) and 0 <= idx < len(items) and not items[idx].likeness:
+                return
         if getattr(self, "_liker", None) is None:
             from ..datasets import faces
 

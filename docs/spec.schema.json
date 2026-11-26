@@ -868,7 +868,7 @@
               }
             ]
           },
-          "description": "The samples: each a prompt, or {\"prompt\", \"width\", \"height\", \"frames\", \"seed\", \"control\"} with its own size, length, seed or (edit runs) picture to edit.",
+          "description": "The samples: each a prompt, or {\"prompt\", \"width\", \"height\", \"frames\", \"seed\", \"control\", \"likeness\"} with its own size, length, seed, (edit runs) picture to edit, or whether it counts toward average likeness.",
           "default": []
         },
         "negative": {

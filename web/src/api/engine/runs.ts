@@ -129,6 +129,8 @@ export interface LikenessRow {
   step: number
   index: number
   score: number | null
+  /** faces detected in the sample (0 = no face visible; >1 = multiple, scored closest); newer runs only */
+  faces?: number
   manual?: boolean
   base?: boolean
   /** how alike the dataset's own photos are (their median against the others): about the best a

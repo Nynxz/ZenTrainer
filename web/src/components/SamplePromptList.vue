@@ -17,13 +17,21 @@ const props = defineProps<{
   words?: string[]
   /** edit runs: the dataset's input pictures to pick from (each sample edits one) */
   controls?: { value: string; thumb: string }[]
+  /** show the per-sample likeness toggle (off when run-level likeness is disabled) */
+  likeness?: boolean
 }>()
 
 const rows = computed(() => model.value.map((p) => (typeof p === 'string' ? { prompt: p } : p)))
 // plain strings while nothing is overridden, so older specs and saved sets stay as they were
 function put(i: number, patch: Partial<SamplePrompt>) {
   const next = { ...rows.value[i]!, ...patch }
-  const bare = next.width == null && next.height == null && next.frames == null && next.seed == null && !next.control
+  const bare =
+    next.width == null &&
+    next.height == null &&
+    next.frames == null &&
+    next.seed == null &&
+    !next.control &&
+    next.likeness !== false
   const list = [...model.value]
   list[i] = bare ? next.prompt : next
   model.value = list
@@ -101,6 +109,18 @@ function setSize(i: number, v: string | number) {
           />
           <span class="muted">frames</span>
         </label>
+        <button
+          v-if="likeness !== false"
+          type="button"
+          class="like-btn"
+          :class="{ off: r.likeness === false }"
+          :aria-pressed="r.likeness !== false"
+          :title="r.likeness === false ? 'Excluded from average likeness — click to include' : 'Counted in average likeness — click to skip (e.g. for an untriggered prompt)'"
+          @click="put(i, { likeness: r.likeness === false ? undefined : false })"
+        >
+          <i :class="r.likeness === false ? 'mdi mdi-eye-off-outline' : 'mdi mdi-face-recognition'" />
+          <span>{{ r.likeness === false ? 'Skip likeness' : 'Likeness' }}</span>
+        </button>
         <div class="acts">
           <button title="Move up" :disabled="i === 0" @click="move(i, -1)"><i class="mdi mdi-chevron-up" /></button>
           <button title="Move down" :disabled="i === rows.length - 1" @click="move(i, 1)"><i class="mdi mdi-chevron-down" /></button>
@@ -183,6 +203,27 @@ function setSize(i: number, v: string | number) {
 }
 .frames :deep(.zen-number) {
   width: 110px;
+}
+.like-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--zen-border) 85%, transparent);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--zen-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.like-btn:hover {
+  border-color: var(--zen-accent);
+}
+.like-btn.off {
+  border-style: dashed;
+  color: var(--zen-muted);
 }
 .acts {
   display: flex;

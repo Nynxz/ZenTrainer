@@ -191,7 +191,11 @@ const speed = computed(() => {
       if (v != null) w.push([v, (width + 1) / 2 - Math.abs(j - mid)])
     }
     if (!w.length) return null
-    const cap = 5 * w.map(([v]) => v).sort((a, b) => a - b)[Math.floor(w.length / 2)]!
+    // Base the recompile outlier cap on p75 rather than the median: when an every-2-step
+    // auxiliary loss makes ~50% of steps >5x slower than plain steps, the 51-step median
+    // flips between fast and slow step times on every step and saws the line.
+    const sorted = w.map(([v]) => v).sort((a, b) => a - b)
+    const cap = 5 * sorted[Math.floor((sorted.length - 1) * 0.75)]!
     const kept = w.filter(([v]) => v <= cap)
     return kept.reduce((a, [, k]) => a + k, 0) / kept.reduce((a, [v, k]) => a + v * k, 0)
   })
