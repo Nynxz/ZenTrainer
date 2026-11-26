@@ -390,7 +390,6 @@ const cancel = (dl?: ModelDownload) => dl && engine.cancelDownload(dl.id)
   display: block;
   height: 100%;
   background: var(--zen-accent);
-  transition: width 0.2s ease;
 }
 .dl-x {
   border: none;
