@@ -10,7 +10,7 @@ import { useRunFormContext } from './form'
 
 const router = useRouter()
 const saveOpen = ref(false) // where you'd think of it: as you start a run
-const { spec, modelMissing, dataset, folderWords, trainsIn, pruneFolderTriggers, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
+const { spec, choices, modelMissing, dataset, folderWords, trainsIn, pruneFolderTriggers, opt, epochs, modelLabel, stage0, recipeApplied, editing, retrying, resuming, error, preserveOn } = useRunFormContext()
 // Trigger per folder on a dataset with folders: each word a folder trains (not one that's all muted)
 const perFolder = computed(() => (spec.dataset.folder_triggers ? folderWords.value.filter((f) => f.trains).map((f) => f.word) : []))
 const submitting = ref(false)
@@ -55,6 +55,14 @@ const warnings = computed(() => {
   if (opt.value?.id === 'Automagic3' && spec.optim.learning_rate < 2e-5) w.push('Automagic v3 climbs only on a steady trend, which small batches rarely give: from a low start it can stay near it the whole run. Start around 1e-4.')
   if (spec.network.lora_dtype === 'bf16' && !sr) w.push('bf16 LoRA weights lose most small steps with this optimizer: use fp32.')
   if (opt.value && !opt.value.available) w.push(`${opt.value.label} isn't installed (scripts/zt extras optimizers).`)
+  const hasLora = (name: string) => {
+    const base = name.replace(/\\/g, '/').split('/').pop() ?? name
+    return (choices.loras ?? []).some((n) => n.replace(/\\/g, '/') === name.replace(/\\/g, '/') || (n.replace(/\\/g, '/').split('/').pop() ?? n) === base)
+  }
+  if (spec.network.training_adapter && choices.loras?.length && !hasLora(spec.network.training_adapter))
+    w.push('Training adapter isn’t downloaded yet — download it in Dependencies below before starting.')
+  if (spec.network.base_lora && choices.loras?.length && !hasLora(spec.network.base_lora))
+    w.push('Base LoRA isn’t downloaded yet — download it in Dependencies below before starting.')
   if (epochs.value != null && epochs.value < 3) w.push(`Only ${epochs.value.toFixed(1)} epochs: probably too few steps.`)
   return w
 })
@@ -173,8 +181,6 @@ async function start(position: 'next' | 'end' = 'next') {
   color: var(--zen-accent);
 }
 .summary {
-  position: sticky;
-  top: 8px;
   display: flex;
   flex-direction: column;
   gap: 12px;

@@ -13,6 +13,7 @@ import { RUN_FORM, useRunForm } from '@/components/newrun/form'
 import MemorySection from '@/components/newrun/MemorySection.vue'
 import ModelSection from '@/components/newrun/ModelSection.vue'
 import SaveRecipe from '@/components/SaveRecipe.vue'
+import RunDependencies from '@/components/newrun/RunDependencies.vue'
 import RunSummary from '@/components/newrun/RunSummary.vue'
 import SamplesSection from '@/components/newrun/SamplesSection.vue'
 import SliderSection from '@/components/newrun/SliderSection.vue'
@@ -150,7 +151,10 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
         <MemorySection />
       </div>
 
-      <RunSummary />
+      <div class="rail">
+        <RunSummary />
+        <RunDependencies />
+      </div>
     </div>
     <SaveRecipe v-model:open="saveOpen" :spec="spec" />
   </div>
@@ -289,6 +293,13 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
   flex-direction: column;
   gap: 14px;
 }
+.rail {
+  position: sticky;
+  top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .locked-note {
   display: flex;
   gap: 8px;
@@ -299,6 +310,9 @@ const missing = () => imported.value?.files.filter((f) => f.installed === false)
 @media (max-width: 1000px) {
   .layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .rail {
+    position: static;
   }
 }
 </style>

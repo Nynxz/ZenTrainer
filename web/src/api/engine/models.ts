@@ -169,10 +169,20 @@ export interface ModelProfile {
   notes: string[]
 }
 
+export interface ExtraModel {
+  id: string
+  label: string
+  folder: 'detection'
+  name: string
+  size: number | null
+  installed: boolean
+  files: string[]
+}
+
 export interface ModelDownload {
   id: string
   family: string
-  folder: ModelFolder | 'loras'
+  folder: ModelFolder | 'loras' | 'detection'
   name: string
   target: string
   total: number | null
@@ -225,6 +235,8 @@ export const modelsApi = {
     }),
   downloadAdapter: (id: string) => call<ModelDownload>('/adapters/download', { method: 'POST', body: JSON.stringify({ id }) }),
   removeAdapter: (id: string) => call<{ removed: boolean }>(`/adapters?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  extraModels: () => call<{ models: ExtraModel[] }>('/extras/models').then((r) => r.models),
+  downloadExtraModel: (id: string) => call<ModelDownload | { already_installed: true }>('/extras/models/download', { method: 'POST', body: JSON.stringify({ id }) }),
   loraPlaces: () =>
     call<{ loras: { path: string; free: number; total: number; default: boolean; inside_install: boolean }[] }>('/storage/places').then((r) => r.loras),
 }
