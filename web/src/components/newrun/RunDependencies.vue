@@ -13,18 +13,24 @@ const { spec, choices, dataset, familyId, opt, sampleSuggestion } = useRunFormCo
 const trainAdapters = ref<TrainingAdapter[]>([])
 const baseAdapters = ref<TrainingAdapter[]>([])
 const extras = ref<ExtraModel[]>([])
+const extrasError = ref<string | null>(null)
 const dlErrors = reactive<Record<string, string>>({})
 const starting = reactive<Record<string, boolean>>({})
 
 async function loadAll() {
-  const [tr, ba, ex] = await Promise.all([
+  const [tr, ba] = await Promise.all([
     engine.adapters(familyId.value, 'training').catch(() => []),
     engine.adapters(familyId.value, 'base').catch(() => []),
-    engine.extraModels().catch(() => []),
   ])
   trainAdapters.value = tr
   baseAdapters.value = ba
-  extras.value = ex
+  try {
+    extras.value = await engine.extraModels()
+    extrasError.value = null
+  } catch (e) {
+    extras.value = []
+    extrasError.value = e instanceof EngineError ? e.message : String(e)
+  }
 }
 
 onMounted(() => {
@@ -44,15 +50,12 @@ watch(finished, async () => {
   if (ckpts) choices.ckpt = ckpts
 })
 
-const basename = (p: string) => p.replace(/\\/g, '/').split('/').pop() ?? p
+const normPath = (p: string) => p.replace(/\\/g, '/')
+const basename = (p: string) => normPath(p).split('/').pop() ?? p
 const hasLocal = (list: string[] | undefined, value: string) => {
   if (!list?.length) return false
-  const norm = value.replace(/\\/g, '/')
-  const base = basename(norm)
-  return list.some((n) => {
-    const x = n.replace(/\\/g, '/')
-    return x === norm || basename(x) === base
-  })
+  const norm = normPath(value)
+  return list.some((n) => normPath(n) === norm)
 }
 
 interface DepRow {
@@ -64,8 +67,11 @@ interface DepRow {
   size?: number | null
   dl?: ModelDownload
   canDownload: boolean
+  actionLabel?: string
+  actionIcon?: string
   onDownload?: () => Promise<void>
   hint?: string
+  error?: string
 }
 
 const deps = computed<DepRow[]>(() => {
@@ -73,9 +79,10 @@ const deps = computed<DepRow[]>(() => {
 
   if (spec.network.training_adapter) {
     const want = spec.network.training_adapter
+    const norm = normPath(want)
     const base = basename(want)
-    const match = trainAdapters.value.find((a) => a.installed === want || a.name === base)
-    const installed = Boolean(match?.installed || hasLocal(choices.loras, want))
+    const match = trainAdapters.value.find((a) => (a.installed && normPath(a.installed) === norm) || a.name === base)
+    const installed = Boolean((match?.installed && normPath(match.installed) === norm) || hasLocal(choices.loras, want))
     const dl = downloadFor('loras', match?.name ?? base)
     rows.push({
       key: `ta:${want}`,
@@ -97,9 +104,10 @@ const deps = computed<DepRow[]>(() => {
 
   if (spec.network.base_lora) {
     const want = spec.network.base_lora
+    const norm = normPath(want)
     const base = basename(want)
-    const match = baseAdapters.value.find((a) => a.installed === want || a.name === base)
-    const installed = Boolean(match?.installed || hasLocal(choices.loras, want))
+    const match = baseAdapters.value.find((a) => (a.installed && normPath(a.installed) === norm) || a.name === base)
+    const installed = Boolean((match?.installed && normPath(match.installed) === norm) || hasLocal(choices.loras, want))
     const dl = downloadFor('loras', match?.name ?? base)
     rows.push({
       key: `ba:${want}`,
@@ -167,8 +175,10 @@ const deps = computed<DepRow[]>(() => {
   if (needsFace) {
     const fm = extras.value.find((e) => e.id === 'faces')
     if (fm) {
-      const dl = fm.files.map((f) => downloadFor(fm.folder, f)).find((j) => j && ['queued', 'downloading', 'error'].includes(j.status))
-        ?? downloadFor(fm.folder, fm.name)
+      const jobs = fm.files.map((f) => downloadFor(fm.folder, f)).filter((j): j is ModelDownload => Boolean(j))
+      const active = jobs.find((j) => isActive(j))
+      const failed = jobs.find((j) => j.status === 'error')
+      const dl = active ?? failed ?? downloadFor(fm.folder, fm.name)
       rows.push({
         key: 'extra:faces',
         role: 'Face likeness',
@@ -181,6 +191,20 @@ const deps = computed<DepRow[]>(() => {
         onDownload: async () => {
           await engine.downloadExtraModel('faces')
         },
+        error: failed ? failed.error || `Failed to download ${failed.name}` : undefined,
+      })
+    } else if (extrasError.value) {
+      rows.push({
+        key: 'extra:faces',
+        role: 'Face likeness',
+        label: 'Face model status unavailable',
+        detail: extrasError.value,
+        installed: false,
+        canDownload: true,
+        actionLabel: 'Retry',
+        actionIcon: 'mdi-refresh',
+        onDownload: loadAll,
+        error: `Couldn’t check face model status: ${extrasError.value}`,
       })
     }
   }
@@ -244,7 +268,7 @@ const cancel = (dl?: ModelDownload) => dl && engine.cancelDownload(dl.id)
             :disabled="starting[d.key]"
             @click="triggerDownload(d)"
           >
-            <i class="mdi mdi-download" /> Download
+            <i class="mdi" :class="d.actionIcon || 'mdi-download'" /> {{ d.actionLabel || 'Download' }}
           </button>
           <span v-else-if="d.installed" class="dep-tag ok">Installed</span>
         </div>
@@ -255,8 +279,8 @@ const cancel = (dl?: ModelDownload) => dl && engine.cancelDownload(dl.id)
           <button type="button" class="dl-x" title="Cancel download" @click="cancel(d.dl)"><i class="mdi mdi-close" /></button>
         </div>
         <div v-if="d.hint && !d.installed" class="dep-hint warn">{{ d.hint }}</div>
-        <div v-if="dlErrors[d.key] || d.dl?.status === 'error'" class="dep-err">
-          {{ dlErrors[d.key] || d.dl?.error || 'Download failed' }}
+        <div v-if="dlErrors[d.key] || d.error || d.dl?.status === 'error'" class="dep-err">
+          {{ dlErrors[d.key] || d.error || d.dl?.error || 'Download failed' }}
         </div>
       </li>
     </ul>

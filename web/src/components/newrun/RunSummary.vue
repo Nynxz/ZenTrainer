@@ -56,12 +56,12 @@ const warnings = computed(() => {
   if (spec.network.lora_dtype === 'bf16' && !sr) w.push('bf16 LoRA weights lose most small steps with this optimizer: use fp32.')
   if (opt.value && !opt.value.available) w.push(`${opt.value.label} isn't installed (scripts/zt extras optimizers).`)
   const hasLora = (name: string) => {
-    const base = name.replace(/\\/g, '/').split('/').pop() ?? name
-    return (choices.loras ?? []).some((n) => n.replace(/\\/g, '/') === name.replace(/\\/g, '/') || (n.replace(/\\/g, '/').split('/').pop() ?? n) === base)
+    const norm = name.replace(/\\/g, '/')
+    return (choices.loras ?? []).some((n) => n.replace(/\\/g, '/') === norm)
   }
-  if (spec.network.training_adapter && choices.loras?.length && !hasLora(spec.network.training_adapter))
+  if (spec.network.training_adapter && choices.loras != null && !hasLora(spec.network.training_adapter))
     w.push('Training adapter isn’t downloaded yet — download it in Dependencies below before starting.')
-  if (spec.network.base_lora && choices.loras?.length && !hasLora(spec.network.base_lora))
+  if (spec.network.base_lora && choices.loras != null && !hasLora(spec.network.base_lora))
     w.push('Base LoRA isn’t downloaded yet — download it in Dependencies below before starting.')
   if (epochs.value != null && epochs.value < 3) w.push(`Only ${epochs.value.toFixed(1)} epochs: probably too few steps.`)
   return w
