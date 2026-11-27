@@ -96,7 +96,7 @@ export interface TrainSpec {
     /** LoRA+: up matrices learn this many times faster (0 = off) */
     lora_plus?: number
     ema?: number
-    /** Automagic v3's/v4's and Lotus adaptive LR's lowest LR, as a fraction of the start LR; 0 = default */
+    /** Minimum LR fraction of the start rate: applies to cosine/linear decay and Automagic v3/v4 / Lotus adaptive LR; 0 = decay to 0 (or adaptive default) */
     lr_floor?: number
     /** Lotus: group-level hypergradient adaptive LR (0.05x-20x); false = scheduled LR */
     lotus_auto_lr?: boolean

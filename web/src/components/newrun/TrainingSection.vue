@@ -301,7 +301,7 @@ const patterns = computed({
             <span v-else class="sw-state">Off</span>
           </div>
         </ZenField>
-        <ZenField v-if="spec.optim.optimizer === 'Automagic3' || spec.optim.optimizer === 'Automagic4' || (spec.optim.optimizer === 'Lotus' && spec.optim.lotus_auto_lr)" label="LR floor (%)" stack tip="Adaptive LR never drops below this share of the start LR. Automagic v3 can talk itself down to almost nothing once the trend is learned (50% kept likeness climbing on MOSS); Lotus defaults to 5%. 0 = default floor">
+        <ZenField v-if="spec.optim.optimizer === 'Automagic3' || spec.optim.optimizer === 'Automagic4' || (spec.optim.optimizer === 'Lotus' && spec.optim.lotus_auto_lr) || ((spec.optim.lr_scheduler === 'cosine' || spec.optim.lr_scheduler === 'linear') && spec.optim.optimizer !== 'AdamWScheduleFree')" label="LR floor (%)" stack tip="Minimum share of the start LR: prevents cosine/linear decay from starving late high-res stages near zero (10–20% is a good default), and floors Automagic v3/v4 / Lotus adaptive LR. 0 = decay to 0 (or adaptive default)">
           <ZenNumber :model-value="Math.round((spec.optim.lr_floor ?? 0) * 100)" :min="0" :max="100" :step="5" :precision="0" @update:model-value="spec.optim.lr_floor = $event / 100" />
         </ZenField>
         <ZenField label="Weight decay" stack><ZenNumber v-model="spec.optim.weight_decay" :min="0" :step="0.001" :precision="4" /></ZenField>

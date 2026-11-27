@@ -186,6 +186,12 @@ def _lotus(p, s):
                  **({"lr_min_mult": s.lr_floor} if s.lr_floor > 0 else {}))
 
 
+def _muon(p, s):
+    from .muon import Muon
+
+    return Muon(p, lr=s.learning_rate, weight_decay=s.weight_decay)
+
+
 def _prodigy(p, s):
     from prodigyopt import Prodigy
 
@@ -259,6 +265,12 @@ OPTIMIZERS: dict[str, OptimizerDef] = {d.id: d for d in [
                       "memory than AdamW, exact fp32 moments on tiny matrices like lokr_w1, stochastic "
                       "rounding for bf16/fp16), spike-safe RMS clipping + cautious gating, and an optional "
                       "group-level adaptive LR toggle (0.05x–20x)."),
+    OptimizerDef("Muon", "Muon (orthogonal momentum)",
+                 _muon,
+                 lr_hint="3e-4",
+                 note="5-step Newton-Schulz polar orthogonalized momentum for LoKr (Kronecker-Muon), LoRA "
+                      "and OFT (Geodesic Skew-Muon): equal spectral step speed across directions, faster "
+                      "and stronger than AdamW/Lotus on late-MLP LoKr. Pair with cosine + 10-20% LR floor."),
     OptimizerDef("Prodigy", "Prodigy (auto LR)",
                  _prodigy,
                  package="prodigyopt", pip="prodigyopt", lr_hint="1.0",
@@ -286,13 +298,14 @@ def catalog() -> list[dict]:
 def _schedule(spec: OptimSpec) -> Callable[[int], float]:
     """LR multiplier for optimizer step `i` (0-based)."""
     warm, total = spec.warmup_steps, spec.steps
+    floor = float(getattr(spec, "lr_floor", 0.0) or 0.0)
 
     def decay(i: int) -> float:
         p = min(1.0, (i - warm) / max(1, total - warm))
         if spec.lr_scheduler == "linear":
-            return 1.0 - p
+            return floor + (1.0 - floor) * (1.0 - p)
         if spec.lr_scheduler == "cosine":
-            return 0.5 * (1.0 + math.cos(math.pi * p))
+            return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * p))
         return 1.0
 
     return lambda i: (i + 1) / warm if i < warm else decay(i)
