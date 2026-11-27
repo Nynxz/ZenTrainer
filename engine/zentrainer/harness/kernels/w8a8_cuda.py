@@ -72,6 +72,9 @@ def _load(device: torch.device) -> dict | None:
 
 def _done_buf(device: torch.device, idx: int, stream_id: int, need: int) -> torch.Tensor:
     """Per-stream zero-initialized Stream-K arrival counters (reset back to 0 in-kernel by each last finisher)."""
+    if torch.cuda.is_current_stream_capturing():
+        # A captured graph records the pointer and can replay concurrently with another capture.
+        return torch.zeros(max(need, 512), device=device, dtype=torch.int32)
     key = (idx, stream_id)
     buf = _sk_done.get(key)
     if buf is None or buf.shape[0] < need:
