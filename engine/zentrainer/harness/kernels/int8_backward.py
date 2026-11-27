@@ -559,6 +559,34 @@ def opaque_packed(on: bool):
         ck.w4a8_int8_linear = _ck_w4a8_linear
 
 
+def _add_frozen_fwd(x2: torch.Tensor, h: torch.Tensor, frozen: tuple) -> torch.Tensor:
+    """Add frozen bypass LoRA terms (training adapter, base LoRA) into `h` in place/out of place."""
+    for fa, fb, fscale, foff in frozen:
+        fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
+        fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
+        fh = (x2 @ fa_t.t()) @ fb_t.t()
+        if fscale != 1.0:
+            fh = fh * fscale
+        if foff is None:
+            h = h + fh
+        else:
+            h[:, foff:foff + fh.shape[1]].add_(fh)
+    return h
+
+
+def _add_frozen_bwd(g: torch.Tensor, x2: torch.Tensor, dx: torch.Tensor, frozen: tuple) -> torch.Tensor:
+    """Add frozen bypass LoRA terms' input gradients into `dx`."""
+    for fa, fb, fscale, foff in frozen:
+        fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
+        fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
+        g_slice = g if foff is None else g[:, foff:foff + fb_t.shape[0]]
+        fgz = g_slice @ fb_t
+        if fscale != 1.0:
+            fgz = fgz * fscale
+        dx = dx + fgz @ fa_t
+    return dx
+
+
 class _LoRAInt8(torch.autograd.Function):
     """A frozen int8 layer and the LoRA beside it (bypass) as one op. Apart, the LoRA's output is
     added to the layer's in a pass of its own, scaled in another, and in the backward its input
@@ -577,17 +605,7 @@ class _LoRAInt8(torch.autograd.Function):
         b = up.detach().to(x.dtype) if scale == 1.0 else (up.detach() * scale).to(x.dtype)  # (rank, in), (out, rank)
         with torch.no_grad():
             z = x2 @ a.t()
-            h = z @ b.t()
-            for fa, fb, fscale, foff in frozen:
-                fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
-                fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
-                fh = (x2 @ fa_t.t()) @ fb_t.t()
-                if fscale != 1.0:
-                    fh = fh * fscale
-                if foff is None:
-                    h = h + fh
-                else:
-                    h[:, foff:foff + fh.shape[1]].add_(fh)
+            h = _add_frozen_fwd(x2, z @ b.t(), frozen)
             out = _int8_forward(m, x2, h)
             if out is None:  # the layer can't take the residual: as the bypass does it
                 _count("lora + int8: unfused")
@@ -607,21 +625,84 @@ class _LoRAInt8(torch.autograd.Function):
         d_down = gz.t() @ x2
         # the int8 input gradient only when something before the layer needs it
         if ctx.needs_input_grad[0]:
-            dx = gz @ a
-            for fa, fb, fscale, foff in ctx.frozen:
-                fa_t = fa.detach().to(device=x2.device, dtype=x2.dtype)
-                fb_t = fb.detach().to(device=x2.device, dtype=x2.dtype)
-                g_slice = g if foff is None else g[:, foff:foff + fb_t.shape[0]]
-                fgz = g_slice @ fb_t
-                if fscale != 1.0:
-                    fgz = fgz * fscale
-                dx = dx + fgz @ fa_t
+            dx = _add_frozen_bwd(g, x2, gz @ a, ctx.frozen)
             gi = _layer_input_grad(ctx.m, g, dx).to(grad_out.dtype).reshape(ctx.in_shape)
         else:
             gi = None
         ctx.m = None
         ctx.frozen = ()
         return gi, d_down.to(ctx.dtypes[0]), d_up.to(ctx.dtypes[1]), None, None, None, None
+
+
+class _LoKrInt8(torch.autograd.Function):
+    """A frozen int8 layer and a direct 2D LoKr beside it (bypass) as one op:
+        y = base(x) + scale * kron(w1, w2) @ x
+    where w1 is (out_l, in_m) and w2 is (out_k, in_n). ComfyUI's LokrDiff.h always applies w2 first
+    and transposes the (M, in_m, out_k) intermediate twice per pass (4x copies across fwd+bwd, and
+    up to 5.3x larger intermediate on expansion layers like MOSS's ffn_up_gate). Applying w1 via
+    batched matmul avoids all transposes/copies, picks the smaller intermediate contraction order,
+    and fuses h and dx directly into the int8 forward/backward GEMM epilogues."""
+
+    @staticmethod
+    def forward(ctx, x, w1, w2, scale, m, original, frozen=()):
+        x2 = x.detach().reshape(-1, x.shape[-1]).contiguous()
+        M = x2.shape[0]
+        out_l, in_m = w1.shape
+        out_k, in_n = w2.shape
+        w1s = w1.detach().to(x.dtype) if scale == 1.0 else (w1.detach() * scale).to(x.dtype)
+        w2_t = w2.detach().to(x.dtype)
+        w1_first = in_m * out_k > out_l * in_n  # pick the smaller intermediate (M, out_l, in_n) vs (M, in_m, out_k)
+        with torch.no_grad():
+            if w1_first:
+                t = torch.matmul(w1s, x2.reshape(M, in_m, in_n))  # (M, out_l, in_n); scale already folded in
+                h = (t.reshape(M * out_l, in_n) @ w2_t.t()).reshape(M, out_l * out_k)
+            else:
+                t = (x2.reshape(M * in_m, in_n) @ w2_t.t()).reshape(M, in_m, out_k)  # (M, in_m, out_k)
+                h = torch.matmul(w1s, t).reshape(M, out_l * out_k)
+            h = _add_frozen_fwd(x2, h, frozen)
+            out = _int8_forward(m, x2, h)
+            if out is None:
+                _count("lokr + int8: unfused")
+                out = original(x2) + h
+        ctx.save_for_backward(x, t, w1s, w2_t)
+        ctx.m, ctx.scale, ctx.w1_first = m, scale, w1_first
+        ctx.in_shape, ctx.dtypes, ctx.frozen = x.shape, (w1.dtype, w2.dtype), frozen
+        return out.reshape(*x.shape[:-1], out.shape[-1])
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_out):
+        x, t, w1s, w2_t = ctx.saved_tensors
+        x2 = x.detach().reshape(-1, x.shape[-1]).contiguous()
+        M = x2.shape[0]
+        out_l, in_m = w1s.shape
+        out_k, in_n = w2_t.shape
+        g = grad_out.reshape(-1, grad_out.shape[-1]).to(x2.dtype).contiguous()
+        acc_dtype = torch.float64 if x2.dtype == torch.float64 else torch.float32
+        if ctx.w1_first:
+            g2 = g.reshape(M * out_l, out_k)
+            d_w2 = g2.t() @ t.reshape(M * out_l, in_n)  # t already carries scale
+            u = (g2 @ w2_t).reshape(M, out_l, in_n)
+            d_w1 = torch.matmul(u, x2.reshape(M, in_m, in_n).transpose(-1, -2)).sum(0, dtype=acc_dtype)
+            if ctx.scale != 1.0:
+                d_w1 = d_w1 * ctx.scale
+            dx = torch.matmul(w1s.t().contiguous(), u).reshape(M, in_m * in_n) if ctx.needs_input_grad[0] else None
+        else:
+            g3 = g.reshape(M, out_l, out_k)
+            d_w1 = torch.matmul(g3, t.transpose(-1, -2)).sum(0, dtype=acc_dtype)
+            if ctx.scale != 1.0:
+                d_w1 = d_w1 * ctx.scale
+            v = torch.matmul(w1s.t().contiguous(), g3).reshape(M * in_m, out_k)  # carries scale
+            d_w2 = v.t() @ x2.reshape(M * in_m, in_n)
+            dx = (v @ w2_t).reshape(M, in_m * in_n) if ctx.needs_input_grad[0] else None
+        if ctx.needs_input_grad[0]:
+            dx = _add_frozen_bwd(g, x2, dx, ctx.frozen)
+            gi = _layer_input_grad(ctx.m, g, dx).to(grad_out.dtype).reshape(ctx.in_shape)
+        else:
+            gi = None
+        ctx.m = None
+        ctx.frozen = ()
+        return gi, d_w1.to(ctx.dtypes[0]), d_w2.to(ctx.dtypes[1]), None, None, None, None
 
 
 _ones_cache: dict[tuple, torch.Tensor] = {}
@@ -671,6 +752,13 @@ def _is_plain_lora(mod) -> bool:
     return (type(mod).__name__ == "LoraDiff" and getattr(mod, "lora_mid", None) is None
             and getattr(mod, "dora_scale", None) is None
             and mod.lora_down.weight.ndim == 2 and mod.lora_up.weight.ndim == 2)
+
+
+def _is_plain_lokr(mod) -> bool:
+    return (type(mod).__name__ == "LokrDiff" and not getattr(mod, "use_tucker", False)
+            and not getattr(mod, "w1_rebuild", True) and not getattr(mod, "w2_rebuild", True)
+            and getattr(mod, "lokr_w1", None) is not None and getattr(mod, "lokr_w2", None) is not None
+            and mod.lokr_w1.ndim == 2 and mod.lokr_w2.ndim == 2)
 
 
 def _frozen_lora_terms(mod, strength: float) -> list[tuple] | None:
@@ -739,19 +827,75 @@ class LoRABeside(_PassesOn, torch.nn.Module):
         return _LoRAInt8.apply(x, self.lora.lora_down.weight, self.lora.lora_up.weight, scale, m, org_forward, frozen)
 
 
+class LoKrBeside(_PassesOn, torch.nn.Module):
+    """How a direct 2D LoKr (alone, or inside _Assisted with frozen LoRA terms) attaches (bypass)
+    to a frozen int8 linear layer while training: as _LoKrInt8. Falls back to f(x) + h(x) outside
+    training, for conv layers, or whenever the fused path doesn't apply."""
+
+    def __init__(self, lokr, layer, assisted=None, frozen_terms: tuple = ()):
+        super().__init__()
+        if assisted is not None:
+            self.assisted = assisted
+            self.__dict__["lokr"] = lokr  # already registered under self.assisted.trained
+        else:
+            self.lokr = lokr
+            self.assisted = None
+        self.__dict__["layer"] = layer  # not a submodule: its weights aren't the adapter's
+        self._frozen = frozen_terms
+
+    def _inner(self) -> list:
+        return [self.assisted] if self.assisted is not None else [self.lokr]
+
+    def h(self, x, base_out):
+        return self.assisted.h(x, base_out) if self.assisted is not None else self.lokr.h(x, base_out)
+
+    def g(self, y):
+        return self.assisted.g(y) if self.assisted is not None else y
+
+    def __call__(self, w):
+        return self.assisted(w) if self.assisted is not None else self.lokr(w)
+
+    def bypass_forward(self, org_forward, x, *args, **kwargs):
+        import comfy.model_management as mm
+
+        m = self.layer
+        assisted = self.assisted
+        st = assisted.switch.strength if assisted is not None else 1.0
+        training_active = assisted is None or (assisted.switch.on and st != 0.0)
+        if (args or kwargs or getattr(self, "is_conv", False)
+                or not (mm.in_training and torch.is_grad_enabled() and training_active)
+                or not x.is_cuda or x.dtype not in (torch.bfloat16, torch.float16)
+                or getattr(m, "_full_precision_mm", False) or len(m.weight_function) or len(m.bias_function)):
+            base = org_forward(x, *args, **kwargs)
+            return base + self.h(x, base)
+        mult = getattr(self, "multiplier", 1.0)
+        scale = mult * st
+        frozen = (self._frozen if mult == 1.0 or not self._frozen
+                  else tuple((fa, fb, fs * mult, foff) for fa, fb, fs, foff in self._frozen))
+        return _LoKrInt8.apply(x, self.lokr.lokr_w1, self.lokr.lokr_w2, scale, m, org_forward, frozen)
+
+
 def lora_beside(adapter, layer):
-    """The adapter to attach to `layer` in bypass: LoRABeside for a plain LoRA on an int8 layer,
-    including one wrapped in _Assisted (turbo preview LoRA, training adapter, base LoRA, slider)."""
+    """The adapter to attach to `layer` in bypass: LoRABeside / LoKrBeside for a plain LoRA or
+    direct 2D LoKr on an int8 layer, including one wrapped in _Assisted."""
     if not (_int8_layer(layer) and _mode):
         return adapter
     if _is_plain_lora(adapter):
         return LoRABeside(adapter, layer)
-    if type(adapter).__name__ == "_Assisted" and _is_plain_lora(adapter.trained):
+    if _is_plain_lokr(adapter):
+        return LoKrBeside(adapter, layer)
+    if type(adapter).__name__ == "_Assisted":
+        if _is_plain_lora(adapter.trained):
+            cls = LoRABeside
+        elif _is_plain_lokr(adapter.trained):
+            cls = LoKrBeside
+        else:
+            return adapter
         base_terms = _frozen_lora_terms(adapter.base, adapter.base_strength)
         assist_terms = _frozen_lora_terms(adapter.assist, 1.0)
         if base_terms is None or assist_terms is None:
             return adapter
-        return LoRABeside(adapter.trained, layer, assisted=adapter, frozen_terms=tuple(base_terms + assist_terms))
+        return cls(adapter.trained, layer, assisted=adapter, frozen_terms=tuple(base_terms + assist_terms))
     return adapter
 
 

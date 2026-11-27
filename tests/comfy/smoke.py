@@ -238,8 +238,10 @@ def patch_drift(spec) -> float:
             with torch.no_grad():
                 want = t.denoiser(x0, sigma, conds, {"sample_sigmas": torch.tensor(grid)} if grid else None)
             apply(qk_rope=spec.memory.fused_qk_rope)
+            compat.in_run = True
             got = t.denoiser(x0.clone().requires_grad_(True), sigma, conds)
     finally:
+        compat.in_run = False
         compat.apply = apply
         mm.in_training = False
         t.network.eject(t.models.patcher)
