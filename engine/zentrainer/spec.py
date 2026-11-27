@@ -233,6 +233,34 @@ class ObjectiveSpec:
                                          'of a woman") at heavy noise instead of the step\'s own caption: holds the '
                                          "prompts people write, where generating from noise takes on the trained "
                                          "subject. 0 = the captions only.", ge=0, le=1)
+    preserve_prior: int = setting(0, "objective.preserve: generate this many generic class latents per class word "
+                                     "from the frozen base model once before training (cached in RAM/disk, ~0.3 MB "
+                                     "each) and run DOP on those independent latents across the full noise schedule "
+                                     "instead of the subject's noisy x_t (which leaks the subject's face at mid/low "
+                                     "noise, especially alongside face_id). 0 = off; 8 is a good default with SparseID.",
+                                  ge=0, le=64)
+    face_id: float = setting(0.0, "SparseID (face identity loss) weight beside the training loss: decodes only the "
+                                  "face crop of the denoised prediction (on CPU by default, or CUDA with "
+                                  "face_id_device=\"gpu\") and matches its ArcFace embedding to the dataset's "
+                                  "identity (using Settings -> face_model: buffalo_l, antelopev2 or auraface). 0 = "
+                                  "off; 0.02 is a good default (above ~0.05 can over-bake or leak into generic "
+                                  "prompts; raise face_id_every to 4-8 to keep untriggered people clean).",
+                             ge=0, le=1)
+    face_id_every: int = setting(2, "SparseID (objective.face_id): run at most once every Nth step on a mid/low-noise "
+                                    "picture (0.10 <= noise <= 0.65). 2 keeps CPU overhead small with zero extra VRAM.",
+                                 ge=1)
+    face_id_start: float = setting(0.25, "SparseID (objective.face_id): share of the run to wait before turning face "
+                                         "identity on (0.25 = after the first quarter, once coarse layout settles). "
+                                         "0 = from step 1.", ge=0, lt=1)
+    face_id_device: str = setting("cpu", 'SparseID (objective.face_id): where to decode the cropped face patch and run '
+                                         'ArcFace. "cpu" (default) adds zero GPU VRAM; "gpu" runs ~6-12x faster '
+                                         '(big speedup on 16x/32-channel VAEs) using ~1-1.5 GB transient VRAM and '
+                                         'falls back to CPU if VRAM is tight.', choices=("cpu", "gpu"))
+    face_id_margin: float = setting(0.0, "SparseID (objective.face_id): stop pushing once a face crop's ArcFace "
+                                         "cosine reaches this target (hinge loss relu(margin - cos)), preventing "
+                                         "late-stage over-baking and class bleed on easy shots while keeping full "
+                                         "gradient on hard angles. 0 = off (standard 1 - cos); 0.82 is a good start.",
+                                    ge=0, le=1)
 
 
 @dataclass
@@ -503,6 +531,10 @@ class TrainSpec:
                 raise SpecError("objective.preserve can't swap the caption of a grounded edit (its encoding includes the inputs)")
             if self.dataset.video_keyframes:
                 raise SpecError("objective.preserve can't swap the caption of a keyframe clip (its encoding includes the keyframes)")
+            if self.objective.preserve_prior > 0 and d.edit:
+                raise SpecError("objective.preserve_prior is for non-edit runs")
+        if self.objective.face_id > 0 and self.slider.kind:
+            raise SpecError("objective.face_id is for subject adapters, not sliders")
         if self.network.blocks and not re.fullmatch(r"\s*\d*\s*-?\s*\d*\s*", self.network.blocks):
             raise SpecError("network.blocks is a range like 20-49, 20- or 10")
         if self.network.skip_blocks and not re.fullmatch(r"\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*", self.network.skip_blocks):

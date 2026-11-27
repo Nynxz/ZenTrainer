@@ -5,14 +5,21 @@ import { ZenTip } from '@nynxz/zenkit-ui'
 import { computed } from 'vue'
 import { gb } from '@/stores/system'
 import { SHARE_TIP, likeShare } from '@/lib/likeness'
+import { resumed } from '@/lib/resumed'
 import { isCollapsed, toggleCollapsed } from './collapse'
 import { dur, fmtLr, useRunContext } from './context'
 
 const { detail, last, vramPeak, wall, likeLast, likeFirst, likeCeil } = useRunContext()
 // objective.preserve's last loss (steps between preserve_every's have none)
 const presLast = computed(() => {
-  const rows = detail.value?.metrics ?? []
+  const rows = resumed(detail.value?.metrics ?? [])
   for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.preserve_loss != null) return rows[i]!.preserve_loss!
+  return null
+})
+// objective.face_id's last loss (1 - cosine on the denoised face crop)
+const faceIdLast = computed(() => {
+  const rows = resumed(detail.value?.metrics ?? [])
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.face_id_loss != null) return rows[i]!.face_id_loss!
   return null
 })
 
@@ -79,6 +86,9 @@ const statGroups = computed((): { title: string; items: Stat[] }[] => {
         { k: 'Grad norm', v: fmtBig(l?.grad_norm), full: l?.grad_norm != null ? String(l.grad_norm) : undefined, tip: 'How strongly this step pulled on the LoRA (before clipping). Spikes are hard pictures; a steady climb can mean it’s going unstable' },
         ...(presLast.value != null
           ? [{ k: 'Preservation', v: fmtBig(presLast.value, 4), full: String(presLast.value), tip: 'Class preservation: how far the LoRA moved the class words’ prediction (“woman”, “man”…, no trigger) from the base model’s, on the last step that ran it. It should stay low and flat while the training loss falls; climbing means the LoRA is leaking into the class' }]
+          : []),
+        ...(faceIdLast.value != null
+          ? [{ k: 'SparseID loss', v: fmtBig(faceIdLast.value, 4), full: String(faceIdLast.value), tip: 'SparseID: 1 − cosine similarity between the denoised face crop and the dataset’s identity on the last step that ran it (0 = exact match)' }]
           : []),
         {
           k: 'Validation',

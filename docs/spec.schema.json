@@ -686,6 +686,49 @@
           "default": 0.0,
           "minimum": 0,
           "maximum": 1
+        },
+        "preserve_prior": {
+          "type": "integer",
+          "description": "objective.preserve: generate this many generic class latents per class word from the frozen base model once before training (cached in RAM/disk, ~0.3 MB each) and run DOP on those independent latents across the full noise schedule instead of the subject's noisy x_t (which leaks the subject's face at mid/low noise, especially alongside face_id). 0 = off; 8 is a good default with SparseID.",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 64
+        },
+        "face_id": {
+          "type": "number",
+          "description": "SparseID (face identity loss) weight beside the training loss: decodes only the face crop of the denoised prediction (on CPU by default, or CUDA with face_id_device=\"gpu\") and matches its ArcFace embedding to the dataset's identity (using Settings -> face_model: buffalo_l, antelopev2 or auraface). 0 = off; 0.02 is a good default (above ~0.05 can over-bake or leak into generic prompts; raise face_id_every to 4-8 to keep untriggered people clean).",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "face_id_every": {
+          "type": "integer",
+          "description": "SparseID (objective.face_id): run at most once every Nth step on a mid/low-noise picture (0.10 <= noise <= 0.65). 2 keeps CPU overhead small with zero extra VRAM.",
+          "default": 2,
+          "minimum": 1
+        },
+        "face_id_start": {
+          "type": "number",
+          "description": "SparseID (objective.face_id): share of the run to wait before turning face identity on (0.25 = after the first quarter, once coarse layout settles). 0 = from step 1.",
+          "default": 0.25,
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "face_id_device": {
+          "type": "string",
+          "description": "SparseID (objective.face_id): where to decode the cropped face patch and run ArcFace. \"cpu\" (default) adds zero GPU VRAM; \"gpu\" runs ~6-12x faster (big speedup on 16x/32-channel VAEs) using ~1-1.5 GB transient VRAM and falls back to CPU if VRAM is tight.",
+          "default": "cpu",
+          "enum": [
+            "cpu",
+            "gpu"
+          ]
+        },
+        "face_id_margin": {
+          "type": "number",
+          "description": "SparseID (objective.face_id): stop pushing once a face crop's ArcFace cosine reaches this target (hinge loss relu(margin - cos)), preventing late-stage over-baking and class bleed on easy shots while keeping full gradient on hard angles. 0 = off (standard 1 - cos); 0.82 is a good start.",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 1
         }
       },
       "additionalProperties": false

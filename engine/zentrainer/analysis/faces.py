@@ -84,9 +84,12 @@ def _net(file: str, kind: str):
     with _lock:
         if file not in _nets:
             path = fetch("detection", file, REPO, REVISIONS.get(file, REVISION), f"analysis/faces/{file}", SIZES[file], "faces")
-            net = {"scrfd": SCRFD, "yunet": YuNet}[kind]() if kind in ("scrfd", "yunet") else IResNet(kind)
-            net.load_state_dict({k: v.float() for k, v in load_file(str(path)).items()})
-            _nets[file] = net.eval().to(memory_format=torch.channels_last)
+            # Build outside torch.inference_mode() so cached recognizers can also backprop in SparseID
+            # even if their first load happened during ComfyUI inference-mode likeness scoring.
+            with torch.inference_mode(False), torch.no_grad():
+                net = {"scrfd": SCRFD, "yunet": YuNet}[kind]() if kind in ("scrfd", "yunet") else IResNet(kind)
+                net.load_state_dict({k: v.float() for k, v in load_file(str(path)).items()})
+                _nets[file] = net.eval().to(memory_format=torch.channels_last)
         return _nets[file]
 
 

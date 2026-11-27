@@ -101,6 +101,7 @@ export function useRunForm() {
     const now = chosenInputs.value
     spec.dataset.control_sets = now.includes(set) ? now.filter((c) => c !== set) : [...now, set]
     spec.dataset.edit = spec.dataset.control_sets.length > 0
+    if (spec.dataset.edit && (spec.objective.preserve_prior ?? 0) > 0) spec.objective.preserve_prior = 0
   }
   const pairItems = ref<DatasetItem[]>([])
   watch(
