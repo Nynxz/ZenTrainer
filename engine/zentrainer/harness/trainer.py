@@ -342,8 +342,19 @@ class Trainer:
                 # compiled first, so checkpointing wraps the compiled forward
                 m = self.spec.memory
                 skip = m.grad_checkpoint_skip
+                first_trainable = None
+                if compile_on:
+                    from .kernels.compile import main_blocks
+
+                    mod_names = {id(sub): f"diffusion_model.{n}." for n, sub in dm.named_modules()}
+                    param_keys = tuple(self.network.params)
+                    first_trainable = next(
+                        (b for b in main_blocks(dm)
+                         if (pfx := mod_names.get(id(b))) and any(k.startswith(pfx) for k in param_keys)),
+                        None,
+                    )
                 with int8_backward.opaque_packed(compile_on and packed), \
-                        compiled_blocks(dm, compile_on) as self._compiled, \
+                        compiled_blocks(dm, compile_on, first_trainable=first_trainable) as self._compiled, \
                         gradient_checkpointing(dm, m.gradient_checkpointing, m.grad_checkpoint_depth, m.offloading,
                                                0 if skip == "auto" else skip, m.checkpoint_save) as ckpt:
                     self._input_grad = ckpt.input_grad

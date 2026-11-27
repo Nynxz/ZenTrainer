@@ -31,18 +31,21 @@ def _moss(x, w, f):
     return (f[..., 0] * p[..., 0] + f[..., 1] * p[..., 1]).movedim(-1, -2).flatten(-2)
 
 
-@pytest.mark.parametrize("model", ["krea2", "moss"])
+@pytest.mark.parametrize("model", ["krea2", "krea2_seq_first", "moss"])
 def test_the_fused_op_trains_like_the_separate_ones(model):
+    from zentrainer.harness.compat.krea2 import _apply_rope_blhd
+
     torch.manual_seed(0)
     moss = model == "moss"
-    f = _freqs().transpose(1, 2) if moss else _freqs()  # MOSS: (1, L, 1, D/2, 2, 2)
+    seq_first = model in ("moss", "krea2_seq_first")
+    f = _freqs().transpose(1, 2) if seq_first else _freqs()  # seq_first: (1, L, 1, D/2, 2, 2)
     separate = _moss if moss else _krea2
     wq, wk = 1 + torch.randn(D, dtype=torch.float64) * 0.3, 1 + torch.randn(D, dtype=torch.float64) * 0.3
     q0 = torch.randn(B, L, H * D, dtype=torch.float64).view(B, L, H, D)
     k0 = torch.randn(B, L, KV * D, dtype=torch.float64).view(B, L, KV, D)
-    if not moss:  # as Krea 2's rearrange leaves them: (B, H, L, D), not contiguous
+    if not seq_first:  # as Krea 2's rearrange leaves them: (B, H, L, D), not contiguous
         q0, k0 = q0.transpose(1, 2), k0.transpose(1, 2)
-    op = lambda q, k: qk_norm_rope(q, k, wq, wk, f, 1e-5, split_half=moss, seq_first=moss)  # noqa: E731
+    op = lambda q, k: qk_norm_rope(q, k, wq, wk, f, 1e-5, split_half=moss, seq_first=seq_first)  # noqa: E731
     assert torch.autograd.gradcheck(op, (q0.clone().requires_grad_(), k0.clone().requires_grad_()), eps=1e-6, atol=1e-7)
     q, k = q0.clone().requires_grad_(), k0.clone().requires_grad_()
     qs, ks = q0.clone().requires_grad_(), k0.clone().requires_grad_()
@@ -52,6 +55,43 @@ def test_the_fused_op_trains_like_the_separate_ones(model):
     torch.autograd.backward((separate(qs, wq, f), separate(ks, wk, f)), (gq, gk))
     assert torch.allclose(a, separate(q0, wq, f)) and torch.allclose(b, separate(k0, wk, f))
     assert torch.allclose(q.grad, qs.grad, atol=1e-12) and torch.allclose(k.grad, ks.grad, atol=1e-12)
+    if model == "krea2_seq_first":
+        # Verify _apply_rope_blhd forward and backward (gradcheck) match Krea 2's rope
+        nq = F.rms_norm(q0, (D,), weight=wq, eps=1e-5)
+        assert torch.allclose(_apply_rope_blhd(nq, _freqs()), a)
+        assert torch.autograd.gradcheck(lambda t: _apply_rope_blhd(t, _freqs()),
+                                        (nq.detach().clone().requires_grad_(),), eps=1e-6, atol=1e-7)
+
+
+def test_krea2_patch_delegates_outside_zentrainer_run(monkeypatch):
+    """Outside compat.in_run (e.g. a later native ComfyUI training job), Krea 2's patch delegates untouched."""
+    import sys
+    import types
+
+    from zentrainer.harness import compat
+    from zentrainer.harness.compat import krea2 as krea2_patch
+
+    calls = []
+
+    class FakeAttention:
+        def forward(self, x, freqs=None, mask=None, transformer_options={}):
+            calls.append(x)
+            return "comfy"
+
+    k2 = types.ModuleType("comfy.ldm.krea2.model")
+    k2.Attention = FakeAttention
+    mm = types.ModuleType("comfy.model_management")
+    mm.in_training = True
+    for name, mod in (("comfy", types.ModuleType("comfy")), ("comfy.ldm", types.ModuleType("comfy.ldm")),
+                      ("comfy.ldm.krea2", types.ModuleType("comfy.ldm.krea2")),
+                      ("comfy.ldm.krea2.model", k2), ("comfy.model_management", mm)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    sys.modules["comfy"].model_management = mm
+    monkeypatch.setattr(compat, "_applied", set())
+    monkeypatch.setattr(compat, "in_run", False)
+    krea2_patch.apply()
+
+    assert FakeAttention().forward("x") == "comfy" and calls == ["x"]
 
 
 @pytest.mark.parametrize("rot", [8, 12])  # H3 turns only the first rot dims; 12: pairs not a power of 2
