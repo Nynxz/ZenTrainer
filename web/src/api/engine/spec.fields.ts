@@ -96,6 +96,12 @@ export interface SpecFields {
     preserve_weight: number
     preserve_every: number
     preserve_plain: number
+    preserve_prior: number
+    face_id: number
+    face_id_every: number
+    face_id_start: number
+    face_id_device: string
+    face_id_margin: number
     residual_focus: number
   }
   memory: {

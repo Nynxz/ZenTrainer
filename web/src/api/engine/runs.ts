@@ -64,6 +64,8 @@ export interface MetricRow {
   grad_norm?: number | null
   /** objective.preserve: the class-word pass's loss (the adapter's prediction against the base model's) */
   preserve_loss?: number | null
+  /** objective.face_id: 1 - cosine to the dataset's identity on the denoised face crop */
+  face_id_loss?: number | null
   epoch?: number
   elapsed: number
   train_time?: number

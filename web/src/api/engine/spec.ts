@@ -127,6 +127,12 @@ export interface TrainSpec {
     preserve_weight?: number
     preserve_every?: number
     preserve_plain?: number
+    preserve_prior?: number
+    face_id?: number
+    face_id_every?: number
+    face_id_start?: number
+    face_id_device?: 'cpu' | 'gpu'
+    face_id_margin?: number
     /** detector-free spatial self-focusing from frozen base disagreement (0 = off; 1.5 is a good start) */
     residual_focus?: number
   }

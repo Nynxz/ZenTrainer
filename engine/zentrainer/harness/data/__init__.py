@@ -83,6 +83,7 @@ class Dataset:
     buckets: dict[tuple, list[int]] = field(default_factory=dict)  # latent shape -> sample idx
     owners: list[int] = field(default_factory=list)  # sample -> the scanned item it came from (a video gives several)
     triggers: list[str] = field(default_factory=list)  # sample -> its item's trigger (objective.preserve); not cached
+    items: list[Item] = field(default_factory=list)  # active items `owners` indexes into (muted out); not cached
 
 
 DISK_FIELDS = ("latent", "mask", "refs", "cond", "cond_empty")
@@ -1024,6 +1025,7 @@ def _expand_repeats(ds: Dataset, items: list[Item]) -> Dataset:
     for i, owner in enumerate(owners):
         order += [i] * items[owner].repeats
     ds.triggers = [items[owner].trigger for owner in owners]
+    ds.items = items
     buckets: dict[tuple, list[int]] = {}
     for i in order:
         buckets.setdefault(sample_shape(ds.samples[i]), []).append(i)
