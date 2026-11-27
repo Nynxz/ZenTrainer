@@ -34,8 +34,8 @@ def _quantized(g, s, seed):
 # rows: one, under and over a tile (128), odd; the layer shapes of Krea 2 and MOSS (out, in)
 @cuda
 @pytest.mark.parametrize("m,n,k", [(1, 64, 256), (17, 128, 256), (127, 128, 512), (129, 192, 256), (300, 128, 256),
-                                   (1000, 1536, 768), (4097, 1536, 6144), (512, 6144, 1536), (512, 16384, 6144),
-                                   (512, 6144, 16384), (512, 9216, 3072), (512, 3072, 8192)])
+                                   (2560, 64, 256), (1000, 1536, 768), (4097, 1536, 6144), (512, 6144, 1536),
+                                   (512, 16384, 6144), (512, 6144, 16384), (512, 9216, 3072), (512, 3072, 8192)])
 def test_quantized_product_matches_the_exact_one_rotated(m, n, k):
     from zentrainer.harness.kernels import w8a8_cuda
 
@@ -193,9 +193,9 @@ def test_the_fused_lora_skips_the_input_gradient_nothing_needs(monkeypatch):
 
 
 @cuda
-@pytest.mark.parametrize("n", [256, 4096, 6144, 16384])
+@pytest.mark.parametrize("n", [256, 1536, 2048, 4096, 6144, 16384])
 def test_1pass_quantizers_match_2pass_bit_exact(n):
-    """Single-pass register-cached quantizers (4k, 8k, 16k) must match zt_quantize_rows bit-for-bit."""
+    """Single-pass register-cached quantizers (2k, 4k, 8k, 16k) must match zt_quantize_rows bit-for-bit."""
     from zentrainer.harness.kernels import w8a8_cuda
 
     torch.manual_seed(7)
@@ -207,10 +207,97 @@ def test_1pass_quantizers_match_2pass_bit_exact(n):
     gq0, st0 = torch.empty((m, n), device="cuda", dtype=torch.int8), torch.empty(m, device="cuda")
     gq1, st1 = torch.empty_like(gq0), torch.empty_like(st0)
     ks["zt_quantize_rows"](grid=(m, 1, 1), block=(256, 1, 1), args=[g, s, gq0, st0, seed, n, g.stride(0)])
-    qname, qblk = (("zt_quantize_rows_4k", 256) if n <= 4096 else
+    qname, qblk = (("zt_quantize_rows_2k", 128) if n <= 2048 else
+                   ("zt_quantize_rows_4k", 256) if n <= 4096 else
                    ("zt_quantize_rows_8k", 256) if n <= 8192 else ("zt_quantize_rows_16k", 512))
     ks[qname](grid=(m, 1, 1), block=(qblk, 1, 1), args=[g, s, gq1, st1, seed, n, g.stride(0)])
     assert torch.equal(gq0, gq1) and torch.equal(st0, st1)
+
+
+def _stream_k_shape(device: torch.device) -> tuple[int, int, int]:
+    """Pick a (m, n, k) shape guaranteed to trigger the Stream-K branch on this device's SM count."""
+    sms = torch.cuda.get_device_properties(device).multi_processor_count
+    n, k = 3072, 3072  # kt = 48, n_k = 12
+    for n_m in range(4, sms + 8):
+        ctas = n_m * (k // 256)
+        waves = (ctas + sms - 1) // sms
+        sk_tiles = ctas - max(0, (ctas // sms) - 1) * sms
+        if ctas / (waves * sms) < 0.88 and sk_tiles * (n // 64) >= sms:
+            return n_m * 128, n, k
+    pytest.skip(f"no Stream-K shape found for {sms} SMs")
+
+
+@cuda
+@pytest.mark.parametrize("m,n,k", [(2432, 3072, 3072), (1152, 9216, 3072), (2432, 16384, 3072)])
+def test_stream_k_and_residual_match_exact_product(m, n, k):
+    """Stream-K matches exact rotated/unrotated products and resets done[] in-kernel."""
+    from zentrainer.harness.kernels import w8a8_cuda
+
+    torch.manual_seed(13)
+    g = torch.randn(m, n, device="cuda", dtype=torch.bfloat16)
+    s = torch.rand(n, device="cuda") * 0.01 + 0.001
+    q = torch.randint(-127, 128, (n, k), device="cuda", dtype=torch.int8)
+    seed = torch.tensor([19], device="cuda", dtype=torch.int32)
+    gq, steps = _quantized(g, s, seed)
+    exact = (gq.double() @ q.double()) * steps.double()[:, None]
+    rotated = (exact.view(m, k // 256, 256) @ _regular_hadamard(256).cuda().T).view(m, k)
+    for rotate, want in ((True, rotated), (False, exact)):
+        out = w8a8_cuda.input_grad(g, q, s, seed, rotate).double()
+        assert ((out - want).norm() / want.norm()).item() < 3e-3
+    # Repeated calls with residual verify in-kernel done[] reset
+    r = torch.randn(m, k, device="cuda", dtype=torch.bfloat16) * rotated.std().item()
+    want_r = rotated + r.double()
+    for _ in range(2):
+        out_r = w8a8_cuda.input_grad(g, q, s, seed, True, r).double()
+        assert ((out_r - want_r).norm() / want_r.norm()).item() < 3e-3
+
+
+@cuda
+def test_stream_k_oom_fallback_stream_isolation_and_rng_replay(monkeypatch):
+    """Stream-K workspace OOM falls back to ordinary GEMM; separate streams get isolated done
+    counters; CUDA RNG state save/restore replays w8a8_input_grad identically."""
+    from zentrainer.harness.kernels import int8_backward, w8a8_cuda
+
+    dev = torch.device("cuda")
+    m, n, k = _stream_k_shape(dev)
+    torch.manual_seed(21)
+    g = torch.randn(m, n, device=dev, dtype=torch.bfloat16)
+    s = torch.rand(n, device=dev) * 0.01 + 0.001
+    q = torch.randint(-127, 128, (n, k), device=dev, dtype=torch.int8)
+
+    # 1. Saving and restoring CUDA RNG state mid-stream replays w8a8_input_grad bit-for-bit
+    _ = int8_backward.w8a8_input_grad(g, q, s, 256)
+    rng_state = torch.cuda.get_rng_state(dev)
+    a1 = int8_backward.w8a8_input_grad(g, q, s, 256)
+    torch.cuda.set_rng_state(rng_state, dev)
+    a2 = int8_backward.w8a8_input_grad(g, q, s, 256)
+    assert torch.equal(a1, a2)
+
+    # 2. Separate streams isolate _sk_done on a shape guaranteed to hit Stream-K for this GPU's SMs
+    seed = torch.tensor([5], device=dev, dtype=torch.int32)
+    s1, s2 = torch.cuda.Stream(), torch.cuda.Stream()
+    with torch.cuda.stream(s1):
+        b1 = w8a8_cuda.input_grad(g, q, s, seed, True)
+    with torch.cuda.stream(s2):
+        b2 = w8a8_cuda.input_grad(g, q, s, seed, True)
+    torch.cuda.synchronize()
+    assert torch.equal(b1, b2) and torch.isfinite(b1).all()
+    idx = g.device.index
+    assert (idx, s1.cuda_stream) in w8a8_cuda._sk_done and (idx, s2.cuda_stream) in w8a8_cuda._sk_done
+    assert w8a8_cuda._sk_done[(idx, s1.cuda_stream)] is not w8a8_cuda._sk_done[(idx, s2.cuda_stream)]
+
+    # 3. OOM on Stream-K partials workspace falls back cleanly to ordinary GEMM with matching output
+    real_empty = torch.empty
+
+    def fail_partials(shape, *args, **kwargs):
+        if kwargs.get("dtype") == torch.int32 and isinstance(shape, tuple) and len(shape) == 1 and shape[0] >= 32768:
+            raise torch.OutOfMemoryError("simulated Stream-K workspace OOM")
+        return real_empty(shape, *args, **kwargs)
+
+    ref = w8a8_cuda.input_grad(g, q, s, seed, True)
+    monkeypatch.setattr(torch, "empty", fail_partials)
+    fallback = w8a8_cuda.input_grad(g, q, s, seed, True)
+    assert torch.equal(fallback, ref)
 
 
 @gpu
@@ -235,3 +322,73 @@ def test_triton_hadamard256_residual_and_int8_matmul_residual():
     out_rot = wb.hadamard256_residual(wb.int8_matmul(a, b, steps), res).double()
     want_rot = (exact.view(m, k // 256, 256) @ _regular_hadamard(256).cuda().T).view(m, k) + res.double()
     assert ((out_rot - want_rot).norm() / want_rot.norm()).item() < 4e-3
+
+
+@pytest.mark.parametrize("in_m,in_n,out_l,out_k", [(4, 8, 4, 24), (4, 24, 4, 8), (4, 12, 4, 12)])
+def test_lokr_fused_with_an_int8_layer_has_the_bypass_gradients(in_m, in_n, out_l, out_k, monkeypatch):
+    """_LoKrInt8 matches base(x) + scale * kron(w1, w2) @ x in both contraction orders."""
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(in_n + out_k)
+    in_dim, out_dim = in_m * in_n, out_l * out_k
+    base = torch.randn(out_dim, in_dim, dtype=torch.float64)
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: g @ base + residual)
+    x = torch.randn(2, 5, in_dim, dtype=torch.float64, requires_grad=True)
+    w1 = torch.randn(out_l, in_m, dtype=torch.float64, requires_grad=True)
+    w2 = torch.randn(out_k, in_n, dtype=torch.float64, requires_grad=True)
+    scale = 0.75
+    out = ib._LoKrInt8.apply(x, w1, w2, scale, None, None)
+    want = x @ base.t() + (x @ torch.kron(w1, w2).t()) * scale
+    assert torch.allclose(out, want)
+    g = torch.randn_like(want)
+    got = torch.autograd.grad(out, (x, w1, w2), g)
+    ref = torch.autograd.grad(want, (x, w1, w2), g)
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)
+
+
+def test_the_fused_lokr_skips_the_input_gradient_nothing_needs(monkeypatch):
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(3)
+    base = torch.randn(64, 32, dtype=torch.float64)
+    calls = []
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: calls.append(1) or g @ base + residual)
+    x = torch.randn(2, 5, 32, dtype=torch.float64)  # no grad
+    w1 = torch.randn(4, 4, dtype=torch.float64, requires_grad=True)
+    w2 = torch.randn(16, 8, dtype=torch.float64, requires_grad=True)
+    out = ib._LoKrInt8.apply(x, w1, w2, 0.5, None, None)
+    want = x @ base.t() + (x @ torch.kron(w1, w2).t()) * 0.5
+    g = torch.randn_like(want)
+    got = torch.autograd.grad(out, (w1, w2), g)
+    ref = torch.autograd.grad(want, (w1, w2), g)
+    assert not calls
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)
+
+
+@pytest.mark.parametrize("in_m,in_n,out_l,out_k", [(4, 16, 4, 32), (4, 32, 4, 16)])
+def test_lokr_fused_handles_noncontiguous_sliced_inputs(in_m, in_n, out_l, out_k, monkeypatch):
+    """Sliced activations and grad_out (e.g. stride (2*in_dim, 1)) must not raise view stride errors."""
+    from zentrainer.harness.kernels import int8_backward as ib
+
+    torch.manual_seed(5)
+    in_dim, out_dim = in_m * in_n, out_l * out_k
+    base = torch.randn(out_dim, in_dim, dtype=torch.float64)
+    monkeypatch.setattr(ib, "_int8_forward", lambda m, x2, residual: x2 @ base.t() + residual)
+    monkeypatch.setattr(ib, "_layer_input_grad", lambda m, g, residual=None: g @ base + residual)
+    wide = torch.randn(16, in_dim * 2, dtype=torch.float64, requires_grad=True)
+    x = wide[:, :in_dim]  # shape [16, in_dim], stride (2*in_dim, 1)
+    assert not x.is_contiguous()
+    w1 = torch.randn(out_l, in_m, dtype=torch.float64, requires_grad=True)
+    w2 = torch.randn(out_k, in_n, dtype=torch.float64, requires_grad=True)
+    out = ib._LoKrInt8.apply(x, w1, w2, 0.75, None, None)
+    want = x @ base.t() + (x @ torch.kron(w1, w2).t()) * 0.75
+    assert torch.allclose(out, want)
+    g = torch.randn(16, out_dim * 2, dtype=torch.float64)[:, :out_dim]  # non-contiguous grad_out too
+    got = torch.autograd.grad(out, (wide, w1, w2), g)
+    ref = torch.autograd.grad(want, (wide, w1, w2), g)
+    for a, b in zip(got, ref):
+        assert torch.allclose(a, b)

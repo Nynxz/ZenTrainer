@@ -142,6 +142,56 @@ def register(server) -> None:
 
         return web.json_response({"removed": adapters.remove(request.query.get("id", ""))})
 
+    # ---- auxiliary models (face recognition) ---------------------------------------------------
+
+    def _extra_models() -> list[dict]:
+        from ...analysis import faces as af
+        from ...datasets import faces as df
+
+        fm = df.model()
+        label, _, rec_file, _, _ = af.MODELS[fm]
+        files = af._files(fm)
+        return [{
+            "id": "faces",
+            "label": f"Face model ({label})",
+            "folder": "detection",
+            "name": rec_file,
+            "size": sum(af.SIZES[f] for f in files),
+            "installed": af.downloaded(fm),
+            "files": files,
+        }]
+
+    @routes.get("/zentrainer/api/extras/models")
+    async def list_extra_models(_request):
+        return web.json_response({"models": await asyncio.to_thread(_extra_models)})
+
+    @routes.post("/zentrainer/api/extras/models/download")
+    async def download_extra_model(request):
+        from ...analysis import faces as af
+        from ...analysis import files as afiles
+        from ...datasets import faces as df
+        from ...models import downloads
+
+        body = await request.json()
+        which = str(body.get("id", ""))
+        try:
+            if which == "faces":
+                fm = df.model()
+                target = await asyncio.to_thread(lambda: downloads.target_dir("detection") / afiles.SUBDIR)
+                last_job = None
+                for fname in af._files(fm):
+                    if afiles.find("detection", fname) is not None:
+                        continue
+                    rev = af.REVISIONS.get(fname, af.REVISION)
+                    url = f"https://huggingface.co/{af.REPO}/resolve/{rev}/analysis/faces/{fname}"
+                    last_job = downloads.manager().enqueue("faces", "detection", fname, url, target, af.SIZES[fname])
+                if last_job is None:
+                    return web.json_response({"already_installed": True})
+                return web.json_response(last_job.public())
+            return _bad(f"unknown auxiliary model {which!r}")
+        except (ValueError, OSError) as e:
+            return _bad(str(e))
+
     @routes.delete("/zentrainer/api/downloads/{job_id}")
     async def cancel_download(request):
         from ...models import downloads
