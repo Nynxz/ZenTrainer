@@ -18,7 +18,7 @@ Auto = Literal["auto"]
 
 # choices that live in the harness, which imports torch: tests keep them in step
 OPTIMIZERS = ("AdamW", "Adam", "Adafactor", "Lion", "SGD", "RMSprop", "AdamW8bit", "Lion8bit", "Automagic",
-              "Automagic3", "Automagic4", "Lotus", "Prodigy", "AdamWScheduleFree", "CAME")  # harness/optim OPTIMIZERS
+              "Automagic3", "Automagic4", "Lotus", "Muon", "Prodigy", "AdamWScheduleFree", "CAME")  # harness/optim OPTIMIZERS
 TRAIN_ATTENTION = ("pytorch", "xformers", "sub_quad", "split")  # harness/memory TRAINABLE_ATTENTION
 WEIGHT_DTYPES = ("default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2")  # ComfyUI's weight_dtype
 DTYPES = ("bf16", "fp16", "fp32")
@@ -145,7 +145,10 @@ class NetworkSpec:
                                                    '(feed-forward), "attn_mlp" (both), "all" (every adaptable layer, '
                                                    "like ComfyUI's native trainer), or a list of regexes over module "
                                                    "names.")
-    train_bias_norm: bool = setting(False, "Train the biases and norm weights too.")
+    train_bias_norm: bool = setting(False, "Also train small additive deltas on layer biases (.diff_b) and 1D "
+                                           "normalization weights like LayerNorm/RMSNorm (.diff). Leave off for most "
+                                           "runs (especially characters); can help strong global style, colour or "
+                                           "contrast shifts. 1D norms span the whole model even when network.blocks is set.")
     init_from: str | None = setting(None, "A LoRA in the loras folder to continue from.")
     training_adapter: str | None = setting(None, "A LoRA applied while training only, never in samples or the saved "
                                                  "file: e.g. a de-distillation adapter for a guidance-distilled "
@@ -178,8 +181,9 @@ class OptimSpec:
                                     "0 or 1 = off.", ge=0)
     ema: float = setting(0.0, "Weight averaging: checkpoints, samples and the saved LoRA use a running average of the "
                               "adapter (0.98 = roughly the last 50 steps). 0 = off.", ge=0, lt=1)
-    lr_floor: float = setting(0.0, "Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this "
-                                   "fraction of its start (v3's decays and can stall under-strength). 0 = default floor.",
+    lr_floor: float = setting(0.0, "Minimum LR fraction of the start rate: applies to cosine/linear decay (keeps "
+                                   "late high-resolution stages from stalling near zero) and to Automagic v3/v4 / "
+                                   "Lotus adaptive LR. 0 = decay to 0 (or adaptive optimizer's default floor).",
                               ge=0, le=1)
     lotus_auto_lr: bool = setting(False, "Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead "
                                          "of following the schedule directly. Off = predictable AdamW-style scheduled "

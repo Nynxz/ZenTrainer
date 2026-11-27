@@ -103,7 +103,7 @@ The adapter that trains: its kind, size, and which layers get one.
 | `network.alpha` | `null` | number or null, > 0 | The adapter's alpha. null = the rank (a scale of 1). |
 | `network.lora_dtype` | `"fp32"` | `"bf16"` or `"fp16"` or `"fp32"` | What the adapter trains in. fp32: AdamW's steps on a LoRA are smaller than bf16 can represent at the weights' size, so most would round away. bf16 only with an optimizer that rounds stochastically (Automagic). |
 | `network.targets` | `"attn_mlp"` | text or list of text | Which layers get adapters: "attn" (attention projections), "mlp" (feed-forward), "attn_mlp" (both), "all" (every adaptable layer, like ComfyUI's native trainer), or a list of regexes over module names. |
-| `network.train_bias_norm` | `false` | true/false | Train the biases and norm weights too. |
+| `network.train_bias_norm` | `false` | true/false | Also train small additive deltas on layer biases (.diff_b) and 1D normalization weights like LayerNorm/RMSNorm (.diff). Leave off for most runs (especially characters); can help strong global style, colour or contrast shifts. 1D norms span the whole model even when network.blocks is set. |
 | `network.init_from` | `null` | text or null | A LoRA in the loras folder to continue from. |
 | `network.training_adapter` | `null` | text or null | A LoRA applied while training only, never in samples or the saved file: e.g. a de-distillation adapter for a guidance-distilled model (MiniMax H3), so training sits on an undistilled base. |
 | `network.base_lora` | `null` | text or null | A LoRA the trained one sits on everywhere (training, samples and use), e.g. a fix the model always needs. The saved LoRA leaves it out and records it: load it beside, at base_strength. |
@@ -117,7 +117,7 @@ The optimizer, learning rate and schedule, and the run's length.
 
 | Field | Default | Allowed | What it does |
 |---|---|---|---|
-| `optim.optimizer` | `"AdamW"` | `"AdamW"` or `"Adam"` or `"Adafactor"` or `"Lion"` or `"SGD"` or `"RMSprop"` or `"AdamW8bit"` or `"Lion8bit"` or `"Automagic"` or `"Automagic3"` or `"Automagic4"` or `"Lotus"` or `"Prodigy"` or `"AdamWScheduleFree"` or `"CAME"` | The optimizer. |
+| `optim.optimizer` | `"AdamW"` | `"AdamW"` or `"Adam"` or `"Adafactor"` or `"Lion"` or `"SGD"` or `"RMSprop"` or `"AdamW8bit"` or `"Lion8bit"` or `"Automagic"` or `"Automagic3"` or `"Automagic4"` or `"Lotus"` or `"Muon"` or `"Prodigy"` or `"AdamWScheduleFree"` or `"CAME"` | The optimizer. |
 | `optim.learning_rate` | `0.0001` | number, > 0 | The learning rate. |
 | `optim.weight_decay` | `0.0` | number, >= 0 | Weight decay. |
 | `optim.lr_scheduler` | `"constant"` | `"constant"` or `"linear"` or `"cosine"` | The learning rate over the run. |
@@ -128,7 +128,7 @@ The optimizer, learning rate and schedule, and the run's length.
 | `optim.grad_accumulation_steps` | `1` | whole number, >= 1 | Batches per optimizer step. |
 | `optim.lora_plus` | `0.0` | number, >= 0 | LoRA+: the up matrices learn this many times faster than the down ones, which trains a LoRA faster for the same stability (paper: 16; 4 is a safe start). 0 or 1 = off. |
 | `optim.ema` | `0.0` | number, >= 0, < 1 | Weight averaging: checkpoints, samples and the saved LoRA use a running average of the adapter (0.98 = roughly the last 50 steps). 0 = off. |
-| `optim.lr_floor` | `0.0` | number, >= 0, <= 1 | Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this fraction of its start (v3's decays and can stall under-strength). 0 = default floor. |
+| `optim.lr_floor` | `0.0` | number, >= 0, <= 1 | Minimum LR fraction of the start rate: applies to cosine/linear decay (keeps late high-resolution stages from stalling near zero) and to Automagic v3/v4 / Lotus adaptive LR. 0 = decay to 0 (or adaptive optimizer's default floor). |
 | `optim.lotus_auto_lr` | `false` | true/false | Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead of following the schedule directly. Off = predictable AdamW-style scheduled LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails. |
 
 ## objective

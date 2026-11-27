@@ -393,7 +393,7 @@
         },
         "train_bias_norm": {
           "type": "boolean",
-          "description": "Train the biases and norm weights too.",
+          "description": "Also train small additive deltas on layer biases (.diff_b) and 1D normalization weights like LayerNorm/RMSNorm (.diff). Leave off for most runs (especially characters); can help strong global style, colour or contrast shifts. 1D norms span the whole model even when network.blocks is set.",
           "default": false
         },
         "init_from": {
@@ -473,6 +473,7 @@
             "Automagic3",
             "Automagic4",
             "Lotus",
+            "Muon",
             "Prodigy",
             "AdamWScheduleFree",
             "CAME"
@@ -545,7 +546,7 @@
         },
         "lr_floor": {
           "type": "number",
-          "description": "Automagic v3/v4 and Lotus (adaptive LR): the adaptive rate never drops below this fraction of its start (v3's decays and can stall under-strength). 0 = default floor.",
+          "description": "Minimum LR fraction of the start rate: applies to cosine/linear decay (keeps late high-resolution stages from stalling near zero) and to Automagic v3/v4 / Lotus adaptive LR. 0 = decay to 0 (or adaptive optimizer's default floor).",
           "default": 0.0,
           "minimum": 0,
           "maximum": 1
