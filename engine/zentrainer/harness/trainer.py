@@ -474,12 +474,15 @@ class Trainer:
         adapter, cached conds; the next run starts on a clean card."""
         import gc
 
-        for name in ("optimizer", "scheduler", "ema", "network", "denoiser", "_previewer"):
+        if getattr(self, "face_id", None) is not None:
+            self.face_id.close()
+        for name in ("optimizer", "scheduler", "ema", "network", "denoiser", "_previewer", "face_id"):
             if hasattr(self, name):
                 setattr(self, name, None)
-        conds = getattr(self, "_conds", None)
-        if isinstance(conds, dict):
-            conds.clear()
+        for name in ("_conds", "_prior_conds", "_prior_latents"):
+            d = getattr(self, name, None)
+            if isinstance(d, dict):
+                d.clear()
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -728,9 +731,21 @@ class Trainer:
         if s.objective.weighting == "flex" and not is_flow(self.denoiser.model_sampling):
             raise ValueError(f"objective.weighting is for flow-matching models; {type(self.denoiser.model_sampling).__name__} isn't one. Turn it off.")
         self.scaler = torch.amp.GradScaler() if self.train_dtype == torch.float16 else None
+        self.face_id = None
+        if s.objective.face_id > 0 and not self.sample_job:
+            if s.slider.kind:
+                raise ValueError("objective.face_id isn't supported with slider runs; turn one of them off")
+            from .face_id import FaceIdentity
+
+            self._status("loading", message="scanning dataset faces for identity loss…")
+            self.face_id = FaceIdentity(self)
 
         self._conds: dict[tuple[int, tuple], dict] = {}  # (caption, shape) -> prepared cond
         self._val_conds: dict[tuple[int, tuple], dict] = {}  # the same for the validation dataset (held_out)
+        self._prior_latents: dict[str, list[torch.Tensor]] = {}
+        self._prior_conds: dict[tuple[str, tuple], dict] = {}
+        if self._classes() and s.objective.preserve_prior > 0 and not self.sample_job:
+            self._build_prior_latents()
         self.progress = comfy.utils.ProgressBar(s.optim.steps)
         if self.resume_from:
             self._restore(Path(self.resume_state or state_for({"path": self.resume_from}, self.run_id) or ""))
@@ -986,6 +1001,8 @@ class Trainer:
         # model. It's back to the launch setting when the run ends.
         optim.set_mode(self.optimizer, training=False)
         self.models.patcher.model.eval()
+        if getattr(self, "face_id", None) is not None:
+            self.face_id.restore_vae()
         if getattr(self, "_compiled", 0):
             # samples run the compiled blocks eager: no grads and other shapes would only add
             # graphs, and inference may take kernels dynamo can't trace (MOSS int8's Sage
@@ -1595,6 +1612,7 @@ class Trainer:
         from .memory.offload import clear_recompute_weights
 
         keys = []
+        face_done = False
         try:
             for a in range(acc):
                 idx = next(self.batches)
@@ -1634,8 +1652,14 @@ class Trainer:
                     x0_pred = self.denoiser(x_t.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds,
                                             self._tread(idx))
                 loss = self.objective.train_loss(x_t.detach(), x0, x0_pred, sigma, weight, percents).mean()
-                lap("forward")
                 scaled = loss / acc
+                if self.face_id is not None and not face_done:
+                    fl, fl_val = self.face_id.loss(self, x0_pred, sigma, idx)
+                    if fl is not None:
+                        scaled = scaled + fl
+                        self.last_face_id_loss = fl_val
+                        face_done = True
+                lap("forward")
                 (self.scaler.scale(scaled) if self.scaler else scaled).backward()
                 clear_recompute_weights()
                 if hasattr(self, "_keep_step_cost"):
@@ -1887,6 +1911,136 @@ class Trainer:
         """objective.preserve's class words."""
         return tuple(w.strip() for w in self.spec.objective.preserve.split(",") if w.strip())
 
+    def _build_prior_latents(self) -> None:
+        """Sample (or load cached) independent generic class latents from the frozen base model once
+        before training for Sparse Prior-Latent DOP (objective.preserve_prior). Generated under
+        torch.no_grad() (never inference_mode) so they feed training cleanly."""
+        import hashlib
+        import json
+
+        import comfy.model_management as mm
+        import comfy.sample
+
+        if self.streams.multi:
+            raise ValueError("objective.preserve_prior is for still-image models (multi-stream/video isn't supported)")
+        s = self.spec
+        sa = s.samples
+        classes = self._classes()
+        n = int(s.objective.preserve_prior)
+        res = int(s.dataset.resolution)
+        sigmas = torch.tensor(sa.sigmas, dtype=torch.float32) if sa.sigmas else None
+        steps = len(sa.sigmas) - 1 if sa.sigmas else int(sa.steps)
+
+        key_parts = [s.model.kind, s.model.ckpt_name, s.model.unet_name, s.model.unet_weight_dtype,
+                     sa.model_name, sa.model_weight_dtype, sa.turbo_lora, sa.turbo_strength,
+                     list(classes), res, n, steps, sa.cfg, sa.sampler, sa.scheduler, list(sa.sigmas), s.seed]
+        key = hashlib.sha1(json.dumps(key_parts, default=str).encode()).hexdigest()[:20]
+        cache_path = self.cache_dir / f"prior_{key}.pt"
+        if cache_path.is_file():
+            try:
+                loaded = torch.load(cache_path, map_location="cpu", weights_only=True)
+                if isinstance(loaded, dict) and all(
+                    w in loaded and len(loaded[w]) == n for w in classes
+                ):
+                    self._prior_latents = {w: [t.to(torch.bfloat16) for t in loaded[w]] for w in classes}
+                    logging.info("[ZenTrainer] Prior-Latent DOP: reused %d cached base latents per class (%s)",
+                                 n, ", ".join(classes))
+                    return
+            except Exception:
+                pass
+
+        # Mirror the sampling model (e.g. a turbo model or turbo_lora) because sa.steps/cfg/sigmas
+        # are tuned for it; sampling the raw training base at turbo steps/cfg produces under-converged latents.
+        train_name = s.model.unet_name if s.model.kind == "split" else s.model.ckpt_name
+        same_sample_model = (bool(sa.model_name) and sa.model_name == train_name
+                             and (s.model.kind != "split" or sa.model_weight_dtype == s.model.unet_weight_dtype))
+        alt = None
+        if sa.model_name and not same_sample_model:
+            import comfy.sd
+            import folder_paths
+
+            if s.model.kind == "split":
+                opts = {}
+                if sa.model_weight_dtype.startswith("fp8_e4m3fn"):
+                    opts["dtype"] = torch.float8_e4m3fn
+                elif sa.model_weight_dtype == "fp8_e5m2":
+                    opts["dtype"] = torch.float8_e5m2
+                path = folder_paths.get_full_path_or_raise("diffusion_models", sa.model_name)
+                alt = comfy.sd.load_diffusion_model(path, model_options=opts)
+            else:
+                path = folder_paths.get_full_path_or_raise("checkpoints", sa.model_name)
+                alt = comfy.sd.load_checkpoint_guess_config(path, output_vae=False, output_clip=False)[0]
+            patcher = alt
+        else:
+            patcher = self.models.patcher
+
+        vae = self.models.vae
+        comp = int(vae.spacial_compression_encode())
+        channels = int(patcher.model.latent_format.latent_channels)
+        t_lat = 1 if int(getattr(vae, "latent_dim", 2)) == 3 else 0
+        ds = self.dataset
+        index = {c: i for i, c in enumerate(ds.captions)}
+        neg = ds.conditionings[ds.empty_caption]
+
+        self._status("loading", message=f"sampling {n * len(classes)} base prior latents for DOP…")
+        mm.load_models_gpu([patcher], memory_required=self.headroom if s.memory.offloading else 1e20,
+                           force_full_load=not s.memory.offloading)
+        patcher.model.eval()
+        out: dict[str, list[torch.Tensor]] = {w: [] for w in classes}
+        assist_prev = getattr(self.network, "assist", True)
+        turbo_prev = getattr(self.network, "turbo", 0.0)
+        try:
+            if alt is None:
+                self.network.assist = False
+                self.network.turbo = sa.turbo_strength
+            ctx = contextlib.nullcontext() if alt is not None else self.network.disabled()
+            with torch.no_grad(), ctx, quiet_reloads():
+                for ci, word in enumerate(classes):
+                    pos = ds.conditionings[index[data.plain_class(word)]]
+                    for k in range(n):
+                        seed = int(s.seed) + 10000 + ci * 1000 + k
+                        lat = torch.zeros([1, channels] + ([t_lat] if t_lat else []) + [res // comp, res // comp])
+                        lat = comfy.sample.fix_empty_latent_channels(patcher, lat)
+                        noise = comfy.sample.prepare_noise(lat, seed)
+                        with torch.autocast(self.device.type, dtype=self.train_dtype,
+                                            enabled=self.train_dtype != torch.float32):
+                            sampled = comfy.sample.sample(
+                                patcher, noise, steps, sa.cfg, sa.sampler, sa.scheduler,
+                                pos, neg, lat, sigmas=sigmas, seed=seed, disable_pbar=True,
+                            )
+                        out[word].append(sampled[0].detach().to("cpu", torch.bfloat16).clone())
+        finally:
+            if alt is not None:
+                mm.unload_model_and_clones(alt)
+                del alt
+                mm.cleanup_models_gc()
+                mm.soft_empty_cache()
+            else:
+                self.network.assist = assist_prev
+                self.network.turbo = turbo_prev
+        self._prior_latents = out
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_path.with_suffix(".pt.tmp")
+            torch.save(out, tmp)
+            tmp.replace(cache_path)
+        except OSError:
+            pass
+        logging.info("[ZenTrainer] Prior-Latent DOP: sampled %d base latents per class (%s) at %d px%s",
+                     n, ", ".join(classes), res, f" via {sa.model_name}" if (sa.model_name and not same_sample_model) else "")
+
+    def _prior_cond(self, word: str, x0: torch.Tensor, shapes: list | None) -> dict:
+        key = (word, tuple(x0.shape[1:]))
+        if key not in self._prior_conds:
+            ds = self.dataset
+            index = getattr(ds, "_class_index", None)
+            if index is None:
+                index = ds._class_index = {c: n for n, c in enumerate(ds.captions)}
+            cond = ds.conditionings[index[data.plain_class(word)]]
+            with torch.no_grad():
+                self._prior_conds[key] = self.denoiser.prepare(cond, x0[:1], self.device, shapes)
+        return self._prior_conds[key]
+
     def _preserve_cond(self, i: int, x0: torch.Tensor, shapes: list | None, plain: bool = False) -> dict | None:
         """One of sample i's captions with a class word in the trigger's place (objective.preserve),
         or with `plain` the class word's plain prompt, prepared; None for a sample that brings its
@@ -1909,29 +2063,64 @@ class Trainer:
                        sigma: torch.Tensor, noise: torch.Tensor, acc: int) -> torch.Tensor | None:
         """objective.preserve: the same noisy pictures with a class word for the trigger, the base
         model's prediction (adapter zeroed) the target for the adapter's own; backward run here.
-        Its own forward without TREAD, so the target is the whole model's. A preserve_plain share
-        of them is the plain class prompt instead, at heavy noise (the noisiest 30% of the schedule:
-        the picture mostly gone, as when generating)."""
+        Its own forward without TREAD, so the target is the whole model's. When preserve_prior > 0,
+        runs instead on independent cached base-model class latents across [0.05, 0.90] so the
+        base model's target never sees the subject's face at mid/low noise."""
         s = self.spec.objective
         if not s.preserve.strip() or self.step % s.preserve_every:
             return None
-        plain = s.preserve_plain > 0 and random.random() < s.preserve_plain
-        conds = [self._preserve_cond(i, x0, shapes, plain) for i in idx]
-        if any(c is None for c in conds):
-            return None
-        if plain:
+        priors = getattr(self, "_prior_latents", None)
+        if priors:
             ms = self.denoiser.model_sampling
-            percents = torch.rand(len(idx), generator=self.generator) * 0.3  # percent 0 = full noise
+            words = [random.choice(self._classes()) for _ in idx]
+            raw = torch.stack([random.choice(priors[w]) for w in words]).to(self.device, torch.float32)
+            x0_p = self.models.patcher.model.process_latent_in(raw)
+            percents = 0.05 + torch.rand(len(idx), generator=self.generator) * 0.85
             sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
-            x_t = self.objective.noisy(ms, sigma, noise, x0)
-        x_t = x_t.detach()
+            noise_p = torch.randn(x0_p.shape, generator=self.generator).to(self.device)
+            x_t = self.objective.noisy(ms, sigma, noise_p, x0_p).detach()
+            conds = [self._prior_cond(w, x0_p, shapes) for w in words]
+        else:
+            plain = s.preserve_plain > 0 and random.random() < s.preserve_plain
+            conds = [self._preserve_cond(i, x0, shapes, plain) for i in idx]
+            if any(c is None for c in conds):
+                return None
+            if plain:
+                ms = self.denoiser.model_sampling
+                percents = torch.rand(len(idx), generator=self.generator) * 0.3  # percent 0 = full noise
+                sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
+                x_t = self.objective.noisy(ms, sigma, noise, x0)
+            x_t = x_t.detach()
         with torch.no_grad(), self.network.disabled(), self._autocast():
             target = self.denoiser(x_t, sigma, conds, None)
+        # Prior-Latent DOP uses per-tensor PCGrad orthogonal projection so class preservation never
+        # cancels out non-conflicting subject identity gradients.
+        saved_g = None
+        trainable = None
+        if priors and callable(getattr(self.network, "trainable", None)):
+            trainable = self.network.trainable()
+            saved_g = [p.grad.detach().clone() if p.grad is not None else None for p in trainable]
+            for p in trainable:
+                p.grad = None
         with self._autocast():
             pred = self.denoiser(x_t.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds, None)
         loss = torch.nn.functional.mse_loss(pred.float(), target.float())
         scaled = loss * s.preserve_weight / acc
         (self.scaler.scale(scaled) if self.scaler else scaled).backward()
+        if saved_g is not None and trainable is not None:
+            with torch.no_grad():
+                for p, gi in zip(trainable, saved_g):
+                    gc = p.grad
+                    if gi is None:
+                        continue
+                    if gc is None:
+                        p.grad = gi
+                        continue
+                    gi_f, gc_f = gi.float(), gc.float()
+                    dot = (gi_f * gc_f).sum()
+                    if dot < 0:
+                        gi_f = gi_f - (dot / (gc_f * gc_f).sum().clamp_min(1e-12)) * gc_f
+                    p.grad = (gi_f + gc_f).to(p.dtype)
         return loss.detach().float()
 
     def _cond(self, i: int, x0: torch.Tensor, shapes: list | None = None) -> dict:

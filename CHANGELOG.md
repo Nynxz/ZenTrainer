@@ -5,6 +5,13 @@ and Manager show.
 
 ## Unreleased
 
+- **SparseID (face identity supervision) and Sparse Prior-Latent DOP.** Optional ArcFace identity
+  supervision (`objective.face_id`) decodes only the padded latent crop covering the face through
+  the frozen VAE decoder (CPU with 0 extra VRAM, or CUDA with `face_id_device="gpu"`) and matches
+  it to the dataset's identity centroid (with optional hinge margin `face_id_margin` to stop
+  late-stage over-baking). Paired with Sparse Prior-Latent DOP (`objective.preserve_prior`), which
+  caches a small bank of frozen base-model class latents and applies PCGrad-projected DOP across
+  the full noise schedule to keep untriggered class prompts clean.
 - **Samples reuse the training model when `samples.model_name` matches it.** Setting the preview
   model to the same file and weight dtype as the training model (at LoRA strength 1.0) now reuses
   the already-loaded model instead of loading a duplicate copy from disk.
