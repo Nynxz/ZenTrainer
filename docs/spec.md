@@ -103,7 +103,7 @@ The adapter that trains: its kind, size, and which layers get one.
 | `network.alpha` | `null` | number or null, > 0 | The adapter's alpha. null = the rank (a scale of 1). |
 | `network.lora_dtype` | `"fp32"` | `"bf16"` or `"fp16"` or `"fp32"` | What the adapter trains in. fp32: AdamW's steps on a LoRA are smaller than bf16 can represent at the weights' size, so most would round away. bf16 only with an optimizer that rounds stochastically (Automagic). |
 | `network.targets` | `"attn_mlp"` | text or list of text | Which layers get adapters: "attn" (attention projections), "mlp" (feed-forward), "attn_mlp" (both), "all" (every adaptable layer, like ComfyUI's native trainer), or a list of regexes over module names. |
-| `network.train_bias_norm` | `false` | true/false | Train the biases and norm weights too. |
+| `network.train_bias_norm` | `false` | true/false | Also train small additive deltas on layer biases (.diff_b) and 1D normalization weights like LayerNorm/RMSNorm (.diff). Leave off for most runs (especially characters); can help strong global style, colour or contrast shifts. 1D norms span the whole model even when network.blocks is set. |
 | `network.init_from` | `null` | text or null | A LoRA in the loras folder to continue from. |
 | `network.training_adapter` | `null` | text or null | A LoRA applied while training only, never in samples or the saved file: e.g. a de-distillation adapter for a guidance-distilled model (MiniMax H3), so training sits on an undistilled base. |
 | `network.base_lora` | `null` | text or null | A LoRA the trained one sits on everywhere (training, samples and use), e.g. a fix the model always needs. The saved LoRA leaves it out and records it: load it beside, at base_strength. |

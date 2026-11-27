@@ -145,7 +145,10 @@ class NetworkSpec:
                                                    '(feed-forward), "attn_mlp" (both), "all" (every adaptable layer, '
                                                    "like ComfyUI's native trainer), or a list of regexes over module "
                                                    "names.")
-    train_bias_norm: bool = setting(False, "Train the biases and norm weights too.")
+    train_bias_norm: bool = setting(False, "Also train small additive deltas on layer biases (.diff_b) and 1D "
+                                           "normalization weights like LayerNorm/RMSNorm (.diff). Leave off for most "
+                                           "runs (especially characters); can help strong global style, colour or "
+                                           "contrast shifts. 1D norms span the whole model even when network.blocks is set.")
     init_from: str | None = setting(None, "A LoRA in the loras folder to continue from.")
     training_adapter: str | None = setting(None, "A LoRA applied while training only, never in samples or the saved "
                                                  "file: e.g. a de-distillation adapter for a guidance-distilled "
