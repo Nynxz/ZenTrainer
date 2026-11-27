@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Fused int8/packed bypass for direct 2D LoKr.** Direct LoKr adapters (alone or inside `_Assisted`)
+  now use a transpose-free batched `matmul` with optimal contraction order (5.3x smaller saved
+  intermediates on expansion layers like MOSS's `ffn_up_gate`) and fuse forward/backward residuals
+  into the int8 GEMM epilogues (~1.20x faster and less VRAM on MOSS LoKr).
 - **Faster CUDA W8A8 backward kernels (1.09x–1.37x on RTX 5090).** Double-buffered software
   pipelining, a 4-stage shared-memory pipeline, lock-free two-phase Stream-K to remove tail-wave
   quantization, hardware `cvt.rn.bf16x2.f32` epilogue conversion, and a 128-thread `2k` row
