@@ -6,11 +6,12 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import { viewUrl } from '@/api/engine'
 import ScrollArea from '@/components/ScrollArea.vue'
 import { useRunContext } from './context'
+import SampleBadges from './SampleBadges.vue'
 import { isVideo, rowHasVideo, useSamplesContext } from './samples'
 
 defineProps<{ size: number }>()
-const { detail, total } = useRunContext()
-const { steps, prompts, cell, openGrid, syncing, toggleSync, hoverPlay, hoverPause, inputFor, hasInputs, compare } = useSamplesContext()
+const { detail, total, likeCeil } = useRunContext()
+const { steps, prompts, cell, openGrid, syncing, toggleSync, hoverPlay, hoverPause, inputFor, hasInputs, compare, likenessFor, isLikenessSkipped } = useSamplesContext()
 
 // a step that isn't on the sampling schedule: someone pressed Sample now
 const isManual = (s: number) => {
@@ -74,6 +75,13 @@ onMounted(toEnd)
               />
               <img v-else :src="viewUrl(cell(index, s)!)" loading="lazy" :alt="prompt" />
             </button>
+            <SampleBadges
+              v-if="cell(index, s)"
+              compact
+              :likeness="likenessFor(cell(index, s))"
+              :ceiling="likeCeil"
+              :skipped="isLikenessSkipped(index)"
+            />
           </div>
         </div>
       </template>
@@ -159,6 +167,7 @@ onMounted(toEnd)
   text-align: center;
 }
 .mcell {
+  position: relative;
   width: var(--t);
   height: var(--t);
   flex: none;

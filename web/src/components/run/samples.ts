@@ -3,7 +3,7 @@
 // time. RunSamples makes it; Latest, Progression and Manual take it with useSamplesContext().
 import { computed, inject, onUnmounted, ref, type InjectionKey } from 'vue'
 import type { LightboxItem } from '@nynxz/zenkit-ui'
-import { promptText as specPrompt, sampleInputUrl, viewUrl, type SampleRow } from '@/api/engine'
+import { promptText as specPrompt, sampleInputUrl, viewUrl, type LikenessRow, type SampleRow } from '@/api/engine'
 import { playTogether } from '@/lib/videoSync'
 import type { RunContext } from './context'
 
@@ -61,6 +61,20 @@ export function useSamples(run: RunContext) {
   const liveIndex = computed(() => (sampling.value?.phase === 'sampling' && !sampling.value.manual ? (sampling.value.index ?? -1) : -1))
   const liveManual = computed(() => (sampling.value?.manual ? sampling.value : null))
 
+  // per-sample likeness lookup (Latest, Progression, Manual) + whether a prompt opted out
+  const likeKey = (r: { step: number; index: number; manual?: boolean; base?: boolean }) =>
+    `${r.manual ? 'm' : 'r'}:${r.base ? 'b' : 'l'}:${r.step}:${r.index}`
+  const likeMap = computed(() => {
+    const by = new Map<string, LikenessRow>()
+    for (const r of detail.value?.likeness ?? []) by.set(likeKey(r), r)
+    return by
+  })
+  const likenessFor = (x: SampleRow | null | undefined): LikenessRow | null => (x ? (likeMap.value.get(likeKey(x)) ?? null) : null)
+  const isLikenessSkipped = (i: number): boolean => {
+    const p = detail.value?.spec.samples.prompts[i]
+    return !!p && typeof p !== 'string' && p.likeness === false
+  }
+
   const lb = ref<{ items: LightboxItem[]; index: number; grid?: number } | null>(null)
   // The lightbox walks the samples as a grid: a row per prompt, a column per step, so
   // left/right (A/D) is time and up/down (W/S) is the prompt. Only steps every prompt has
@@ -106,6 +120,7 @@ export function useSamples(run: RunContext) {
 
   return {
     steps, prompts, cell, latest, promptCount, latestFor, promptText, liveIndex, liveManual,
+    likenessFor, isLikenessSkipped,
     lb, openGrid, syncing, toggleSync, hoverPlay, hoverPause, inputFor, hasInputs, compare,
   }
 }

@@ -5,10 +5,11 @@ import { ZenCompare } from '@nynxz/zenkit-ui'
 import { computed } from 'vue'
 import { viewUrl } from '@/api/engine'
 import { useRunContext } from './context'
+import SampleBadges from './SampleBadges.vue'
 import { isVideo, useSamplesContext } from './samples'
 
-const { detail, sampling } = useRunContext()
-const { promptCount, latestFor, promptText, liveIndex, openGrid, hoverPlay, hoverPause, inputFor, compare } = useSamplesContext()
+const { detail, sampling, likeCeil } = useRunContext()
+const { promptCount, latestFor, promptText, liveIndex, openGrid, hoverPlay, hoverPause, inputFor, compare, likenessFor, isLikenessSkipped } = useSamplesContext()
 // an edit's render beside its input: a wipe, with the viewer a button away
 const wipe = (i: number) => compare.value && !!inputFor(i) && !!latestFor(i) && !isVideo(latestFor(i)!)
 
@@ -50,6 +51,12 @@ const openLatest = (index: number) => openGrid(index, latestFor(index)!.step)
         </button>
         <div v-else class="tile-empty"><i class="mdi mdi-image-outline" /></div>
         <span class="tile-num mono">{{ i }}</span>
+        <SampleBadges
+          v-if="liveIndex !== i - 1 && latestFor(i - 1)"
+          :likeness="likenessFor(latestFor(i - 1))"
+          :ceiling="likeCeil"
+          :skipped="isLikenessSkipped(i - 1)"
+        />
       </div>
       <div class="tile-cap" :title="promptText(i - 1)">{{ promptText(i - 1) }}</div>
     </div>

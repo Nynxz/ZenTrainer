@@ -1,16 +1,30 @@
 <script setup lang="ts">
 // The run page's one slim progress line: steps with the save and sample notches, or, when the
-// run isn't stepping, what it's doing instead (sampling, queued, preparing, starting).
-import { computed } from 'vue'
+// run isn't stepping, what it's doing instead (sampling, compiling, queued, preparing, starting).
+import { computed, ref, watch } from 'vue'
 import { dur, useRunContext } from './context'
 
-const { detail, sampling, last, total, step, progress, status, running, marks } = useRunContext()
+const { detail, sampling, last, total, step, progress, status, running, marks, now } = useRunContext()
 
 const eta = computed(() => {
   const l = last.value
   if (!l?.it_s || status.value !== 'training') return null
   return (total.value - l.step) / l.it_s
 })
+
+// Track when a training status message (e.g. torch.compile) started so the user sees live elapsed
+// time rather than a screen that looks frozen.
+const activeMsg = computed(() => (status.value === 'training' ? detail.value?.run.message || '' : ''))
+const msgSince = ref<number | null>(null)
+watch(
+  activeMsg,
+  (m, prev) => {
+    if (m && m !== prev) msgSince.value = Date.now() / 1000
+    else if (!m) msgSince.value = null
+  },
+  { immediate: true },
+)
+
 // what the run is doing when it isn't stepping: shown in the step bar's place (same size), with
 // its own progress where there is one (a sample's steps, the dataset's "(12/120)")
 const phase = computed(() => {
@@ -26,10 +40,11 @@ const phase = computed(() => {
       label: baseline ? 'Baseline' : 'Sampling',
       text: (baseline ? 'The model before training · ' : '') + (sm.prompt ?? ''),
       frac: st ? s0 / st : 0,
+      indeterminate: !st,
       right: `${sm.count ? `${(sm.index ?? 0) + 1}/${sm.count} · ` : ''}${st && s0 >= st ? 'decoding' : st ? `${s0}/${st}` : ''}`,
     }
   }
-  if (status.value === 'queued') return { icon: 'mdi mdi-clock-outline', label: 'Queued', text: 'Waiting for its turn', frac: 0, right: '' }
+  if (status.value === 'queued') return { icon: 'mdi mdi-clock-outline', label: 'Queued', text: 'Waiting for its turn', frac: 0, indeterminate: false, right: '' }
   if (status.value === 'loading') {
     const msg = d.run.message || 'Loading the model and the dataset'
     const m = msg.match(/\((\d+)\/(\d+)\)\s*$/)
@@ -38,10 +53,25 @@ const phase = computed(() => {
       label: 'Preparing',
       text: m ? msg.slice(0, m.index).trim() : msg,
       frac: m ? Number(m[1]) / Number(m[2]) : 0,
+      indeterminate: !m,
       right: m ? `${m[1]}/${m[2]}` : '',
     }
   }
-  if (status.value === 'training' && !last.value) return { icon: 'mdi mdi-progress-helper', label: 'Starting', text: d.run.message || 'First steps', frac: 0, right: '' }
+  if (status.value === 'training' && activeMsg.value) {
+    const compiling = /compil/i.test(activeMsg.value)
+    const elapsed = msgSince.value != null ? Math.max(0, now.value - msgSince.value) : 0
+    return {
+      icon: compiling ? 'mdi mdi-loading mdi-spin' : 'mdi mdi-progress-helper',
+      label: compiling ? 'Compiling' : 'Working',
+      text: activeMsg.value,
+      frac: 0,
+      indeterminate: true,
+      right: `${step.value > 0 ? `step ${step.value + 1} · ` : ''}${dur(elapsed)}`,
+    }
+  }
+  if (status.value === 'training' && !last.value) {
+    return { icon: 'mdi mdi-progress-helper', label: 'Starting', text: 'First step', frac: 0, indeterminate: true, right: '' }
+  }
   return null
 })
 const etaLine = computed(() => {
@@ -58,7 +88,7 @@ const etaLine = computed(() => {
     <span class="pl-step"><i :class="phase.icon" /> {{ phase.label }}</span>
     <div class="ph-mid">
       <span class="ph-text ellipsis" :title="phase.text">{{ phase.text }}</span>
-      <div class="bar thin"><div :style="{ width: `${phase.frac * 100}%` }" /></div>
+      <div class="bar thin" :class="{ indeterminate: phase.indeterminate }"><div :style="phase.indeterminate ? undefined : { width: `${phase.frac * 100}%` }" /></div>
     </div>
     <span class="pl-eta mono muted">{{ phase.right }}</span>
   </div>
@@ -102,6 +132,24 @@ const etaLine = computed(() => {
 }
 .bar.thin {
   height: 3px;
+}
+.bar.indeterminate {
+  position: relative;
+}
+.bar.indeterminate div {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 34%;
+  border-radius: var(--r-sm);
+  animation: slide 1.5s ease-in-out infinite;
+}
+@keyframes slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(310%);
+  }
 }
 .progline {
   display: grid;

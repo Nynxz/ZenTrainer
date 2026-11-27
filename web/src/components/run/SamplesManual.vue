@@ -8,10 +8,11 @@ import { inputChoices } from '@/api/comfy'
 import { engine, viewUrl, type SampleRow } from '@/api/engine'
 import { vAutosize } from '@/lib/autosize'
 import { useRunContext } from './context'
+import SampleBadges from './SampleBadges.vue'
 import { isVideo, rowHasVideo, sampleItem, useSamplesContext } from './samples'
 
-const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries, id, error, load } = useRunContext()
-const { liveManual, lb, syncing, toggleSync, hoverPlay, hoverPause } = useSamplesContext()
+const { detail, status, step, running, sampleBusy, sampleCkpt, newestCkpt, sampleFinished, queuedTries, queueTry, queueFinishedTries, id, error, load, likeCeil } = useRunContext()
+const { liveManual, lb, syncing, toggleSync, hoverPlay, hoverPause, likenessFor } = useSamplesContext()
 
 // each try is a card: its no-LoRA render (if asked for) and every step it was rendered at
 const manualGroups = computed(() => {
@@ -276,6 +277,7 @@ const tileOf = (x: SampleRow | null | undefined) => {
           <button v-for="x in [...(g.base ? [g.base] : []), ...g.steps]" :key="x.filename" class="tcell" :style="tileOf(x)" @click="openManual(gi, x)">
             <video v-if="isVideo(x)" :src="viewUrl(x)" muted loop playsinline preload="metadata" @mouseenter="hoverPlay" @mouseleave="hoverPause" />
             <img v-else :src="viewUrl(x)" loading="lazy" alt="" />
+            <SampleBadges compact corner="top-right" :likeness="likenessFor(x)" :ceiling="likeCeil" />
             <span class="clabel">{{ x.base ? 'No LoRA' : `Step ${x.step}` }}</span>
           </button>
           <div v-for="t in waitingCards.filter((w) => w.againIndex === g.index)" :key="t.key" class="tcell pending" :class="{ live: t.live }" :style="tileOf(g.steps.at(-1) ?? g.base)">

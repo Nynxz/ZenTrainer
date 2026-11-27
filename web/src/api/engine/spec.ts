@@ -242,6 +242,8 @@ export interface SamplePrompt {
   seed?: number
   /** edit runs: the picture to edit (dataset-relative) */
   control?: string
+  /** false = skip face likeness scoring for this prompt (e.g. an untriggered bleed-check prompt) */
+  likeness?: boolean
 }
 
 export const promptText = (p: string | SamplePrompt) => (typeof p === 'string' ? p : p.prompt)

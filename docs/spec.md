@@ -186,7 +186,7 @@ Sample pictures (or clips) during the run: what, how often, and how they're made
 |---|---|---|---|
 | `samples.likeness` | `true` | true/false | Score each sample's face against the dataset's (with faces on for the dataset). |
 | `samples.every` | `0` | whole number, >= 0 | Sample every this many steps. 0 = off. |
-| `samples.prompts` | `[]` | list of text or object | The samples: each a prompt, or {"prompt", "width", "height", "frames", "seed", "control"} with its own size, length, seed or (edit runs) picture to edit. |
+| `samples.prompts` | `[]` | list of text or object | The samples: each a prompt, or {"prompt", "width", "height", "frames", "seed", "control", "likeness"} with its own size, length, seed, (edit runs) picture to edit, or whether it counts toward average likeness. |
 | `samples.negative` | `""` | text | The negative prompt. |
 | `samples.width` | `1024` | whole number, >= 16 | Sample width. |
 | `samples.height` | `1024` | whole number, >= 16 | Sample height. |
