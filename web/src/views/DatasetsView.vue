@@ -39,12 +39,28 @@ watch(view, (v) => {
   }
 })
 
-onMounted(async () => {
+let listGeneration = 0
+const deleteListeners = new Set<(folder: string) => void>()
+
+async function refreshDatasets() {
+  const gen = ++listGeneration
+  const removed = new Set<string>()
+  const onDelete = (folder: string) => removed.add(folder)
+  deleteListeners.add(onDelete)
   try {
-    datasets.value = await engine.datasets()
+    const list = await engine.datasets()
+    if (gen !== listGeneration) return
+    datasets.value = removed.size ? list.filter((x) => !removed.has(x.folder)) : list
+    error.value = null
   } catch (e) {
-    error.value = String(e)
+    if (gen === listGeneration) error.value = String(e)
+  } finally {
+    deleteListeners.delete(onDelete)
   }
+}
+
+onMounted(() => {
+  void refreshDatasets()
 })
 
 async function create() {
@@ -190,10 +206,12 @@ async function removeDataset(d: DatasetInfo) {
   }
   try {
     await engine.deleteDataset(d.folder)
+    for (const onDelete of deleteListeners) onDelete(d.folder)
     if (isDatasetStarred(d.folder)) toggleDatasetStar(d.folder)
     datasets.value = (datasets.value ?? []).filter((x) => x.folder !== d.folder)
   } catch (e) {
     tellError(e, 'Couldn’t delete the dataset')
+    await refreshDatasets()
   }
 }
 function onDatasetMenu(d: DatasetInfo, e: MouseEvent) {

@@ -49,9 +49,15 @@ function flash(msg: string) {
   setTimeout(() => notice.value === msg && (notice.value = null), 2600)
 }
 
+let metaGeneration = 0
+let analysisGeneration = 0
+
 async function loadMeta() {
+  const gen = ++metaGeneration
+  const targetName = props.name
   try {
-    const ds = await engine.dataset(props.name)
+    const ds = await engine.dataset(targetName)
+    if (gen !== metaGeneration || props.name !== targetName) return
     sets.value = ds.sets.length ? ds.sets : ['default']
     if (!sets.value.includes(activeSet.value)) activeSet.value = sets.value[0]!
     const m = new Set<string>()
@@ -65,10 +71,16 @@ async function loadMeta() {
 }
 
 async function loadAnalysis() {
+  const gen = ++analysisGeneration
+  const targetName = props.name
+  const targetSet = activeSet.value
+  const targetRes = Number(resolution.value)
   loading.value = true
   error.value = null
   try {
-    data.value = await engine.datasetAnalysis(props.name, activeSet.value, Number(resolution.value))
+    const result = await engine.datasetAnalysis(targetName, targetSet, targetRes)
+    if (gen !== analysisGeneration) return
+    data.value = result
     if (!pickedInitialTab && data.value) {
       pickedInitialTab = true
       const hasIssues = data.value.pictures.some((p) => p.flags.length)
@@ -76,15 +88,19 @@ async function loadAnalysis() {
       tab.value = hasIssues ? 'issues' : hasDups ? 'duplicates' : 'buckets'
     }
   } catch (e) {
-    error.value = e instanceof EngineError ? e.message : String(e)
+    if (gen === analysisGeneration) error.value = e instanceof EngineError ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (gen === analysisGeneration) loading.value = false
   }
 }
 
 watch(
   [() => props.name, activeSet, resolution],
-  async () => {
+  async ([nextName], prev) => {
+    if (prev && nextName !== prev[0]) {
+      pickedInitialTab = TABS.some((t) => t.id === route.query.tab)
+      lightbox.value = null
+    }
     const q: Record<string, string> = { resolution: resolution.value }
     if (activeSet.value !== 'default') q.set = activeSet.value
     if (tab.value) q.tab = tab.value
@@ -108,16 +124,20 @@ const fmtSize = (sz?: [number, number] | null) => (sz ? `${sz[0]}×${sz[1]}` : '
 async function setMuted(paths: string[], on: boolean) {
   const unique = [...new Set(paths)]
   if (!unique.length) return
+  const targetName = props.name
+  const targetSet = activeSet.value
   busy.value = true
   try {
-    await engine.datasetMuted(props.name, activeSet.value, unique, on)
-    const next = new Set(muted.value)
-    for (const p of unique) {
-      if (on) next.add(p)
-      else next.delete(p)
+    await engine.datasetMuted(targetName, targetSet, unique, on)
+    if (props.name === targetName && activeSet.value === targetSet) {
+      const next = new Set(muted.value)
+      for (const p of unique) {
+        if (on) next.add(p)
+        else next.delete(p)
+      }
+      muted.value = next
     }
-    muted.value = next
-    flash(`${on ? 'Muted' : 'Unmuted'} ${unique.length} ${unique.length === 1 ? 'picture' : 'pictures'} in “${activeSet.value}”`)
+    flash(`${on ? 'Muted' : 'Unmuted'} ${unique.length} ${unique.length === 1 ? 'picture' : 'pictures'} in “${targetSet}”`)
   } catch (e) {
     tellError(e, 'Couldn’t update muted state')
   } finally {
@@ -128,6 +148,7 @@ async function setMuted(paths: string[], on: boolean) {
 async function removePaths(paths: string[]) {
   const unique = [...new Set(paths)]
   if (!unique.length) return
+  const targetName = props.name
   const what = unique.length === 1 ? `“${unique[0]!.split('/').at(-1)}”` : `${unique.length} pictures`
   if (
     !(await ask({
@@ -141,13 +162,15 @@ async function removePaths(paths: string[]) {
   }
   busy.value = true
   try {
-    for (const p of unique) await engine.deleteItem(props.name, p)
-    lightbox.value = null
-    flash(`Deleted ${unique.length} ${unique.length === 1 ? 'picture' : 'pictures'}`)
-    await Promise.all([loadMeta(), loadAnalysis()])
+    for (const p of unique) await engine.deleteItem(targetName, p)
+    if (props.name === targetName) {
+      lightbox.value = null
+      flash(`Deleted ${unique.length} ${unique.length === 1 ? 'picture' : 'pictures'}`)
+      await Promise.all([loadMeta(), loadAnalysis()])
+    }
   } catch (e) {
     tellError(e, 'Couldn’t delete')
-    await Promise.all([loadMeta(), loadAnalysis()])
+    if (props.name === targetName) await Promise.all([loadMeta(), loadAnalysis()])
   } finally {
     busy.value = false
   }
@@ -242,13 +265,52 @@ const activeDuplicates = computed(() =>
   (data.value?.duplicates ?? []).filter((d) => !hideMuted.value || (!isMuted(d.a) && !isMuted(d.b))),
 )
 const dupDropCandidates = computed(() => {
-  const out = new Set<string>()
+  // Group unmuted duplicate pairs into connected components and always keep one representative
+  // per component (highest resolution, breaking near-ties within 8% by sharpness, then first seen)
+  // so non-transitive triangles of near-duplicates never mute every copy in a group.
+  const adj = new Map<string, Set<string>>()
+  const addEdge = (u: string, v: string) => {
+    let su = adj.get(u)
+    if (!su) adj.set(u, (su = new Set()))
+    su.add(v)
+  }
   for (const d of data.value?.duplicates ?? []) {
     if (isMuted(d.a) || isMuted(d.b)) continue
-    const w = worseSide(d.a, d.b)
-    if (w) out.add(w === 'a' ? d.a : d.b)
+    addEdge(d.a, d.b)
+    addEdge(d.b, d.a)
   }
-  return [...out]
+  const areaOf = (path: string) => {
+    const sz = picMap.value.get(path)?.size
+    return sz ? sz[0] * sz[1] : 0
+  }
+  const sharpOf = (path: string) => picMap.value.get(path)?.sharpness ?? 0
+  const visited = new Set<string>()
+  const out: string[] = []
+  for (const start of adj.keys()) {
+    if (visited.has(start)) continue
+    const comp: string[] = []
+    const queue = [start]
+    visited.add(start)
+    while (queue.length) {
+      const cur = queue.shift()!
+      comp.push(cur)
+      for (const nxt of adj.get(cur) ?? []) {
+        if (!visited.has(nxt)) {
+          visited.add(nxt)
+          queue.push(nxt)
+        }
+      }
+    }
+    const maxArea = Math.max(...comp.map(areaOf))
+    const top = maxArea > 0 ? comp.filter((p) => (maxArea - areaOf(p)) / maxArea <= 0.08) : comp
+    const maxSharp = Math.max(...top.map(sharpOf))
+    const sharpest = maxSharp > 0 ? top.filter((p) => (maxSharp - sharpOf(p)) / maxSharp <= 0.08) : top
+    const keep = sharpest[0]!
+    for (const p of comp) {
+      if (p !== keep) out.push(p)
+    }
+  }
+  return out
 })
 
 // ---- buckets -------------------------------------------------------------------------------------
@@ -354,7 +416,7 @@ const tabCount = (id: Tab): number | null => {
           title="Caption set"
           @update:model-value="activeSet = String($event)"
         />
-        <RouterLink :to="{ path: '/runs/new', query: { dataset: name } }">
+        <RouterLink :to="{ path: '/runs/new', query: { dataset: name, set: activeSet } }">
           <ZenButton size="sm" variant="primary" icon="mdi mdi-play">Train</ZenButton>
         </RouterLink>
         <RouterLink :to="`/datasets/${encodeURIComponent(name)}`">
@@ -452,7 +514,11 @@ const tabCount = (id: Tab): number | null => {
             :key="p.path"
             class="tile clickable"
             :class="{ mutedTile: isMuted(p.path) }"
+            tabindex="0"
+            role="button"
             @click="openLightbox(flagged.map((x) => x.path), p.path)"
+            @keydown.enter.self.prevent="openLightbox(flagged.map((x) => x.path), p.path)"
+            @keydown.space.self.prevent="openLightbox(flagged.map((x) => x.path), p.path)"
             @contextmenu="onPicMenu(p.path, $event, flagged.map((x) => x.path))"
           >
             <div class="thumb-wrap">
@@ -513,7 +579,14 @@ const tabCount = (id: Tab): number | null => {
                 :class="{ mutedTile: isMuted(d[side]) }"
                 @contextmenu="onPicMenu(d[side], $event, [d.a, d.b])"
               >
-                <div class="thumb-wrap clickable" @click="openLightbox([d.a, d.b], d[side])">
+                <div
+                  class="thumb-wrap clickable"
+                  tabindex="0"
+                  role="button"
+                  @click="openLightbox([d.a, d.b], d[side])"
+                  @keydown.enter.prevent="openLightbox([d.a, d.b], d[side])"
+                  @keydown.space.prevent="openLightbox([d.a, d.b], d[side])"
+                >
                   <img :src="thumb(d[side], 256)" loading="lazy" :alt="d[side]" />
                   <span v-if="isMuted(d[side])" class="muted-pill">Muted</span>
                   <span v-else-if="worseReason(side, d.a, d.b)" class="worse-pill">{{ worseReason(side, d.a, d.b) }}</span>
@@ -568,7 +641,11 @@ const tabCount = (id: Tab): number | null => {
                 :key="path"
                 class="tile clickable"
                 :class="{ mutedTile: isMuted(path) }"
+                tabindex="0"
+                role="button"
                 @click="openLightbox(r.pictures, path)"
+                @keydown.enter.prevent="openLightbox(r.pictures, path)"
+                @keydown.space.prevent="openLightbox(r.pictures, path)"
                 @contextmenu="onPicMenu(path, $event, r.pictures)"
               >
                 <div class="crop" :style="frame(placed(path))">
@@ -598,7 +675,11 @@ const tabCount = (id: Tab): number | null => {
               :key="c.path"
               class="tile clickable"
               :class="{ mutedTile: isMuted(c.path) }"
+              tabindex="0"
+              role="button"
               @click="openLightbox(data.buckets.cropped.map((x) => x.path), c.path)"
+              @keydown.enter.prevent="openLightbox(data.buckets.cropped.map((x) => x.path), c.path)"
+              @keydown.space.prevent="openLightbox(data.buckets.cropped.map((x) => x.path), c.path)"
               @contextmenu="onPicMenu(c.path, $event, data.buckets.cropped.map((x) => x.path))"
             >
               <div class="crop" :style="frame(c)">
@@ -861,6 +942,12 @@ const tabCount = (id: Tab): number | null => {
 }
 .tile.clickable {
   cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.tile.clickable:focus-visible,
+.thumb-wrap.clickable:focus-visible {
+  outline: 2px solid var(--zen-accent);
+  outline-offset: 2px;
 }
 .mutedTile {
   opacity: 0.55;
