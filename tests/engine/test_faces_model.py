@@ -154,3 +154,64 @@ def test_the_resize_halves_and_shrinks_like_opencv():
     flat = np.full((90, 120, 3), 77, np.uint8)
     assert (analysis._resize(flat, 47, 33) == 77).all()  # weights sum to one at any scale
     assert analysis._resize(img, 47, 33).shape == (33, 47, 3)
+
+
+def test_extras_models_routes_list_and_enqueue_missing_face_files(comfy, monkeypatch):
+    import asyncio
+    import json
+    from zentrainer.models import downloads
+    from zentrainer.server.routes import models as models_route
+
+    handlers = {}
+
+    class Routes:
+        def get(self, path):
+            return lambda fn: handlers.setdefault(("GET", path), fn)
+
+        def post(self, path):
+            return lambda fn: handlers.setdefault(("POST", path), fn)
+
+        def delete(self, path):
+            return lambda fn: handlers.setdefault(("DELETE", path), fn)
+
+    models_route.register(types.SimpleNamespace(routes=Routes()))
+
+    res = asyncio.run(handlers[("GET", "/zentrainer/api/extras/models")](None))
+    rows = json.loads(res.text)["models"]
+    assert len(rows) == 1 and rows[0]["id"] == "faces" and rows[0]["installed"] is False
+    assert rows[0]["files"] == ["det_10g.safetensors", "w600k_r50.safetensors"]
+
+    enqueued = []
+
+    class FakeMgr:
+        def enqueue(self, family, folder, name, url, target, size):
+            enqueued.append((family, folder, name, url, target, size))
+            return types.SimpleNamespace(public=lambda: {"id": name, "folder": folder, "name": name, "status": "queued"})
+
+    det_dir = comfy / "models" / "detection"
+    monkeypatch.setattr(downloads, "target_dir", lambda _f: det_dir)
+    monkeypatch.setattr(downloads, "manager", lambda: FakeMgr())
+
+    class FakeReq:
+        def __init__(self, body):
+            self._body = body
+
+        async def json(self):
+            return self._body
+
+    dl = asyncio.run(handlers[("POST", "/zentrainer/api/extras/models/download")](FakeReq({"id": "faces"})))
+    assert dl.status == 200 and [e[2] for e in enqueued] == ["det_10g.safetensors", "w600k_r50.safetensors"]
+    assert all(e[4] == det_dir / files.SUBDIR for e in enqueued)
+
+    bad = asyncio.run(handlers[("POST", "/zentrainer/api/extras/models/download")](FakeReq({"id": "unknown"})))
+    assert bad.status == 400
+
+    # once both files exist, list reports installed and download returns already_installed
+    sub = det_dir / files.SUBDIR
+    sub.mkdir(parents=True)
+    for fname in ("det_10g.safetensors", "w600k_r50.safetensors"):
+        (sub / fname).write_bytes(b"x")
+    res2 = asyncio.run(handlers[("GET", "/zentrainer/api/extras/models")](None))
+    assert json.loads(res2.text)["models"][0]["installed"] is True
+    done = asyncio.run(handlers[("POST", "/zentrainer/api/extras/models/download")](FakeReq({"id": "faces"})))
+    assert json.loads(done.text) == {"already_installed": True}
