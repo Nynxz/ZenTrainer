@@ -437,10 +437,13 @@ def test_preserve_prior_spec_validation_and_independent_latent_dop(monkeypatch):
 
 
 def test_build_prior_latents_uses_alt_sample_model_and_unloads(tmp_path, monkeypatch):
+    import contextlib
     import sys
     import types
     from zentrainer.harness import trainer as tr_mod
     from zentrainer.harness.data import plain_class
+
+    monkeypatch.setattr(tr_mod, "quiet_reloads", contextlib.nullcontext)
 
     s = TrainSpec.from_dict({
         **BASE,
