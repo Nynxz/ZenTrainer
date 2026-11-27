@@ -5,6 +5,9 @@ and Manager show.
 
 ## Unreleased
 
+- **Samples reuse the training model when `samples.model_name` matches it.** Setting the preview
+  model to the same file and weight dtype as the training model (at LoRA strength 1.0) now reuses
+  the already-loaded model instead of loading a duplicate copy from disk.
 - **Faster `torch.compile` and compiled `checkpoint_save="none"`.** Fixes cached models silently
   skipping block compilation after an earlier uncompiled run, eliminates the duplicate block-0
   graph (`2 → 1` graphs, ~2x faster compile while keeping frozen prefix blocks grad-free), and

@@ -82,3 +82,99 @@ def test_a_training_run_changes_only_its_live_sample_settings():
     for bad in ({}, {"width": 512}, {"turbo_lora": None}, {"steps": 0}, {"turbo_strength": -1}):
         with pytest.raises(SpecError):
             live_samples(s, bad)
+
+
+def test_sampling_reuses_training_patcher_when_preview_model_matches():
+    import contextlib
+    from zentrainer.harness.callbacks import Samples
+
+    def fake_trainer(kind="split", unet="moss.safetensors", ckpt=None, train_dt="default",
+                     sample_model="moss.safetensors", sample_dt="default", lora_strength=1.0, scalable=False):
+        d = TrainSpec().to_dict()
+        d["dataset"]["folder"] = "d"
+        d["model"].update(kind=kind, unet_name=unet, ckpt_name=ckpt, unet_weight_dtype=train_dt,
+                          clip_name="c.safetensors" if kind == "split" else None,
+                          clip_type="moss_image" if kind == "split" else None,
+                          vae_name="v.safetensors" if kind == "split" else None)
+        d["samples"].update(model_name=sample_model, model_weight_dtype=sample_dt, lora_strength=lora_strength)
+        patcher = object()
+        seen = []
+
+        @contextlib.contextmanager
+        def at_strength(st):
+            seen.append(st)
+            yield
+
+        net = types.SimpleNamespace(scalable=scalable, at_strength=at_strength, seen=seen)
+        return types.SimpleNamespace(spec=TrainSpec.from_dict(d), models=types.SimpleNamespace(patcher=patcher),
+                                     network=net)
+
+    cb = Samples(every=100)
+    # Same split model + dtype + lora_strength=1.0 -> reuses training patcher without loading a second copy
+    t_same = fake_trainer()
+    assert not cb._uses_alt_model(t_same)
+    assert cb._sampling_model(t_same) is t_same.models.patcher
+    # Same split model + dtype + lora_strength=0.8 on scalable network -> still reuses training patcher
+    t_scaled = fake_trainer(lora_strength=0.8, scalable=True)
+    assert not cb._uses_alt_model(t_scaled)
+    assert cb._sampling_model(t_scaled) is t_scaled.models.patcher
+    with cb._at_strength(t_scaled, t_scaled.models.patcher, 0.5) as m:
+        assert m is t_scaled.models.patcher
+    assert t_scaled.network.seen == [pytest.approx(0.4)]
+    # Same checkpoint model + lora_strength=1.0 -> reuses training patcher
+    t_ckpt = fake_trainer(kind="checkpoint", unet=None, ckpt="sd.safetensors", sample_model="sd.safetensors")
+    assert not cb._uses_alt_model(t_ckpt)
+    assert cb._sampling_model(t_ckpt) is t_ckpt.models.patcher
+    # Different model, different weight dtype, or non-1.0 lora_strength on non-scalable network -> loads alt model
+    assert cb._uses_alt_model(fake_trainer(sample_model="moss_turbo.safetensors", scalable=True))
+    assert cb._uses_alt_model(fake_trainer(sample_dt="fp8_e4m3fn", scalable=True))
+    assert cb._uses_alt_model(fake_trainer(lora_strength=0.8, scalable=False))
+
+
+def test_alt_sampling_model_applies_turbo_lora_at_requested_strength(monkeypatch):
+    """When sampling loads the alternate model (e.g. lora_strength=0.99 or different preview model),
+    samples.turbo_lora is still applied at s.turbo_strength (and omitted when strength is 0)."""
+    from zentrainer.harness.callbacks import Samples
+
+    applied = []
+    fake_alt = types.SimpleNamespace(patches={}, model=object())
+
+    comfy_pkg = types.ModuleType("comfy")
+    comfy_sd = types.ModuleType("comfy.sd")
+    comfy_utils = types.ModuleType("comfy.utils")
+    folder_paths = types.ModuleType("folder_paths")
+    comfy_sd.load_diffusion_model = lambda path, model_options=None: fake_alt
+
+    def fake_load_lora(model, clip, weights, strength, clip_strength):
+        applied.append((weights, strength))
+        return types.SimpleNamespace(patches={}, model=model.model), clip
+
+    comfy_sd.load_lora_for_models = fake_load_lora
+    comfy_utils.load_torch_file = lambda path, safe_load=True: f"sd:{path}"
+    folder_paths.get_full_path_or_raise = lambda kind, name: f"{kind}/{name}"
+    comfy_pkg.sd = comfy_sd
+    comfy_pkg.utils = comfy_utils
+    for name, mod in (("comfy", comfy_pkg), ("comfy.sd", comfy_sd), ("comfy.utils", comfy_utils),
+                      ("folder_paths", folder_paths)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    d = TrainSpec().to_dict()
+    d["dataset"]["folder"] = "d"
+    d["model"].update(kind="split", unet_name="moss.safetensors", clip_name="c.safetensors",
+                      clip_type="moss_image", vae_name="v.safetensors")
+    d["samples"].update(model_name="moss.safetensors", lora_strength=0.99,
+                        turbo_lora="turbo.safetensors", turbo_strength=0.75)
+    t = types.SimpleNamespace(
+        spec=TrainSpec.from_dict(d),
+        models=types.SimpleNamespace(patcher=object()),
+        network=types.SimpleNamespace(state_dict=lambda: {"w": 1}, wide=None),
+    )
+    cb = Samples(every=100)
+    cb._sampling_model(t)
+    assert applied == [({"w": 1}, 0.99), ("sd:loras/turbo.safetensors", 0.75)]
+
+    # Overriding turbo_strength to 0 omits turbo_lora while keeping trained LoRA at 0.99
+    applied.clear()
+    over = SampleSpec(**{**d["samples"], "turbo_strength": 0.0})
+    cb._sampling_model(t, over)
+    assert applied == [({"w": 1}, 0.99)]

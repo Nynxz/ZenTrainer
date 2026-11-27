@@ -156,6 +156,7 @@ class Samples(Callback):
         self._conds = None
         self._alt = None  # base patcher of the alternate sampling model, loaded once
         self._base_sd = None  # the base LoRA (network.base_lora), for the alternate model
+        self._turbo_sd = None  # the turbo LoRA (samples.turbo_lora), for the alternate model
 
     def _like(self, t, row: dict) -> None:
         """Hand a landed sample to the likeness worker, started on first use."""
@@ -264,20 +265,40 @@ class Samples(Callback):
         except OSError:
             pass
 
+    @staticmethod
+    def _uses_alt_model(t, s=None) -> bool:
+        """Whether samples need a separate model loaded instead of reusing the training patcher.
+        When `samples.model_name` names the exact same model and weight dtype as training, reuse
+        `t.models.patcher` directly (scaling via `t.network.at_strength` when `lora_strength != 1.0`,
+        falling back to the alternate loader only if the network isn't scalable)."""
+        s = s or t.spec.samples
+        if not s.model_name:
+            return False
+        m = getattr(t.spec, "model", None)
+        if m is None:
+            return True
+        train_name = m.unet_name if m.kind == "split" else m.ckpt_name
+        same_dtype = True if m.kind != "split" else s.model_weight_dtype == m.unet_weight_dtype
+        if not (s.model_name == train_name and same_dtype):
+            return True
+        return s.lora_strength != 1.0 and not getattr(getattr(t, "network", None), "scalable", False)
+
     @contextlib.contextmanager
-    def _at_strength(self, t, model, strength: float):
+    def _at_strength(self, t, model, strength: float, s=None):
         """The sampling model with the LoRA at `strength`: the training patcher's own adapters set to
         it, or the alternate model's LoRA patches rescaled in place. A patched copy per strength
         cost ComfyUI's dynamic loading 12.9 GB of RAM each on Krea 2 (it ran a 128 GB machine out);
         rescaled patches with a new patches_uuid are the same model, refreshed. A base LoRA's
         patches keep their own strength."""
-        if not t.spec.samples.model_name:
-            with t.network.at_strength(strength):
+        s = s or t.spec.samples
+        if not self._uses_alt_model(t, s):
+            base = s.lora_strength if (s.model_name and getattr(getattr(t, "network", None), "scalable", False)) else 1.0
+            with t.network.at_strength(base * strength):
                 yield model
             return
         import uuid
 
-        ours, base = self._own_patches, t.spec.samples.lora_strength
+        ours, base = self._own_patches, s.lora_strength
 
         def scale(k: float) -> None:
             for key, lst in model.patches.items():
@@ -290,10 +311,10 @@ class Samples(Callback):
         finally:
             scale(1.0)
 
-    def _sampling_model(self, t):
+    def _sampling_model(self, t, s=None):
         """The training patcher itself, or the alternate model with the current LoRA."""
-        s = t.spec.samples
-        if not s.model_name:
+        s = s or t.spec.samples
+        if not self._uses_alt_model(t, s):
             return t.models.patcher
         import comfy.sd
         import folder_paths
@@ -333,6 +354,13 @@ class Samples(Callback):
 
                 self._base_sd = comfy.utils.load_torch_file(folder_paths.get_full_path_or_raise("loras", base), safe_load=True)
             patched, _ = comfy.sd.load_lora_for_models(patched, None, self._base_sd, t.spec.network.base_strength, 0)
+        if s.turbo_lora and s.turbo_strength:
+            if getattr(self, "_turbo_sd", None) is None:
+                import comfy.utils
+
+                self._turbo_sd = comfy.utils.load_torch_file(
+                    folder_paths.get_full_path_or_raise("loras", s.turbo_lora), safe_load=True)
+            patched, _ = comfy.sd.load_lora_for_models(patched, None, self._turbo_sd, s.turbo_strength, 0)
         return patched
 
     def _let_sampler_go(self, t) -> None:
@@ -555,7 +583,7 @@ class Samples(Callback):
         t.network.turbo = s.turbo_strength  # a try's own, or the run's (changeable while it trains)
         try:
             with torch.no_grad(), quiet_reloads():
-                model = self._sampling_model(t)
+                model = self._sampling_model(t, s)
                 guided = self._guided_options(model, s)
                 plain_options = model.model_options
                 if guided is not None:
@@ -608,9 +636,12 @@ class Samples(Callback):
                     if sweep:  # a slider: the same sample at each strength, side by side
                         shots = []
                         for st in sweep:
-                            with self._at_strength(t, model, st) as m:
+                            with self._at_strength(t, model, st, s) as m:
                                 shots.append(draw(m)[1][0])
                         strip = _strip(shots, sweep)
+                    elif not self._uses_alt_model(t, s) and s.model_name and s.lora_strength != 1.0:
+                        with t.network.at_strength(s.lora_strength):
+                            out, img = draw(model)
                     else:
                         out, img = draw(model)  # (frames, H, W, 3)
                     if t_lat:

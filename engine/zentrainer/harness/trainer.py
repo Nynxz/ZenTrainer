@@ -700,10 +700,13 @@ class Trainer:
             self._partial(s.network.base_lora, "the base LoRA", len(base), left_out)
             logging.info("[ZenTrainer] base LoRA %s at %.2f on %d layers (training and samples; saved beside, not in)",
                          s.network.base_lora, s.network.base_strength, len(base))
+        train_name = s.model.unet_name if s.model.kind == "split" else s.model.ckpt_name
+        same_sample_model = (bool(s.samples.model_name) and s.samples.model_name == train_name
+                             and (s.model.kind != "split" or s.samples.model_weight_dtype == s.model.unet_weight_dtype))
         self.network = Network(patcher, s.network, self.device, bypass=bypass, init_weights=init, assist=assist,
                                preview=preview, preview_strength=s.samples.turbo_strength,
                                base=base, base_strength=s.network.base_strength, wide_inputs=self.concat_inputs,
-                               scalable=bool(s.slider.kind))
+                               scalable=bool(s.slider.kind or same_sample_model))
         self.optimizer, self.scheduler = optim.build(
             self.network.param_groups(s.optim.learning_rate, s.optim.lora_plus), s.optim)
         from .ema import EMA
