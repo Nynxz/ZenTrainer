@@ -34,8 +34,8 @@ def _quantized(g, s, seed):
 # rows: one, under and over a tile (128), odd; the layer shapes of Krea 2 and MOSS (out, in)
 @cuda
 @pytest.mark.parametrize("m,n,k", [(1, 64, 256), (17, 128, 256), (127, 128, 512), (129, 192, 256), (300, 128, 256),
-                                   (1000, 1536, 768), (4097, 1536, 6144), (512, 6144, 1536), (512, 16384, 6144),
-                                   (512, 6144, 16384), (512, 9216, 3072), (512, 3072, 8192)])
+                                   (2560, 64, 256), (1000, 1536, 768), (4097, 1536, 6144), (512, 6144, 1536),
+                                   (512, 16384, 6144), (512, 6144, 16384), (512, 9216, 3072), (512, 3072, 8192)])
 def test_quantized_product_matches_the_exact_one_rotated(m, n, k):
     from zentrainer.harness.kernels import w8a8_cuda
 
@@ -193,9 +193,9 @@ def test_the_fused_lora_skips_the_input_gradient_nothing_needs(monkeypatch):
 
 
 @cuda
-@pytest.mark.parametrize("n", [256, 4096, 6144, 16384])
+@pytest.mark.parametrize("n", [256, 1536, 2048, 4096, 6144, 16384])
 def test_1pass_quantizers_match_2pass_bit_exact(n):
-    """Single-pass register-cached quantizers (4k, 8k, 16k) must match zt_quantize_rows bit-for-bit."""
+    """Single-pass register-cached quantizers (2k, 4k, 8k, 16k) must match zt_quantize_rows bit-for-bit."""
     from zentrainer.harness.kernels import w8a8_cuda
 
     torch.manual_seed(7)
@@ -207,10 +207,97 @@ def test_1pass_quantizers_match_2pass_bit_exact(n):
     gq0, st0 = torch.empty((m, n), device="cuda", dtype=torch.int8), torch.empty(m, device="cuda")
     gq1, st1 = torch.empty_like(gq0), torch.empty_like(st0)
     ks["zt_quantize_rows"](grid=(m, 1, 1), block=(256, 1, 1), args=[g, s, gq0, st0, seed, n, g.stride(0)])
-    qname, qblk = (("zt_quantize_rows_4k", 256) if n <= 4096 else
+    qname, qblk = (("zt_quantize_rows_2k", 128) if n <= 2048 else
+                   ("zt_quantize_rows_4k", 256) if n <= 4096 else
                    ("zt_quantize_rows_8k", 256) if n <= 8192 else ("zt_quantize_rows_16k", 512))
     ks[qname](grid=(m, 1, 1), block=(qblk, 1, 1), args=[g, s, gq1, st1, seed, n, g.stride(0)])
     assert torch.equal(gq0, gq1) and torch.equal(st0, st1)
+
+
+def _stream_k_shape(device: torch.device) -> tuple[int, int, int]:
+    """Pick a (m, n, k) shape guaranteed to trigger the Stream-K branch on this device's SM count."""
+    sms = torch.cuda.get_device_properties(device).multi_processor_count
+    n, k = 3072, 3072  # kt = 48, n_k = 12
+    for n_m in range(4, sms + 8):
+        ctas = n_m * (k // 256)
+        waves = (ctas + sms - 1) // sms
+        sk_tiles = ctas - max(0, (ctas // sms) - 1) * sms
+        if ctas / (waves * sms) < 0.88 and sk_tiles * (n // 64) >= sms:
+            return n_m * 128, n, k
+    pytest.skip(f"no Stream-K shape found for {sms} SMs")
+
+
+@cuda
+@pytest.mark.parametrize("m,n,k", [(2432, 3072, 3072), (1152, 9216, 3072), (2432, 16384, 3072)])
+def test_stream_k_and_residual_match_exact_product(m, n, k):
+    """Stream-K matches exact rotated/unrotated products and resets done[] in-kernel."""
+    from zentrainer.harness.kernels import w8a8_cuda
+
+    torch.manual_seed(13)
+    g = torch.randn(m, n, device="cuda", dtype=torch.bfloat16)
+    s = torch.rand(n, device="cuda") * 0.01 + 0.001
+    q = torch.randint(-127, 128, (n, k), device="cuda", dtype=torch.int8)
+    seed = torch.tensor([19], device="cuda", dtype=torch.int32)
+    gq, steps = _quantized(g, s, seed)
+    exact = (gq.double() @ q.double()) * steps.double()[:, None]
+    rotated = (exact.view(m, k // 256, 256) @ _regular_hadamard(256).cuda().T).view(m, k)
+    for rotate, want in ((True, rotated), (False, exact)):
+        out = w8a8_cuda.input_grad(g, q, s, seed, rotate).double()
+        assert ((out - want).norm() / want.norm()).item() < 3e-3
+    # Repeated calls with residual verify in-kernel done[] reset
+    r = torch.randn(m, k, device="cuda", dtype=torch.bfloat16) * rotated.std().item()
+    want_r = rotated + r.double()
+    for _ in range(2):
+        out_r = w8a8_cuda.input_grad(g, q, s, seed, True, r).double()
+        assert ((out_r - want_r).norm() / want_r.norm()).item() < 3e-3
+
+
+@cuda
+def test_stream_k_oom_fallback_stream_isolation_and_rng_replay(monkeypatch):
+    """Stream-K workspace OOM falls back to ordinary GEMM; separate streams get isolated done
+    counters; CUDA RNG state save/restore replays w8a8_input_grad identically."""
+    from zentrainer.harness.kernels import int8_backward, w8a8_cuda
+
+    dev = torch.device("cuda")
+    m, n, k = _stream_k_shape(dev)
+    torch.manual_seed(21)
+    g = torch.randn(m, n, device=dev, dtype=torch.bfloat16)
+    s = torch.rand(n, device=dev) * 0.01 + 0.001
+    q = torch.randint(-127, 128, (n, k), device=dev, dtype=torch.int8)
+
+    # 1. Saving and restoring CUDA RNG state mid-stream replays w8a8_input_grad bit-for-bit
+    _ = int8_backward.w8a8_input_grad(g, q, s, 256)
+    rng_state = torch.cuda.get_rng_state(dev)
+    a1 = int8_backward.w8a8_input_grad(g, q, s, 256)
+    torch.cuda.set_rng_state(rng_state, dev)
+    a2 = int8_backward.w8a8_input_grad(g, q, s, 256)
+    assert torch.equal(a1, a2)
+
+    # 2. Separate streams isolate _sk_done on a shape guaranteed to hit Stream-K for this GPU's SMs
+    seed = torch.tensor([5], device=dev, dtype=torch.int32)
+    s1, s2 = torch.cuda.Stream(), torch.cuda.Stream()
+    with torch.cuda.stream(s1):
+        b1 = w8a8_cuda.input_grad(g, q, s, seed, True)
+    with torch.cuda.stream(s2):
+        b2 = w8a8_cuda.input_grad(g, q, s, seed, True)
+    torch.cuda.synchronize()
+    assert torch.equal(b1, b2) and torch.isfinite(b1).all()
+    idx = g.device.index
+    assert (idx, s1.cuda_stream) in w8a8_cuda._sk_done and (idx, s2.cuda_stream) in w8a8_cuda._sk_done
+    assert w8a8_cuda._sk_done[(idx, s1.cuda_stream)] is not w8a8_cuda._sk_done[(idx, s2.cuda_stream)]
+
+    # 3. OOM on Stream-K partials workspace falls back cleanly to ordinary GEMM with matching output
+    real_empty = torch.empty
+
+    def fail_partials(shape, *args, **kwargs):
+        if kwargs.get("dtype") == torch.int32 and isinstance(shape, tuple) and len(shape) == 1 and shape[0] >= 32768:
+            raise torch.OutOfMemoryError("simulated Stream-K workspace OOM")
+        return real_empty(shape, *args, **kwargs)
+
+    ref = w8a8_cuda.input_grad(g, q, s, seed, True)
+    monkeypatch.setattr(torch, "empty", fail_partials)
+    fallback = w8a8_cuda.input_grad(g, q, s, seed, True)
+    assert torch.equal(fallback, ref)
 
 
 @gpu
