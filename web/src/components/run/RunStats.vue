@@ -5,19 +5,20 @@ import { ZenTip } from '@nynxz/zenkit-ui'
 import { computed } from 'vue'
 import { gb } from '@/stores/system'
 import { SHARE_TIP, likeShare } from '@/lib/likeness'
+import { resumed } from '@/lib/resumed'
 import { isCollapsed, toggleCollapsed } from './collapse'
 import { dur, fmtLr, useRunContext } from './context'
 
 const { detail, last, vramPeak, wall, likeLast, likeFirst, likeCeil } = useRunContext()
 // objective.preserve's last loss (steps between preserve_every's have none)
 const presLast = computed(() => {
-  const rows = detail.value?.metrics ?? []
+  const rows = resumed(detail.value?.metrics ?? [])
   for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.preserve_loss != null) return rows[i]!.preserve_loss!
   return null
 })
 // objective.face_id's last loss (1 - cosine on the denoised face crop)
 const faceIdLast = computed(() => {
-  const rows = detail.value?.metrics ?? []
+  const rows = resumed(detail.value?.metrics ?? [])
   for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.face_id_loss != null) return rows[i]!.face_id_loss!
   return null
 })

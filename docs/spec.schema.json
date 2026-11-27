@@ -696,7 +696,7 @@
         },
         "face_id": {
           "type": "number",
-          "description": "SparseID (face identity loss) weight beside the training loss: decodes only the face crop of the denoised prediction on CPU and matches its ArcFace embedding to the dataset's identity (using Settings -> face_model: buffalo_l, antelopev2 or auraface). 0 = off; 0.02 is a good default (above ~0.05 can over-bake or leak into generic prompts; raise face_id_every to 4-8 to keep untriggered people clean).",
+          "description": "SparseID (face identity loss) weight beside the training loss: decodes only the face crop of the denoised prediction (on CPU by default, or CUDA with face_id_device=\"gpu\") and matches its ArcFace embedding to the dataset's identity (using Settings -> face_model: buffalo_l, antelopev2 or auraface). 0 = off; 0.02 is a good default (above ~0.05 can over-bake or leak into generic prompts; raise face_id_every to 4-8 to keep untriggered people clean).",
           "default": 0.0,
           "minimum": 0,
           "maximum": 1

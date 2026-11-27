@@ -328,6 +328,21 @@ def test_gpu_crop_matches_cpu_and_offloads_back_to_cpu(tmp_path, monkeypatch):
 
     f_cpu = fid.FaceIdentity(tr_cpu)
     f_gpu = fid.FaceIdentity(tr_gpu)
+    assert f_gpu.device_pref == "gpu"
+
+    # Spy on _eval_crop to prove the GPU handler really decoded on CUDA while shared rec stayed on CPU
+    seen_gpu = {}
+    orig_eval = f_gpu._eval_crop
+
+    def spy_eval(z_crop, grid, target, device):
+        out = orig_eval(z_crop, grid, target, device)
+        seen_gpu["device"] = device.type
+        seen_gpu["decoder_cuda"] = any(t.is_cuda for t in f_gpu.decoder.parameters())
+        seen_gpu["rec_cuda"] = any(t.is_cuda for t in f_gpu.rec.parameters())
+        seen_gpu["shared_rec_cuda"] = any(t.is_cuda for t in rec.parameters())
+        return out
+
+    monkeypatch.setattr(f_gpu, "_eval_crop", spy_eval)
 
     base = torch.randn((1, 16, 1, 64, 64), device="cuda")
     p_cpu = base.clone().requires_grad_(True)
@@ -337,16 +352,16 @@ def test_gpu_crop_matches_cpu_and_offloads_back_to_cpu(tmp_path, monkeypatch):
     loss_gpu, raw_gpu = f_gpu.loss(tr_gpu, p_gpu, torch.tensor([0.35]), [0])
     assert loss_cpu is not None and loss_gpu is not None
     assert raw_gpu == pytest.approx(raw_cpu, abs=1e-4)
-    # While GPU SparseID holds its private recognizer on CUDA (before backward), the shared
-    # cached recognizer used by background likeness scoring MUST remain untouched on CPU!
+    assert seen_gpu == {"device": "cuda", "decoder_cuda": True, "rec_cuda": True, "shared_rec_cuda": False}
     assert f_gpu.rec is not rec
-    assert not any(t.is_cuda for t in rec.parameters())
     assert rec(torch.zeros(1, 3, 112, 112)).device.type == "cpu"
+    # Immediately offloaded back to CPU before DiT backward even begins
+    assert not any(t.is_cuda for t in f_gpu.decoder.parameters())
+    assert not any(t.is_cuda for t in f_gpu.rec.parameters())
 
     loss_cpu.backward()
     loss_gpu.backward()
     torch.testing.assert_close(p_gpu.grad, p_cpu.grad, atol=1e-4, rtol=1e-3)
-    # After backward, decoder and recognizer are offloaded back to CPU cleanly
     assert not any(t.is_cuda for t in f_gpu.decoder.parameters())
     assert not any(t.is_cuda for t in f_gpu.rec.parameters())
 
@@ -548,12 +563,15 @@ def test_face_id_margin_gates_gradient_above_target():
     (g_hi,) = torch.autograd.grad(opt_hi, z)
     assert g_hi.abs().max().item() == 0.0
 
-    # Opposite target (cos == -1.0 < 0.80): opt_loss == margin - cos == 1.80 with non-zero gradient
-    opt_lo, dist_lo = fi._eval_crop(z, grid, -cur_emb.clone(), torch.device("cpu"))
-    assert opt_lo.item() == pytest.approx(1.80, abs=1e-5)
-    assert dist_lo.item() == pytest.approx(2.00, abs=1e-5)
+    # Orthogonal target (cos == 0.0 < 0.80): active hinge with non-zero gradient (avoids cos == -1 saddle)
+    ortho = torch.randn_like(cur_emb)
+    ortho = ortho - (ortho * cur_emb).sum() * cur_emb
+    ortho = torch.nn.functional.normalize(ortho, dim=1)
+    opt_lo, dist_lo = fi._eval_crop(z, grid, ortho, torch.device("cpu"))
+    assert opt_lo.item() == pytest.approx(0.80, abs=1e-5)
+    assert dist_lo.item() == pytest.approx(1.00, abs=1e-5)
     (g_lo,) = torch.autograd.grad(opt_lo, z)
-    assert g_lo.abs().max().item() > 0.0
+    assert g_lo.abs().max().item() > 1e-6
 
 
 def test_face_id_rec_loaded_under_inference_mode_still_backprops(tmp_path, monkeypatch):
@@ -723,3 +741,204 @@ def test_differentiable_kitchen_disables_and_restores_fused_norm_served(monkeypa
     with fid._differentiable_kitchen(True):
         assert dm.fused_norm_served(torch.device("cpu"), torch.bfloat16) is False
     assert dm.fused_norm_served is orig
+
+    # If setup fails mid-way (e.g. inspect.signature raises), fused_norm_served and earlier shims restore
+    import inspect
+
+    ck = types.ModuleType("comfy_kitchen")
+    ck_backends = types.ModuleType("comfy_kitchen.backends")
+    ck_eager = types.ModuleType("comfy_kitchen.backends.eager")
+    orig_gn = lambda x: x  # noqa: E731
+    ck.group_norm_a = orig_gn
+    ck.group_norm_b = orig_gn
+    ck_eager.group_norm_a = orig_gn
+    ck_eager.group_norm_b = orig_gn
+    ck_backends.eager = ck_eager
+    monkeypatch.setitem(sys.modules, "comfy_kitchen", ck)
+    monkeypatch.setitem(sys.modules, "comfy_kitchen.backends", ck_backends)
+    monkeypatch.setitem(sys.modules, "comfy_kitchen.backends.eager", ck_eager)
+    calls = {"n": 0}
+    real_sig = inspect.signature
+
+    def boom_on_second(fn):
+        calls["n"] += 1
+        if calls["n"] >= 3:
+            raise ValueError("no signature")
+        return real_sig(fn)
+
+    monkeypatch.setattr(inspect, "signature", boom_on_second)
+    with pytest.raises(ValueError, match="no signature"):
+        with fid._differentiable_kitchen(True):
+            pass
+    assert dm.fused_norm_served is orig
+    assert ck.group_norm_a is orig_gn and ck.group_norm_b is orig_gn
+
+
+def test_fixed_resolution_rejects_cropped_out_faces_at_startup(tmp_path, monkeypatch):
+    """With buckets=False, a face in the cropped-out margin of a landscape image must not count as a target."""
+    import zentrainer.analysis.faces as af
+
+    # 1024x512 landscape cropped to 512x512 loses x in [0, 256) and [768, 1024)
+    p = tmp_path / "wide.png"
+    Image.new("RGB", (1024, 512), (120, 90, 80)).save(p)
+    spec = TrainSpec.from_dict({
+        **BASE,
+        "dataset": {"folder": str(tmp_path), "resolution": 512, "buckets": False},
+        "objective": {"face_id": 0.02},
+    })
+    dec = _TinyDecoder(4, stride=8)
+    vae = SimpleNamespace(
+        first_stage_model=dec, spacial_compression_decode=lambda: 8, latent_dim=2, latent_channels=4,
+        working_dtypes=[torch.float32], process_output=lambda x: x, patcher=None,
+    )
+    ds = Dataset(samples=[], conditionings=[], captions=[], empty_caption=0, owners=[0],
+                 items=[Item(path=p, caption="a photo", mask=None, trigger="subj")])
+    tr = SimpleNamespace(
+        spec=spec, step=0, dataset=ds,
+        models=SimpleNamespace(vae=vae, patcher=SimpleNamespace(model=SimpleNamespace(process_latent_out=lambda x: x))),
+        denoiser=SimpleNamespace(model_sampling=SimpleNamespace()),
+    )
+    monkeypatch.setattr(af, "_net", lambda file, kind: _TinyRec() if kind in ("r50", "r100") else "det")
+    # 80 px face sitting at x=60..140 (inside the cropped-out left 256 px margin)
+    monkeypatch.setattr(
+        af, "_detect",
+        lambda det, rgb: (np.array([[60.0, 200.0, 140.0, 280.0, 0.99]], np.float32),
+                          _pts(100.0, 240.0, scale=1.0)[None].astype(np.float32)),
+    )
+    with pytest.raises(ValueError, match="no clear single-person faces"):
+        fid.FaceIdentity(tr)
+
+
+def test_gpu_crop_backward_oom_falls_back_to_cpu_without_aborting(tmp_path, monkeypatch):
+    """If GPU crop forward or backward raises OutOfMemoryError, loss() falls back to CPU seamlessly."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for GPU OOM fallback test")
+    import zentrainer.analysis.faces as af
+
+    rec = _TinyRec()
+    monkeypatch.setattr(fid, "is_flow", lambda ms: True)
+    monkeypatch.setattr(af, "_net", lambda file, kind: rec if kind in ("r50", "r100") else "det")
+    monkeypatch.setattr(
+        af, "_detect",
+        lambda det, rgb: (np.array([[180.0, 180.0, 320.0, 320.0, 0.99]], np.float32),
+                          _pts(250.0, 250.0, scale=1.5)[None].astype(np.float32)),
+    )
+    tr, _ = _make_trainer(tmp_path, stride=8, in_ch=16, is_5d=True, steps=10, start=0.0, every=1)
+    tr.spec.objective.face_id_device = "gpu"
+    f = fid.FaceIdentity(tr)
+    assert f.device_pref == "gpu"
+
+    real_crop_grad = f._crop_grad
+
+    def oom_on_cuda(z_crop, grid, target, device):
+        if device.type == "cuda":
+            raise torch.OutOfMemoryError("simulated backward OOM")
+        return real_crop_grad(z_crop, grid, target, device)
+
+    monkeypatch.setattr(f, "_crop_grad", oom_on_cuda)
+    pred = torch.randn((1, 16, 1, 64, 64), device="cuda", requires_grad=True)
+    loss, raw = f.loss(tr, pred, torch.tensor([0.35]), [0])
+    assert loss is not None and raw is not None and f.device_pref == "cpu"
+    loss.backward()
+    assert pred.grad is not None and torch.isfinite(pred.grad).all() and pred.grad.abs().sum().item() > 0.0
+    assert not any(t.is_cuda for t in f.decoder.parameters())
+    assert not any(t.is_cuda for t in f.rec.parameters())
+
+
+def test_pcgrad_accumulation_projects_once_without_polluting_subject_grad():
+    """Two micro-batches with subject (1,0)+(1,0) and class (0,1)+(0,-1) must yield (2,0), not (2,-1)."""
+    from zentrainer.harness.trainer import Trainer
+
+    # Case 1: subject (1, 0) twice + opposing class (0, 1) and (0, -1) -> class cancels to (0, 0), total (2, 0)
+    p = torch.nn.Parameter(torch.zeros(2))
+    class_grads = [None]
+    for sg, cg in ((torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])),
+                   (torch.tensor([1.0, 0.0]), torch.tensor([0.0, -1.0]))):
+        p.grad = sg.clone() if p.grad is None else p.grad + sg
+        class_grads[0] = cg.clone() if class_grads[0] is None else class_grads[0] + cg
+    Trainer._apply_pcgrad([p], class_grads)
+    torch.testing.assert_close(p.grad, torch.tensor([2.0, 0.0]))
+
+    # Case 2: class-only opposing grads (0, 1) + (0, -1) -> (0, 0)
+    p2 = torch.nn.Parameter(torch.zeros(2))
+    Trainer._apply_pcgrad([p2], [torch.tensor([0.0, 1.0]) + torch.tensor([0.0, -1.0])])
+    torch.testing.assert_close(p2.grad, torch.tensor([0.0, 0.0]))
+
+    # Case 3: conflicting subject (1, -1) against class (0, 1) removes negative y component -> (1, 1)
+    p3 = torch.nn.Parameter(torch.zeros(2))
+    p3.grad = torch.tensor([1.0, -1.0])
+    Trainer._apply_pcgrad([p3], [torch.tensor([0.0, 1.0])])
+    torch.testing.assert_close(p3.grad, torch.tensor([1.0, 1.0]))
+
+
+def test_build_prior_latents_applies_turbo_lora_and_dedupes_classes(tmp_path, monkeypatch):
+    import contextlib
+    import sys
+    import types
+    from zentrainer.harness import trainer as tr_mod
+    from zentrainer.harness.data import plain_class
+
+    monkeypatch.setattr(tr_mod, "quiet_reloads", contextlib.nullcontext)
+
+    s = TrainSpec.from_dict({
+        **BASE,
+        "model": {"kind": "split", "unet_name": "raw.safetensors", "clip_name": "clip_a.safetensors", "clip_type": "krea2", "vae_name": "v.safetensors"},
+        "dataset": {"folder": "cats", "trigger": "hanasubj", "resolution": 512},
+        "objective": {"preserve": "woman, woman", "preserve_prior": 2},
+        "samples": {"model_name": "alt.safetensors", "turbo_lora": "turbo.safetensors", "turbo_strength": 0.75, "steps": 4, "cfg": 1.0},
+    })
+    events = []
+    alt_patcher = SimpleNamespace(tag="alt", model=SimpleNamespace(latent_format=SimpleNamespace(latent_channels=16), eval=lambda: None))
+    alt_turbo = SimpleNamespace(tag="alt+turbo", model=alt_patcher.model)
+    train_patcher = SimpleNamespace(tag="train", model=SimpleNamespace(latent_format=SimpleNamespace(latent_channels=16), eval=lambda: None))
+
+    comfy_mod = types.ModuleType("comfy")
+    mm_mod = types.ModuleType("comfy.model_management")
+    mm_mod.load_models_gpu = lambda models, **kw: events.append(("load_gpu", models[0].tag))
+    mm_mod.unload_model_and_clones = lambda m: events.append(("unload", m.tag))
+    mm_mod.cleanup_models_gc = lambda: None
+    mm_mod.soft_empty_cache = lambda: None
+    sd_mod = types.ModuleType("comfy.sd")
+    sd_mod.load_diffusion_model = lambda path, model_options=None: alt_patcher
+    sd_mod.load_lora_for_models = lambda p, c, sd, sm, sc: (events.append(("patch_lora", p.tag, sd, sm)), (alt_turbo, c))[1]
+    utils_mod = types.ModuleType("comfy.utils")
+    utils_mod.load_torch_file = lambda path, safe_load=True: f"sd:{path}"
+    sample_mod = types.ModuleType("comfy.sample")
+    sample_mod.fix_empty_latent_channels = lambda p, lat: lat
+    sample_mod.prepare_noise = lambda lat, seed: torch.zeros_like(lat)
+    sample_mod.sample = lambda p, *a, **kw: (events.append(("sample", p.tag)), torch.ones_like(a[7]))[1]
+    comfy_mod.model_management = mm_mod
+    comfy_mod.sd = sd_mod
+    comfy_mod.utils = utils_mod
+    comfy_mod.sample = sample_mod
+    fp_mod = types.ModuleType("folder_paths")
+    fp_mod.get_full_path_or_raise = lambda kind, name: f"/{kind}/{name}"
+    for name, mod in [
+        ("comfy", comfy_mod), ("comfy.model_management", mm_mod), ("comfy.sd", sd_mod),
+        ("comfy.utils", utils_mod), ("comfy.sample", sample_mod), ("folder_paths", fp_mod),
+    ]:
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    tr = tr_mod.Trainer.__new__(tr_mod.Trainer)
+    tr.spec = s
+    tr.streams = SimpleNamespace(multi=False)
+    tr.cache_dir = tmp_path / "cache"
+    tr.device = torch.device("cpu")
+    tr.train_dtype = torch.float32
+    tr._status = lambda *a, **kw: None
+    tr.models = SimpleNamespace(patcher=train_patcher, vae=SimpleNamespace(spacial_compression_encode=lambda: 8, latent_dim=2))
+    tr.network = SimpleNamespace(assist=True, turbo=0.0)
+    tr.dataset = Dataset(samples=[], conditionings=["EMPTY", "PLAIN_WOMAN"], captions=["", plain_class("woman")], empty_caption=0)
+
+    tr._build_prior_latents()
+    # Deduplicated: only 2 latents generated for "woman, woman", using turbo-patched alt
+    assert len(tr._prior_latents["woman"]) == 2
+    assert ("patch_lora", "alt", "sd:/loras/turbo.safetensors", 0.75) in events
+    assert ("sample", "alt+turbo") in events
+    assert ("unload", "alt+turbo") in events
+
+    # Changing clip_name invalidates the cache key so new conditioning doesn't reuse old latents
+    events.clear()
+    tr.spec.model.clip_name = "clip_b.safetensors"
+    tr._build_prior_latents()
+    assert ("sample", "alt+turbo") in events

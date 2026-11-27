@@ -222,7 +222,7 @@ const pMax = computed(() => maxOf(pres.value.map((p) => p.v), 1e-9) * 2)
 const presY = (v: number) => pad.value.t + (1 - v / pMax.value) * (H.value - pad.value.t - pad.value.b)
 const presPath = computed(() => pres.value.map((p, i) => `${i ? 'L' : 'M'}${x(p.step).toFixed(1)},${presY(p.v).toFixed(1)}`).join(''))
 const presAt = (step: number) => [...pres.value].reverse().find((p) => p.step <= step) ?? null
-// SparseID's face cosine distance (1 - cos, in [0, 1]), smoothed over updates on its own 0..1 scale
+// SparseID's face cosine distance (1 - cos, in [0, 2]), smoothed over updates on its own 0..2 scale
 const face = computed(() => {
   const out: { step: number; v: number }[] = []
   let s: number | null = null
@@ -236,7 +236,7 @@ const face = computed(() => {
   }
   return out
 })
-const faceY = (v: number) => pad.value.t + (1 - Math.max(0, Math.min(1, v))) * (H.value - pad.value.t - pad.value.b)
+const faceY = (v: number) => pad.value.t + (1 - Math.max(0, Math.min(2, v)) / 2) * (H.value - pad.value.t - pad.value.b)
 const facePath = computed(() => face.value.map((p, i) => `${i ? 'L' : 'M'}${x(p.step).toFixed(1)},${faceY(p.v).toFixed(1)}`).join(''))
 const faceAt = (step: number) => [...face.value].reverse().find((p) => p.step <= step) ?? null
 const sMax = computed(() => maxOf(speed.value.filter((v): v is number => v != null), 1e-6) * 1.1)
@@ -274,7 +274,7 @@ const fmt = (v: number) => (v === 0 || Math.abs(v) >= 0.01 ? v.toFixed(4) : v.to
         <button v-if="like.length" class="key" :class="{ off: !shows('like') }" title="Show or hide" @click="toggle('like')"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" class="k-like" /><circle cx="9" cy="4" r="3" class="k-like-dot" /></svg> Likeness</button>
         <button v-if="lrShown" class="key muted" :class="{ off: !shows('lr') }" title="Show or hide" @click="toggle('lr')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-lr" /></svg> Learning rate (right axis)</button>
         <button v-if="pres.length" class="key muted" :class="{ off: !shows('pres') }" title="Show or hide: class preservation's loss (how far the LoRA moves the class words from the base model), smoothed, on its own scale from 0 (values on hover). Flat is the aim" @click="toggle('pres')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-pres" /></svg> Preservation</button>
-        <button v-if="face.length" class="key muted" :class="{ off: !shows('face') }" title="Show or hide: SparseID face cosine distance (1 − cosine to the dataset's identity), smoothed on a 0–1 scale. Lower means closer likeness" @click="toggle('face')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-face" /></svg> SparseID</button>
+        <button v-if="face.length" class="key muted" :class="{ off: !shows('face') }" title="Show or hide: SparseID face cosine distance (1 − cosine to the dataset's identity), smoothed on a 0–2 scale. Lower means closer likeness" @click="toggle('face')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-face" /></svg> SparseID</button>
         <button v-if="hasSpeed" class="key muted" :class="{ off: !shows('speed') }" title="Show or hide: training speed, its own scale from 0 (values on hover)" @click="toggle('speed')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-speed" /></svg> Speed</button>
         <button v-if="marks.some((m) => m.kind === 'ckpt')" class="key muted" :class="{ off: !shows('ckpt') }" title="Show or hide" @click="toggle('ckpt')"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" class="k-mark" /></svg> checkpoints</button>
       </span>
@@ -303,7 +303,10 @@ const fmt = (v: number) => (v === 0 || Math.abs(v) >= 0.01 ? v.toFixed(4) : v.to
         </template>
         <path v-if="hasSpeed && shows('speed')" class="speed-line" :d="speedPath" />
         <path v-if="pres.length && shows('pres')" class="pres-line" :d="presPath" />
-        <path v-if="face.length && shows('face')" class="face-line" :d="facePath" />
+        <template v-if="face.length && shows('face')">
+          <path v-if="face.length > 1" class="face-line" :d="facePath" />
+          <circle v-else class="face-dot" :cx="x(face[0]!.step)" :cy="faceY(face[0]!.v)" r="3.5" />
+        </template>
         <path v-if="shows('ema')" class="ema" :d="emaPath" />
         <path v-if="lrShown && shows('lr')" class="lr-line" :d="lrPath" />
         <template v-if="shows('val')">
@@ -471,6 +474,13 @@ button.key.off {
   stroke: var(--chart-5, var(--zen-ok));
   stroke-width: 1.5;
   stroke-dasharray: 3 2;
+  opacity: 0.85;
+  vector-effect: non-scaling-stroke;
+}
+.face-dot {
+  fill: var(--chart-5, var(--zen-ok));
+  stroke: var(--zen-surface);
+  stroke-width: 1.5;
   opacity: 0.85;
   vector-effect: non-scaling-stroke;
 }

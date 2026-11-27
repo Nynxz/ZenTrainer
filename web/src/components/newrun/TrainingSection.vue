@@ -41,6 +41,10 @@ watch(() => spec.slider?.kind, (kind) => {
   if (kind && preserveOn.value) setPreserve(false)
   if (kind && (spec.objective.face_id ?? 0) > 0) spec.objective.face_id = 0
 })
+const isEditRun = computed(() => Boolean(spec.dataset.edit || spec.dataset.control_sets?.length))
+watch(isEditRun, (on) => {
+  if (on && (spec.objective.preserve_prior ?? 0) > 0) spec.objective.preserve_prior = 0
+}, { immediate: true })
 const faceIdOn = computed({
   get: () => (spec.objective.face_id ?? 0) > 0,
   set: (on: boolean) => { spec.objective.face_id = on ? 0.02 : 0 },
@@ -399,10 +403,10 @@ const patterns = computed({
         <ZenField v-if="preserveOn" label="Plain prompts (%)" stack tip="The share of preservation passes on a plain prompt (“a photo of a woman”) at heavy noise, instead of the step's own caption with the class word in. The captions hold prompts that describe the picture; the plain ones hold the short prompts people write, where a picture made from noise can still drift toward your character. 0 = the captions only">
           <ZenNumber :model-value="Math.round((spec.objective.preserve_plain ?? 0) * 100)" :min="0" :max="100" :step="10" :precision="0" @update:model-value="spec.objective.preserve_plain = $event / 100" />
         </ZenField>
-        <ZenField v-if="preserveOn" label="Prior latents (DOP)" stack tip="Sample this many generic class latents per class word from the frozen base model once before training (cached in ~0.3 MB each) and run DOP on those independent latents across the full noise schedule instead of the subject's noisy x_t. Stops mid/low-noise subject bleed when used with SparseID. 0 = off (standard x_t DOP); 8 is a good default with SparseID">
+        <ZenField v-if="preserveOn && !isEditRun" label="Prior latents (DOP)" stack tip="Sample this many generic class latents per class word from the frozen base model once before training (cached in ~0.3 MB each) and run DOP on those independent latents across the full noise schedule instead of the subject's noisy x_t. Stops mid/low-noise subject bleed when used with SparseID. 0 = off (standard x_t DOP); 8 is a good default with SparseID">
           <ZenNumber :model-value="spec.objective.preserve_prior ?? 0" :min="0" :max="64" :step="4" :precision="0" @update:model-value="spec.objective.preserve_prior = $event" />
         </ZenField>
-        <ZenField v-if="!spec.slider?.kind" label="SparseID (face identity)" stack tip="Decodes only the face region of the denoised prediction on CPU and matches its ArcFace embedding to the dataset's identity (uses the face model in Settings: buffalo_l, antelopev2 or AuraFace, downloading it once if needed). Strong likeness boost for characters with zero extra VRAM and ~15% extra CPU time; raise Every to 4–8 if you also generate generic people without the trigger">
+        <ZenField v-if="!spec.slider?.kind" label="SparseID (face identity)" stack tip="Decodes only the face region of the denoised prediction (on CPU by default, or CUDA with GPU selected below) and matches its ArcFace embedding to the dataset's identity (uses the face model in Settings: buffalo_l, antelopev2 or AuraFace, downloading it once if needed). Strong likeness boost for characters with zero extra VRAM and ~15% extra CPU time on CPU; raise Every to 4–8 if you also generate generic people without the trigger">
           <div class="sw-row"><ZenSwitch v-model="faceIdOn" /><span class="sw-state">{{ faceIdOn ? 'On' : 'Off' }}</span></div>
         </ZenField>
         <ZenField v-if="faceIdOn" label="SparseID weight / every" stack tip="The face identity loss weight beside the training loss (0.02 is a good default; too high can over-bake faces), and how often it runs: at most once every Nth step on a mid/low-noise picture">

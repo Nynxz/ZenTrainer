@@ -1613,6 +1613,13 @@ class Trainer:
 
         keys = []
         face_done = False
+        face_loss_val: float | None = None
+        # With grad_accumulation_steps > 1 and Prior-Latent DOP, accumulate class gradients
+        # separately from subject gradients and run PCGrad projection once per optimizer step.
+        priors_on = bool(getattr(self, "_prior_latents", None))
+        class_grads: list[torch.Tensor | None] | None = None
+        if acc > 1 and priors_on and callable(getattr(self.network, "trainable", None)):
+            class_grads = [None] * len(self.network.trainable())
         try:
             for a in range(acc):
                 idx = next(self.batches)
@@ -1657,7 +1664,7 @@ class Trainer:
                     fl, fl_val = self.face_id.loss(self, x0_pred, sigma, idx)
                     if fl is not None:
                         scaled = scaled + fl
-                        self.last_face_id_loss = fl_val
+                        face_loss_val = fl_val
                         face_done = True
                 lap("forward")
                 (self.scaler.scale(scaled) if self.scaler else scaled).backward()
@@ -1666,7 +1673,7 @@ class Trainer:
                     self._keep_step_cost.clear()  # backward freed this micro-batch's graph before the next one
                 total_loss += loss.detach().float()
                 del x0_pred, loss, scaled  # the preservation pass's graph needs the room
-                held = self._preserve_loss(idx, x0, shapes, x_t, sigma, noise, acc)
+                held = self._preserve_loss(idx, x0, shapes, x_t, sigma, noise, acc, class_grads=class_grads)
                 if hasattr(self, "_keep_step_cost"):
                     self._keep_step_cost.clear()
                 if held is not None:
@@ -1675,6 +1682,8 @@ class Trainer:
         finally:
             clear_recompute_weights()
 
+        if class_grads is not None and any(g is not None for g in class_grads):
+            self._apply_pcgrad(self.network.trainable(), class_grads)
         if held_n:
             self.last_preserve_loss = held_sum / held_n  # the step's mean over its micro-batches
         if self.scaler:
@@ -1700,6 +1709,7 @@ class Trainer:
         # the step's one wait for the GPU: its loss, grad norm and noise chart, read together
         loss_sum, grad_norm = self.objective.settle(total_loss, torch.as_tensor(norm))
         self.last_loss, self.last_grad_norm = loss_sum / acc, grad_norm
+        self.last_face_id_loss = face_loss_val
 
     # ---- sliders (harness/slider.py) ----------------------------------------------------------------
 
@@ -1917,6 +1927,7 @@ class Trainer:
         torch.no_grad() (never inference_mode) so they feed training cleanly."""
         import hashlib
         import json
+        import pickle
 
         import comfy.model_management as mm
         import comfy.sample
@@ -1925,29 +1936,45 @@ class Trainer:
             raise ValueError("objective.preserve_prior is for still-image models (multi-stream/video isn't supported)")
         s = self.spec
         sa = s.samples
-        classes = self._classes()
+        classes = tuple(dict.fromkeys(self._classes()))
         n = int(s.objective.preserve_prior)
         res = int(s.dataset.resolution)
         sigmas = torch.tensor(sa.sigmas, dtype=torch.float32) if sa.sigmas else None
         steps = len(sa.sigmas) - 1 if sa.sigmas else int(sa.steps)
 
-        key_parts = [s.model.kind, s.model.ckpt_name, s.model.unet_name, s.model.unet_weight_dtype,
-                     sa.model_name, sa.model_weight_dtype, sa.turbo_lora, sa.turbo_strength,
-                     list(classes), res, n, steps, sa.cfg, sa.sampler, sa.scheduler, list(sa.sigmas), s.seed]
+        vae = self.models.vae
+        comp = int(vae.spacial_compression_encode())
+        t_lat = 1 if int(getattr(vae, "latent_dim", 2)) == 3 else 0
+        train_lf = self.models.patcher.model.latent_format
+        train_channels = int(train_lf.latent_channels)
+
+        key_parts = [
+            s.model.kind, s.model.ckpt_name, s.model.unet_name, s.model.unet_weight_dtype,
+            s.model.clip_name, s.model.clip_type, s.model.vae_name,
+            type(train_lf).__name__, comp, train_channels, t_lat,
+            s.network.base_lora, s.network.base_strength,
+            sa.model_name, sa.model_weight_dtype, sa.turbo_lora, sa.turbo_strength,
+            list(classes), res, n, steps, sa.cfg, sa.sampler, sa.scheduler, list(sa.sigmas), s.seed,
+        ]
         key = hashlib.sha1(json.dumps(key_parts, default=str).encode()).hexdigest()[:20]
         cache_path = self.cache_dir / f"prior_{key}.pt"
         if cache_path.is_file():
+            loaded = None
             try:
                 loaded = torch.load(cache_path, map_location="cpu", weights_only=True)
-                if isinstance(loaded, dict) and all(
-                    w in loaded and len(loaded[w]) == n for w in classes
-                ):
-                    self._prior_latents = {w: [t.to(torch.bfloat16) for t in loaded[w]] for w in classes}
-                    logging.info("[ZenTrainer] Prior-Latent DOP: reused %d cached base latents per class (%s)",
-                                 n, ", ".join(classes))
-                    return
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError, EOFError, TypeError, pickle.UnpicklingError) as e:
+                logging.warning("[ZenTrainer] Prior-Latent DOP: unreadable cache %s (%s); rebuilding", cache_path.name, e)
+            if isinstance(loaded, dict) and all(
+                w in loaded and isinstance(loaded[w], list) and len(loaded[w]) == n
+                and all(isinstance(t, torch.Tensor) for t in loaded[w])
+                for w in classes
+            ):
+                self._prior_latents = {w: [t.to(torch.bfloat16) for t in loaded[w]] for w in classes}
+                logging.info("[ZenTrainer] Prior-Latent DOP: reused %d cached base latents per class (%s)",
+                             n, ", ".join(classes))
+                return
+            if loaded is not None:
+                logging.warning("[ZenTrainer] Prior-Latent DOP: invalid cache layout in %s; rebuilding", cache_path.name)
 
         # Mirror the sampling model (e.g. a turbo model or turbo_lora) because sa.steps/cfg/sigmas
         # are tuned for it; sampling the raw training base at turbo steps/cfg produces under-converged latents.
@@ -1971,13 +1998,23 @@ class Trainer:
                 path = folder_paths.get_full_path_or_raise("checkpoints", sa.model_name)
                 alt = comfy.sd.load_checkpoint_guess_config(path, output_vae=False, output_clip=False)[0]
             patcher = alt
+            # Mirror the frozen sampling stack (base_lora + turbo_lora) without the trained adapter.
+            if s.network.base_lora:
+                import comfy.utils
+
+                base_sd = comfy.utils.load_torch_file(
+                    folder_paths.get_full_path_or_raise("loras", s.network.base_lora), safe_load=True)
+                patcher, _ = comfy.sd.load_lora_for_models(patcher, None, base_sd, s.network.base_strength, 0)
+            if sa.turbo_lora and sa.turbo_strength:
+                import comfy.utils
+
+                turbo_sd = comfy.utils.load_torch_file(
+                    folder_paths.get_full_path_or_raise("loras", sa.turbo_lora), safe_load=True)
+                patcher, _ = comfy.sd.load_lora_for_models(patcher, None, turbo_sd, sa.turbo_strength, 0)
         else:
             patcher = self.models.patcher
 
-        vae = self.models.vae
-        comp = int(vae.spacial_compression_encode())
         channels = int(patcher.model.latent_format.latent_channels)
-        t_lat = 1 if int(getattr(vae, "latent_dim", 2)) == 3 else 0
         ds = self.dataset
         index = {c: i for i, c in enumerate(ds.captions)}
         neg = ds.conditionings[ds.empty_caption]
@@ -2011,21 +2048,26 @@ class Trainer:
                         out[word].append(sampled[0].detach().to("cpu", torch.bfloat16).clone())
         finally:
             if alt is not None:
-                mm.unload_model_and_clones(alt)
-                del alt
+                mm.unload_model_and_clones(patcher)
+                del patcher, alt
                 mm.cleanup_models_gc()
                 mm.soft_empty_cache()
             else:
                 self.network.assist = assist_prev
                 self.network.turbo = turbo_prev
         self._prior_latents = out
+        tmp = cache_path.with_suffix(".pt.tmp")
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = cache_path.with_suffix(".pt.tmp")
             torch.save(out, tmp)
             tmp.replace(cache_path)
-        except OSError:
-            pass
+        except (OSError, RuntimeError) as e:
+            logging.warning("[ZenTrainer] Prior-Latent DOP: couldn't write cache %s (%s); continuing in memory",
+                            cache_path.name, e)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
         logging.info("[ZenTrainer] Prior-Latent DOP: sampled %d base latents per class (%s) at %d px%s",
                      n, ", ".join(classes), res, f" via {sa.model_name}" if (sa.model_name and not same_sample_model) else "")
 
@@ -2059,13 +2101,32 @@ class Trainer:
         trigger = ds.triggers[i] if ds.triggers else self.spec.dataset.trigger
         return self._prepared(i, index[data.as_class(ds.captions[cap], trigger, word)], x0, shapes)
 
+    @staticmethod
+    def _apply_pcgrad(trainable: list[torch.nn.Parameter], class_grads: list[torch.Tensor | None]) -> None:
+        """Project each parameter's accumulated subject gradient (`p.grad`) off the conflicting
+        component of its accumulated class gradient (`gc`) on device (zero host syncs), then sum."""
+        with torch.no_grad():
+            for p, gc in zip(trainable, class_grads):
+                if gc is None:
+                    continue
+                gi = p.grad
+                if gi is None:
+                    p.grad = gc.to(p.dtype)
+                    continue
+                gi_f, gc_f = gi.float(), gc.float()
+                dot = (gi_f * gc_f).sum()
+                coeff = dot.clamp_max(0.0) / (gc_f * gc_f).sum().clamp_min(1e-12)
+                p.grad = (gi_f - coeff * gc_f + gc_f).to(p.dtype)
+
     def _preserve_loss(self, idx: list, x0: torch.Tensor, shapes: list | None, x_t: torch.Tensor,
-                       sigma: torch.Tensor, noise: torch.Tensor, acc: int) -> torch.Tensor | None:
+                       sigma: torch.Tensor, noise: torch.Tensor, acc: int,
+                       class_grads: list[torch.Tensor | None] | None = None) -> torch.Tensor | None:
         """objective.preserve: the same noisy pictures with a class word for the trigger, the base
         model's prediction (adapter zeroed) the target for the adapter's own; backward run here.
         Its own forward without TREAD, so the target is the whole model's. When preserve_prior > 0,
-        runs instead on independent cached base-model class latents across [0.05, 0.90] so the
-        base model's target never sees the subject's face at mid/low noise."""
+        runs instead on independent cached base-model class latents across all configured scheduler
+        levels (or [0.05, 0.90) on continuous schedules) so the base model's target never sees the
+        subject's face at mid/low noise."""
         s = self.spec.objective
         if not s.preserve.strip() or self.step % s.preserve_every:
             return None
@@ -2075,7 +2136,10 @@ class Trainer:
             words = [random.choice(self._classes()) for _ in idx]
             raw = torch.stack([random.choice(priors[w]) for w in words]).to(self.device, torch.float32)
             x0_p = self.models.patcher.model.process_latent_in(raw)
-            percents = 0.05 + torch.rand(len(idx), generator=self.generator) * 0.85
+            if self._schedule is not None:
+                percents = torch.rand(len(idx), generator=self.generator)
+            else:
+                percents = 0.05 + torch.rand(len(idx), generator=self.generator) * 0.85
             sigma = sigmas_for(ms, percents, self._shift, self._schedule).to(self.device)
             noise_p = torch.randn(x0_p.shape, generator=self.generator).to(self.device)
             x_t = self.objective.noisy(ms, sigma, noise_p, x0_p).detach()
@@ -2099,7 +2163,7 @@ class Trainer:
         trainable = None
         if priors and callable(getattr(self.network, "trainable", None)):
             trainable = self.network.trainable()
-            saved_g = [p.grad.detach().clone() if p.grad is not None else None for p in trainable]
+            saved_g = [p.grad for p in trainable]
             for p in trainable:
                 p.grad = None
         with self._autocast():
@@ -2108,19 +2172,20 @@ class Trainer:
         scaled = loss * s.preserve_weight / acc
         (self.scaler.scale(scaled) if self.scaler else scaled).backward()
         if saved_g is not None and trainable is not None:
-            with torch.no_grad():
-                for p, gi in zip(trainable, saved_g):
-                    gc = p.grad
-                    if gi is None:
-                        continue
-                    if gc is None:
+            if class_grads is not None:
+                # Defer PCGrad until all micro-batches finish so earlier class grads never pollute
+                # the subject gradient accumulator.
+                with torch.no_grad():
+                    for k, (p, gi) in enumerate(zip(trainable, saved_g)):
+                        gc = p.grad
+                        if gc is not None:
+                            class_grads[k] = gc if class_grads[k] is None else class_grads[k] + gc
                         p.grad = gi
-                        continue
-                    gi_f, gc_f = gi.float(), gc.float()
-                    dot = (gi_f * gc_f).sum()
-                    if dot < 0:
-                        gi_f = gi_f - (dot / (gc_f * gc_f).sum().clamp_min(1e-12)) * gc_f
-                    p.grad = (gi_f + gc_f).to(p.dtype)
+            else:
+                step_gc = [p.grad for p in trainable]
+                for p, gi in zip(trainable, saved_g):
+                    p.grad = gi
+                self._apply_pcgrad(trainable, step_gc)
         return loss.detach().float()
 
     def _cond(self, i: int, x0: torch.Tensor, shapes: list | None = None) -> dict:

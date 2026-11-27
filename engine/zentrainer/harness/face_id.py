@@ -141,59 +141,61 @@ def _differentiable_kitchen(enabled: bool):
         yield
         return
     saved_fused = None
-    try:
-        import comfy.ldm.modules.diffusionmodules.model as dm_mod
-
-        if hasattr(dm_mod, "fused_norm_served"):
-            saved_fused = (dm_mod, dm_mod.fused_norm_served)
-            dm_mod.fused_norm_served = lambda *_, **__: False
-    except Exception:
-        pass
     saved = {}
+    ck = None
     try:
-        import inspect
+        try:
+            import comfy.ldm.modules.diffusionmodules.model as dm_mod
 
-        import comfy_kitchen as ck
-        from comfy_kitchen.backends import eager as ck_eager
-    except Exception:
-        ck = None
-    if ck is not None:
-        for name in dir(ck):
-            if not (name.startswith("group_norm") or name.startswith("fp16_conv")):
-                continue
-            orig = getattr(ck, name, None)
-            eager_fn = getattr(ck_eager, name, None)
-            if not (callable(orig) and callable(eager_fn)):
-                continue
-            saved[name] = orig
-            sig = inspect.signature(orig)
-            eager_params = set(inspect.signature(eager_fn).parameters)
+            if hasattr(dm_mod, "fused_norm_served"):
+                saved_fused = (dm_mod, dm_mod.fused_norm_served)
+                dm_mod.fused_norm_served = lambda *_, **__: False
+        except ImportError:
+            pass
+        try:
+            import inspect
 
-            def _make_wrap(fn, fn_sig, fn_params):
-                def _wrap(*args, **kwargs):
-                    bound = fn_sig.bind(*args, **kwargs)
-                    bound.apply_defaults()
-                    ba = dict(bound.arguments)
-                    out = ba.pop("out", None)
-                    if "pad" in ba and ba["pad"] is not None:
-                        ba["pad"] = list(ba["pad"])
-                    if "stride" in ba and ba["stride"] is not None:
-                        s = ba["stride"]
-                        ba["stride"] = [s] * 3 if isinstance(s, int) else list(s)
-                    res = fn(**{k: v for k, v in ba.items() if k in fn_params})
-                    if out is not None:
-                        out.copy_(res)
-                        return out
-                    return res
+            import comfy_kitchen as ck
+            from comfy_kitchen.backends import eager as ck_eager
+        except ImportError:
+            ck = None
+        if ck is not None:
+            for name in dir(ck):
+                if not (name.startswith("group_norm") or name.startswith("fp16_conv")):
+                    continue
+                orig = getattr(ck, name, None)
+                eager_fn = getattr(ck_eager, name, None)
+                if not (callable(orig) and callable(eager_fn)):
+                    continue
+                sig = inspect.signature(orig)
+                eager_params = set(inspect.signature(eager_fn).parameters)
 
-                return _wrap
+                def _make_wrap(fn, fn_sig, fn_params):
+                    def _wrap(*args, **kwargs):
+                        bound = fn_sig.bind(*args, **kwargs)
+                        bound.apply_defaults()
+                        ba = dict(bound.arguments)
+                        out = ba.pop("out", None)
+                        if "pad" in ba and ba["pad"] is not None:
+                            ba["pad"] = list(ba["pad"])
+                        if "stride" in ba and ba["stride"] is not None:
+                            s = ba["stride"]
+                            ba["stride"] = [s] * 3 if isinstance(s, int) else list(s)
+                        res = fn(**{k: v for k, v in ba.items() if k in fn_params})
+                        if out is not None:
+                            out.copy_(res)
+                            return out
+                        return res
 
-            setattr(ck, name, _make_wrap(eager_fn, sig, eager_params))
-    try:
+                    return _wrap
+
+                saved[name] = orig
+                setattr(ck, name, _make_wrap(eager_fn, sig, eager_params))
         yield
     finally:
-        for k, v in saved.items():
-            setattr(ck, k, v)
+        if ck is not None:
+            for k, v in saved.items():
+                setattr(ck, k, v)
         if saved_fused is not None:
             saved_fused[0].fused_norm_served = saved_fused[1]
 
@@ -336,6 +338,8 @@ class FaceIdentity:
                 scale = max(tw / ow, th / oh)
                 box_side = min(boxes[k, 2] - boxes[k, 0], boxes[k, 3] - boxes[k, 1]) * scale
                 if box_side < MIN_FACE_PX:
+                    continue
+                if not s.buckets and bucket_landmarks((ow, oh), points[k], (tw, th)) is None:
                     continue
                 dh, dw = rgb_det.shape[:2]
                 pts_det = (points[k] * np.array([dw / ow, dh / oh], dtype=np.float64)).astype(np.float32)
@@ -494,14 +498,15 @@ class FaceIdentity:
                 if not torch.isfinite(grad).all():
                     raise RuntimeError("VAE decoder produced non-finite gradients")
         except Exception as e:
+            self.restore_vae()
             raise ValueError(
                 f"objective.face_id isn't supported with this model's VAE ({type(self.decoder).__name__}): "
                 f"its decoder couldn't backpropagate on CPU ({e})"
             ) from e
         if self.device_pref == "gpu" and torch.cuda.is_available():
             dev = torch.device("cuda")
-            probe_gpu = torch.zeros(shape, dtype=torch.float32, device=dev, requires_grad=True)
             try:
+                probe_gpu = torch.zeros(shape, dtype=torch.float32, device=dev, requires_grad=True)
                 with torch.enable_grad():
                     rgb = self._decode_rgb(probe_gpu, dev)
                     if not rgb.requires_grad:
@@ -525,6 +530,21 @@ class FaceIdentity:
                 self._crop_cache.clear()
             self._crop_cache[key] = crop_plan(ft.orig_size, ft.points, latent_hw, self.stride)
         return self._crop_cache[key]
+
+    def _crop_grad(self, z_crop: torch.Tensor, grid: torch.Tensor, target: torch.Tensor,
+                   device: torch.device) -> tuple[torch.Tensor | None, float | None, float | None]:
+        """Run crop forward + backward on `device` against a detached leaf so both forward and
+        backward are covered by the GPU OOM fallback and the decoder/ArcFace can offload back to
+        CPU before the DiT backward pass runs. Returns `(grad_crop, opt_val, raw_dist)`."""
+        z_leaf = z_crop.detach().requires_grad_(True)
+        opt_loss, raw_dist = self._eval_crop(z_leaf, grid, target, device)
+        # Transfer both scalars in one sync to check finiteness and read the logged metric.
+        vals = torch.stack((opt_loss.detach().float(), raw_dist.detach().float())).cpu().tolist()
+        opt_val, raw_val = float(vals[0]), float(vals[1])
+        if not (math.isfinite(opt_val) and math.isfinite(raw_val)):
+            return None, None, None
+        (grad_crop,) = torch.autograd.grad(opt_loss, z_leaf)
+        return grad_crop.detach(), opt_val, raw_val
 
     def loss(self, tr, pred: torch.Tensor, sigma: torch.Tensor,
              idx: list[int]) -> tuple[torch.Tensor | None, float | None]:
@@ -568,29 +588,32 @@ class FaceIdentity:
         t0 = time.perf_counter() if not getattr(self, "_logged_first_crop", True) else 0.0
         if dev.type == "cuda":
             try:
-                opt_loss, raw_dist = self._eval_crop(z_crop, grid, ft.target, dev)
+                grad_crop, opt_val, raw_val = self._crop_grad(z_crop, grid, ft.target, dev)
             except torch.OutOfMemoryError:
-                logging.warning("[ZenTrainer] SparseID GPU crop decode ran out of VRAM; falling back to CPU")
+                logging.warning("[ZenTrainer] SparseID GPU crop decode/backward ran out of VRAM; falling back to CPU")
                 self._move_to_cpu()
                 torch.cuda.empty_cache()
                 self.device_pref = "cpu"
                 dev = torch.device("cpu")
-                opt_loss, raw_dist = self._eval_crop(z_crop, grid, ft.target, dev)
-            else:
-                # Offload decoder + ArcFace back to CPU as soon as the crop's backward finishes,
-                # before DiT blocks backprop and so ComfyUI's VAE patcher always finds it on CPU.
-                if z_crop.requires_grad:
-                    z_crop.register_hook(lambda _g: self._move_to_cpu())
+                grad_crop, opt_val, raw_val = self._crop_grad(z_crop, grid, ft.target, dev)
+            finally:
+                # Offload decoder + ArcFace back to CPU before DiT backward runs and so ComfyUI's
+                # VAE patcher always finds it on CPU.
+                self._move_to_cpu()
         else:
-            opt_loss, raw_dist = self._eval_crop(z_crop, grid, ft.target, dev)
+            grad_crop, opt_val, raw_val = self._crop_grad(z_crop, grid, ft.target, dev)
         if t0:
             self._logged_first_crop = True
             dt = getattr(self, "gpu_decode_dtype", self.decode_dtype) if dev.type == "cuda" else self.decode_dtype
-            logging.info("[ZenTrainer] SparseID first crop (%s, %s, shape=%s): forward %.0f ms",
+            logging.info("[ZenTrainer] SparseID first crop (%s, %s, shape=%s): forward+backward %.0f ms",
                          dev.type, str(dt).replace("torch.", ""), tuple(z_crop.shape), (time.perf_counter() - t0) * 1000.0)
-        if not torch.isfinite(opt_loss) or not torch.isfinite(raw_dist):
-            if dev.type == "cuda":
-                self._move_to_cpu()
+        if grad_crop is None or opt_val is None or raw_val is None:
             logging.warning("[ZenTrainer] face identity loss was non-finite at step %d; skipping", tr.step + 1)
             return None, None
-        return self.weight * opt_loss.to(pred.device), float(raw_dist.detach().item())
+        # Straight-through surrogate: exact scalar value (weight * opt_val) and exact gradient
+        # (weight * grad_crop) w.r.t. z_crop, without keeping the VAE/ArcFace graph alive on GPU.
+        z_f = z_crop.float()
+        w_grad = grad_crop.to(device=pred.device, dtype=torch.float32) * self.weight
+        val = torch.tensor(self.weight * opt_val, device=pred.device, dtype=torch.float32)
+        surrogate = val + ((z_f - z_f.detach()) * w_grad).sum()
+        return surrogate, raw_val

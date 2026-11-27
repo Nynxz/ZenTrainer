@@ -240,10 +240,11 @@ class ObjectiveSpec:
                                      "noise, especially alongside face_id). 0 = off; 8 is a good default with SparseID.",
                                   ge=0, le=64)
     face_id: float = setting(0.0, "SparseID (face identity loss) weight beside the training loss: decodes only the "
-                                  "face crop of the denoised prediction on CPU and matches its ArcFace embedding to "
-                                  "the dataset's identity (using Settings -> face_model: buffalo_l, antelopev2 or "
-                                  "auraface). 0 = off; 0.02 is a good default (above ~0.05 can over-bake or leak "
-                                  "into generic prompts; raise face_id_every to 4-8 to keep untriggered people clean).",
+                                  "face crop of the denoised prediction (on CPU by default, or CUDA with "
+                                  "face_id_device=\"gpu\") and matches its ArcFace embedding to the dataset's "
+                                  "identity (using Settings -> face_model: buffalo_l, antelopev2 or auraface). 0 = "
+                                  "off; 0.02 is a good default (above ~0.05 can over-bake or leak into generic "
+                                  "prompts; raise face_id_every to 4-8 to keep untriggered people clean).",
                              ge=0, le=1)
     face_id_every: int = setting(2, "SparseID (objective.face_id): run at most once every Nth step on a mid/low-noise "
                                     "picture (0.10 <= noise <= 0.65). 2 keeps CPU overhead small with zero extra VRAM.",
