@@ -208,6 +208,14 @@ export function useRunForm() {
     // else the dataset changed last (pictures added, captions written): likely the one to train now
     const latest = [...datasets.value].sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0))[0]
     spec.dataset.folder = (typeof q === 'string' && q) || spec.dataset.folder || latest?.folder || ''
+    const set = route.query.set
+    if (typeof set === 'string' && set && !from && !edit) {
+      const chosen = datasets.value.find((d) => d.folder === spec.dataset.folder)
+      if (!chosen || chosen.sets.includes(set)) {
+        spec.dataset.caption_set = set
+        spec.dataset.caption_mix = []
+      }
+    }
   })
 
   // ---- presets ---------------------------------------------------------------------------------

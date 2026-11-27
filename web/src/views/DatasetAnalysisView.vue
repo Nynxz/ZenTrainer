@@ -1,46 +1,220 @@
 <script setup lang="ts">
-// A dataset's analysis (engine datasets/analysis.py): what to fix before training. The pictures worth
-// a look by issue, how the trainer's buckets crop them at a resolution, which caption phrases fill
-// most of the set, the spread of brightness, contrast, sharpness and size, and near-duplicate pairs.
-import { ZenButton, ZenEmpty, ZenToggleGroup } from '@nynxz/zenkit-ui'
+// A dataset's analysis (engine datasets/analysis.py): pre-training audit & cleanup cockpit.
+// Overview KPIs + focused tabs (Issues, Duplicates, Buckets, Captions, Spread) with lightbox,
+// right-click actions, and one-click mute/delete so problems can be fixed right here.
+import {
+  ZenButton,
+  ZenCombo,
+  ZenContextMenu,
+  ZenEmpty,
+  ZenLightbox,
+  ZenToggleGroup,
+  type ContextMenuItem,
+  type LightboxItem,
+} from '@nynxz/zenkit-ui'
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EngineError, engine, thumbUrl, type DatasetAnalysis } from '@/api/engine'
+import { ask, tellError } from '@/lib/ask'
 import { remembered } from '@/lib/remembered'
 
 const props = defineProps<{ name: string }>()
 const route = useRoute()
 const router = useRouter()
 
+type Tab = 'issues' | 'duplicates' | 'buckets' | 'captions' | 'spread'
+const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'issues', label: 'Issues', icon: 'mdi-alert-circle-outline' },
+  { id: 'duplicates', label: 'Duplicates', icon: 'mdi-content-duplicate' },
+  { id: 'buckets', label: 'Buckets', icon: 'mdi-grid' },
+  { id: 'captions', label: 'Captions', icon: 'mdi-text-box-outline' },
+  { id: 'spread', label: 'Spread', icon: 'mdi-chart-bar' },
+]
+
 const RESOLUTIONS = ['256', '512', '768', '1024', '1280', '1536']
 const resolution = ref<string>(RESOLUTIONS.includes(route.query.resolution as string) ? (route.query.resolution as string) : '1024')
-const set = computed(() => (route.query.set as string) || 'default')
+const activeSet = ref<string>((route.query.set as string) || 'default')
+const sets = ref<string[]>(['default'])
+const muted = ref<Set<string>>(new Set())
 const data = ref<DatasetAnalysis | null>(null)
 const loading = ref(false)
+const busy = ref(false)
 const error = ref<string | null>(null)
+const notice = ref<string | null>(null)
+const lightbox = ref<number | null>(null)
+const lbPaths = ref<string[]>([])
+const lbFit = ref<'cover' | 'contain'>('contain')
+const tab = ref<Tab>(TABS.some((t) => t.id === route.query.tab) ? (route.query.tab as Tab) : 'issues')
+let pickedInitialTab = TABS.some((t) => t.id === route.query.tab)
+
+function flash(msg: string) {
+  notice.value = msg
+  setTimeout(() => notice.value === msg && (notice.value = null), 2600)
+}
+
+let metaGeneration = 0
+let analysisGeneration = 0
+
+async function loadMeta() {
+  const gen = ++metaGeneration
+  const targetName = props.name
+  try {
+    const ds = await engine.dataset(targetName)
+    if (gen !== metaGeneration || props.name !== targetName) return
+    sets.value = ds.sets.length ? ds.sets : ['default']
+    if (!sets.value.includes(activeSet.value)) activeSet.value = sets.value[0]!
+    const m = new Set<string>()
+    for (const it of ds.items) {
+      if (it.muted?.includes(activeSet.value)) m.add(it.path)
+    }
+    muted.value = m
+  } catch {
+    // analysis endpoint will report any fatal error
+  }
+}
+
+async function loadAnalysis() {
+  const gen = ++analysisGeneration
+  const targetName = props.name
+  const targetSet = activeSet.value
+  const targetRes = Number(resolution.value)
+  loading.value = true
+  error.value = null
+  try {
+    const result = await engine.datasetAnalysis(targetName, targetSet, targetRes)
+    if (gen !== analysisGeneration) return
+    data.value = result
+    if (!pickedInitialTab && data.value) {
+      pickedInitialTab = true
+      const hasIssues = data.value.pictures.some((p) => p.flags.length)
+      const hasDups = data.value.duplicates.length > 0
+      tab.value = hasIssues ? 'issues' : hasDups ? 'duplicates' : 'buckets'
+    }
+  } catch (e) {
+    if (gen === analysisGeneration) error.value = e instanceof EngineError ? e.message : String(e)
+  } finally {
+    if (gen === analysisGeneration) loading.value = false
+  }
+}
 
 watch(
-  [() => props.name, set, resolution],
-  async () => {
-    router.replace({ query: { ...route.query, resolution: resolution.value } })
-    loading.value = true
-    error.value = null
-    try {
-      data.value = await engine.datasetAnalysis(props.name, set.value, Number(resolution.value))
-    } catch (e) {
-      error.value = e instanceof EngineError ? e.message : String(e)
-    } finally {
-      loading.value = false
+  [() => props.name, activeSet, resolution],
+  async ([nextName], prev) => {
+    if (prev?.[0] && nextName !== prev[0]) {
+      pickedInitialTab = TABS.some((t) => t.id === route.query.tab)
+      lightbox.value = null
     }
+    const q: Record<string, string> = { resolution: resolution.value }
+    if (activeSet.value !== 'default') q.set = activeSet.value
+    if (tab.value) q.tab = tab.value
+    router.replace({ query: q })
+    await Promise.all([loadMeta(), loadAnalysis()])
   },
   { immediate: true },
 )
 
+watch(tab, (t) => {
+  if (route.query.tab !== t) router.replace({ query: { ...route.query, tab: t } })
+})
+
 const thumb = (path: string, size = 256) => thumbUrl(props.name, path, size)
 const pct = (x: number) => `${Math.round(x * 100)}%`
+const isMuted = (path: string) => muted.value.has(path)
+const picMap = computed(() => new Map((data.value?.pictures ?? []).map((p) => [p.path, p])))
+const fmtSize = (sz?: [number, number] | null) => (sz ? `${sz[0]}×${sz[1]}` : '—')
 
-// ---- pictures to check, by issue ---------------------------------------------------------------
-// what each flag means, in a line (the engine's stats.image_flags)
+// ---- actions: mute / unmute / delete / context menu / lightbox -----------------------------------
+async function setMuted(paths: string[], on: boolean) {
+  const unique = [...new Set(paths)]
+  if (!unique.length) return
+  const targetName = props.name
+  const targetSet = activeSet.value
+  busy.value = true
+  try {
+    await engine.datasetMuted(targetName, targetSet, unique, on)
+    if (props.name === targetName && activeSet.value === targetSet) {
+      const next = new Set(muted.value)
+      for (const p of unique) {
+        if (on) next.add(p)
+        else next.delete(p)
+      }
+      muted.value = next
+    }
+    flash(`${on ? 'Muted' : 'Unmuted'} ${unique.length} ${unique.length === 1 ? 'picture' : 'pictures'} in “${targetSet}”`)
+  } catch (e) {
+    tellError(e, 'Couldn’t update muted state')
+  } finally {
+    busy.value = false
+  }
+}
+
+async function removePaths(paths: string[]) {
+  const unique = [...new Set(paths)]
+  if (!unique.length) return
+  const targetName = props.name
+  const what = unique.length === 1 ? `“${unique[0]!.split('/').at(-1)}”` : `${unique.length} pictures`
+  if (
+    !(await ask({
+      title: `Delete ${what}?`,
+      message: 'With their captions and masks. This can’t be undone.',
+      ok: 'Delete',
+      danger: true,
+    }))
+  ) {
+    return
+  }
+  busy.value = true
+  try {
+    for (const p of unique) await engine.deleteItem(targetName, p)
+    if (props.name === targetName) {
+      lightbox.value = null
+      flash(`Deleted ${unique.length} ${unique.length === 1 ? 'picture' : 'pictures'}`)
+      await Promise.all([loadMeta(), loadAnalysis()])
+    }
+  } catch (e) {
+    tellError(e, 'Couldn’t delete')
+    if (props.name === targetName) await Promise.all([loadMeta(), loadAnalysis()])
+  } finally {
+    busy.value = false
+  }
+}
+
+const menu = ref<InstanceType<typeof ZenContextMenu> | null>(null)
+const menuItems = ref<ContextMenuItem[]>([])
+function onPicMenu(path: string, e: MouseEvent, list: string[] = [path]) {
+  const m = isMuted(path)
+  const file = path.split('/').at(-1) ?? path
+  menuItems.value = [
+    { heading: file },
+    { label: 'Preview', icon: 'mdi-open-in-app', run: () => openLightbox(list, path) },
+    { label: m ? `Unmute in “${activeSet.value}”` : `Mute in “${activeSet.value}”`, icon: m ? 'mdi-eye-outline' : 'mdi-eye-off-outline', run: () => setMuted([path], !m) },
+    { label: 'Edit mask', icon: 'mdi-draw', run: () => router.push({ path: `/datasets/${encodeURIComponent(props.name)}/mask`, query: { path } }) },
+    { label: 'Copy path', icon: 'mdi-content-copy', run: () => navigator.clipboard?.writeText(path) },
+    '-',
+    { label: 'Delete…', icon: 'mdi-trash-can-outline', danger: true, run: () => removePaths([path]) },
+  ]
+  menu.value?.show(e)
+}
+
+function openLightbox(paths: string[], target: string) {
+  lbPaths.value = paths
+  const idx = paths.indexOf(target)
+  lightbox.value = idx >= 0 ? idx : 0
+}
+const lbItems = computed<LightboxItem[]>(() =>
+  lbPaths.value.map((path) => {
+    const info = picMap.value.get(path)
+    const parts = [fmtSize(info?.size), info?.flags.length ? info.flags.join(', ') : null, isMuted(path) ? 'muted' : null].filter(Boolean)
+    return {
+      src: thumb(path, 1600),
+      thumb: thumb(path, 256),
+      label: path,
+      meta: parts.join(' · '),
+    }
+  }),
+)
+
+// ---- pictures to check, by issue -----------------------------------------------------------------
 const FLAG_INFO: Record<string, string> = {
   small: 'Shorter side under 768 px: it gets upscaled.',
   blurry: 'Much softer than the rest of the set.',
@@ -54,24 +228,99 @@ const FLAG_INFO: Record<string, string> = {
   'near-duplicate': 'A re-saved, resized, lightly edited or mirrored copy of another picture: it counts twice.',
 }
 const flagFilter = ref<string | null>(null)
+const hideMuted = ref(false)
+const allFlagged = computed(() => (data.value?.pictures ?? []).filter((p) => p.flags.length))
 const flagged = computed(() =>
-  (data.value?.pictures ?? []).filter((p) => p.flags.length && (!flagFilter.value || p.flags.includes(flagFilter.value))),
+  allFlagged.value.filter((p) => (!flagFilter.value || p.flags.includes(flagFilter.value)) && (!hideMuted.value || !isMuted(p.path))),
 )
 const flagChips = computed(() => Object.entries(data.value?.flag_counts ?? {}).sort((a, b) => b[1] - a[1]))
+const unmutedFlagged = computed(() => flagged.value.filter((p) => !isMuted(p.path)).map((p) => p.path))
+
+// ---- near-duplicates -----------------------------------------------------------------------------
+function worseSide(a: string, b: string): 'a' | 'b' | null {
+  const pa = picMap.value.get(a)
+  const pb = picMap.value.get(b)
+  const areaA = pa?.size ? pa.size[0] * pa.size[1] : 0
+  const areaB = pb?.size ? pb.size[0] * pb.size[1] : 0
+  if (areaA && areaB && Math.abs(areaA - areaB) / Math.max(areaA, areaB) > 0.08) return areaA < areaB ? 'a' : 'b'
+  const sa = pa?.sharpness ?? 0
+  const sb = pb?.sharpness ?? 0
+  if (sa && sb && Math.abs(sa - sb) / Math.max(sa, sb) > 0.08) return sa < sb ? 'a' : 'b'
+  return 'b'
+}
+function worseReason(side: 'a' | 'b', a: string, b: string): string | null {
+  const w = worseSide(a, b)
+  if (w !== side) return null
+  const pa = picMap.value.get(a)
+  const pb = picMap.value.get(b)
+  const areaA = pa?.size ? pa.size[0] * pa.size[1] : 0
+  const areaB = pb?.size ? pb.size[0] * pb.size[1] : 0
+  if (areaA && areaB && Math.abs(areaA - areaB) / Math.max(areaA, areaB) > 0.08) return 'smaller'
+  const sa = pa?.sharpness ?? 0
+  const sb = pb?.sharpness ?? 0
+  if (sa && sb && Math.abs(sa - sb) / Math.max(sa, sb) > 0.08) return 'softer'
+  return 'copy'
+}
+const activeDuplicates = computed(() =>
+  (data.value?.duplicates ?? []).filter((d) => !hideMuted.value || (!isMuted(d.a) && !isMuted(d.b))),
+)
+const dupDropCandidates = computed(() => {
+  // Group unmuted duplicate pairs into connected components and always keep one representative
+  // per component (highest resolution, breaking near-ties within 8% by sharpness, then first seen)
+  // so non-transitive triangles of near-duplicates never mute every copy in a group.
+  const adj = new Map<string, Set<string>>()
+  const addEdge = (u: string, v: string) => {
+    let su = adj.get(u)
+    if (!su) adj.set(u, (su = new Set()))
+    su.add(v)
+  }
+  for (const d of data.value?.duplicates ?? []) {
+    if (isMuted(d.a) || isMuted(d.b)) continue
+    addEdge(d.a, d.b)
+    addEdge(d.b, d.a)
+  }
+  const areaOf = (path: string) => {
+    const sz = picMap.value.get(path)?.size
+    return sz ? sz[0] * sz[1] : 0
+  }
+  const sharpOf = (path: string) => picMap.value.get(path)?.sharpness ?? 0
+  const visited = new Set<string>()
+  const out: string[] = []
+  for (const start of adj.keys()) {
+    if (visited.has(start)) continue
+    const comp: string[] = []
+    const queue = [start]
+    visited.add(start)
+    while (queue.length) {
+      const cur = queue.shift()!
+      comp.push(cur)
+      for (const nxt of adj.get(cur) ?? []) {
+        if (!visited.has(nxt)) {
+          visited.add(nxt)
+          queue.push(nxt)
+        }
+      }
+    }
+    const maxArea = Math.max(...comp.map(areaOf))
+    const top = maxArea > 0 ? comp.filter((p) => (maxArea - areaOf(p)) / maxArea <= 0.08) : comp
+    const maxSharp = Math.max(...top.map(sharpOf))
+    const sharpest = maxSharp > 0 ? top.filter((p) => (maxSharp - sharpOf(p)) / maxSharp <= 0.08) : top
+    const keep = sharpest[0]!
+    for (const p of comp) {
+      if (p !== keep) out.push(p)
+    }
+  }
+  return out
+})
 
 // ---- buckets -------------------------------------------------------------------------------------
 const maxBucket = computed(() => Math.max(1, ...(data.value?.buckets.rows.map((r) => r.count) ?? [1])))
 const openBucket = ref<string | null>(null)
 const bucketKey = (size: [number, number]) => size.join('x')
 type Placed = { bucket: [number, number]; kept: number; size: [number, number] }
-// What training does to a picture: covers the bucket and crops the overflow from the centre
-// (harness/data load_image). "As trained" frames each thumbnail in its bucket's shape, cropped the
-// same way; otherwise the whole picture shows with the parts the crop cuts off striped.
 const asTrained = remembered('zentrainer.analysis.asTrained', false)
-const wide = (c: Placed) => c.size[0] / c.size[1] > c.bucket[0] / c.bucket[1] // cut at the sides, else top and bottom
-/** the tile's shape: the bucket's as trained, else the picture's own */
+const wide = (c: Placed) => c.size[0] / c.size[1] > c.bucket[0] / c.bucket[1]
 const frame = (c: Placed | undefined) => (c ? { aspectRatio: asTrained.value ? `${c.bucket[0]} / ${c.bucket[1]}` : `${c.size[0]} / ${c.size[1]}` } : {})
-/** the two bands the crop cuts off, as boxes over the whole picture */
 function bands(c: Placed) {
   const lost = `${((1 - c.kept) / 2) * 100}%`
   return wide(c)
@@ -79,12 +328,14 @@ function bands(c: Placed) {
     : [{ side: 'top', style: { top: '0', left: '0', right: '0', height: lost } }, { side: 'bottom', style: { bottom: '0', left: '0', right: '0', height: lost } }]
 }
 const whole = (c: Placed) => c.kept >= 0.995
-const cutLabel = (c: Placed) => (whole(c) ? 'the whole picture' : `cuts ${pct(1 - c.kept)} ${wide(c) ? 'left and right' : 'top and bottom'}`)
+const cutLabel = (c: Placed) => (whole(c) ? 'full frame' : `cuts ${pct(1 - c.kept)} ${wide(c) ? 'sides' : 'top/bottom'}`)
 const placed = (path: string) => data.value?.buckets.placed[path]
+function bucketKept(paths: string[]): number {
+  const vals = paths.map((p) => placed(p)?.kept).filter((v): v is number => v != null)
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 1
+}
 
-// ---- distributions ---------------------------------------------------------------------------------
-// each chart over a fixed range, with the median marked and the ranges a picture gets flagged in shaded
-// (the engine's stats.image_flags thresholds)
+// ---- distributions -------------------------------------------------------------------------------
 interface Hist {
   key: string
   label: string
@@ -123,6 +374,20 @@ const hists = computed<Hist[]>(() => {
 })
 const histMax = (h: Hist) => Math.max(1, ...h.bins)
 const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo) / (h.hi - h.lo)) * 100}%`
+const medianSide = computed(() => {
+  const sides = (data.value?.pictures ?? []).map((p) => (p.size ? Math.min(...p.size) : null)).filter((v): v is number => v != null)
+  const m = median(sides)
+  return m != null ? `${Math.round(m)} px` : '—'
+})
+
+const tabCount = (id: Tab): number | null => {
+  if (!data.value) return null
+  if (id === 'issues') return allFlagged.value.length
+  if (id === 'duplicates') return data.value.duplicates.length
+  if (id === 'buckets') return data.value.buckets.rows.length
+  if (id === 'captions') return data.value.captions.frequent.length || null
+  return null
+}
 </script>
 
 <template>
@@ -135,37 +400,145 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
           Analysis
         </h1>
         <p v-if="data" class="lede">
-          {{ data.pictures.length }} pictures · {{ data.pictures.filter((p) => p.flags.length).length }} worth a look ·
-          {{ data.captions.captions }} captioned<template v-if="data.set !== 'default'"> · caption set “{{ data.set }}”</template>
+          {{ data.pictures.length }} pictures · {{ data.captions.captions }} captioned
+          <template v-if="muted.size"> · {{ muted.size }} muted in “{{ activeSet }}”</template>
           <i v-if="loading" class="mdi mdi-loading mdi-spin" />
         </p>
       </div>
-      <RouterLink :to="`/datasets/${encodeURIComponent(name)}`"><ZenButton size="sm" icon="mdi mdi-arrow-left">Back to the dataset</ZenButton></RouterLink>
+      <div class="head-actions">
+        <ZenCombo
+          v-if="sets.length > 1"
+          :model-value="activeSet"
+          :items="sets.map((s) => ({ value: s, label: s }))"
+          :searchable="false"
+          :sorted="false"
+          size="sm"
+          title="Caption set"
+          @update:model-value="activeSet = String($event)"
+        />
+        <RouterLink :to="{ path: '/runs/new', query: { dataset: name, set: activeSet } }">
+          <ZenButton size="sm" variant="primary" icon="mdi mdi-play">Train</ZenButton>
+        </RouterLink>
+        <RouterLink :to="`/datasets/${encodeURIComponent(name)}`">
+          <ZenButton size="sm" icon="mdi mdi-arrow-left">Dataset</ZenButton>
+        </RouterLink>
+      </div>
     </div>
 
     <div v-if="error" class="card err small"><i class="mdi mdi-alert-circle-outline" /> {{ error }}</div>
     <div v-else-if="!data" class="card muted small"><i class="mdi mdi-loading mdi-spin" /> Looking at every picture… the first time takes a moment; after that only changed ones are read again.</div>
 
     <template v-if="data">
-      <!-- pictures to check -->
-      <section class="card col">
+      <!-- KPI strip: one-glance summary, each card jumps straight to its section -->
+      <div class="kpis">
+        <button class="kpi card" :class="{ on: tab === 'issues', warn: allFlagged.length > 0 }" @click="tab = 'issues'">
+          <span class="kpi-label">Issues</span>
+          <b class="kpi-val mono">{{ allFlagged.length }}</b>
+          <span class="kpi-sub small muted">{{ allFlagged.length ? `${flagChips.length} ${flagChips.length === 1 ? 'type' : 'types'}` : 'All clean' }}</span>
+        </button>
+        <button class="kpi card" :class="{ on: tab === 'duplicates', warn: data.duplicates.length > 0 }" @click="tab = 'duplicates'">
+          <span class="kpi-label">Duplicates</span>
+          <b class="kpi-val mono">{{ data.duplicates.length }}</b>
+          <span class="kpi-sub small muted">{{ data.duplicates.length ? `${dupDropCandidates.length} unmuted` : 'No close copies' }}</span>
+        </button>
+        <button class="kpi card" :class="{ on: tab === 'buckets' }" @click="tab = 'buckets'">
+          <span class="kpi-label">Buckets ({{ data.buckets.resolution }}px)</span>
+          <b class="kpi-val mono">{{ pct(data.buckets.kept_median) }}</b>
+          <span class="kpi-sub small muted">{{ data.buckets.rows.length }} buckets{{ data.buckets.lonely.length ? ` · ${data.buckets.lonely.length} lonely` : '' }}</span>
+        </button>
+        <button class="kpi card" :class="{ on: tab === 'captions', warn: data.captions.captions < data.pictures.length || data.captions.frequent.length > 0 }" @click="tab = 'captions'">
+          <span class="kpi-label">Captions</span>
+          <b class="kpi-val mono">{{ data.captions.captions }}/{{ data.pictures.length }}</b>
+          <span class="kpi-sub small muted">{{ data.captions.frequent.length ? `${data.captions.frequent.length} repeated >50%` : 'Balanced' }}</span>
+        </button>
+        <button class="kpi card" :class="{ on: tab === 'spread' }" @click="tab = 'spread'">
+          <span class="kpi-label">Median size</span>
+          <b class="kpi-val mono">{{ medianSide }}</b>
+          <span class="kpi-sub small muted">Shorter side</span>
+        </button>
+      </div>
+
+      <!-- Focused tab bar -->
+      <div class="tabbar">
+        <div class="tabs">
+          <button v-for="t in TABS" :key="t.id" class="tab" :class="{ on: tab === t.id }" @click="tab = t.id">
+            <i class="mdi" :class="t.icon" />
+            <span>{{ t.label }}</span>
+            <span v-if="tabCount(t.id)" class="badge mono">{{ tabCount(t.id) }}</span>
+          </button>
+        </div>
+        <button v-if="muted.size && (tab === 'issues' || tab === 'duplicates')" class="chip" :class="{ on: hideMuted }" @click="hideMuted = !hideMuted">
+          <i class="mdi" :class="hideMuted ? 'mdi-eye-off-outline' : 'mdi-eye-outline'" />
+          {{ hideMuted ? 'Hiding muted' : 'Hide muted' }}
+        </button>
+      </div>
+
+      <!-- 1. Issues -->
+      <section v-if="tab === 'issues'" class="card col">
         <div class="head">
           <h2>Pictures to check</h2>
-          <span class="muted small">Click an issue to show only those.</span>
+          <div v-if="flagged.length" class="bulk">
+            <ZenButton
+              v-if="unmutedFlagged.length"
+              size="sm"
+              icon="mdi mdi-eye-off-outline"
+              :disabled="busy"
+              :title="`Keep these files, but exclude them from training in “${activeSet}”`"
+              @click="setMuted(unmutedFlagged, true)"
+            >
+              Mute {{ unmutedFlagged.length }}
+            </ZenButton>
+            <ZenButton
+              size="sm"
+              icon="mdi mdi-trash-can-outline"
+              :disabled="busy"
+              @click="removePaths(flagged.map((p) => p.path))"
+            >
+              Delete {{ flagged.length }}…
+            </ZenButton>
+          </div>
         </div>
         <div v-if="flagChips.length" class="chips">
-          <button class="chip" :class="{ on: !flagFilter }" @click="flagFilter = null">All <span class="muted">{{ data.pictures.filter((p) => p.flags.length).length }}</span></button>
+          <button class="chip" :class="{ on: !flagFilter }" @click="flagFilter = null">All <span class="muted">{{ allFlagged.length }}</span></button>
           <button v-for="[f, n] in flagChips" :key="f" class="chip" :class="{ on: flagFilter === f }" :title="FLAG_INFO[f]" @click="flagFilter = flagFilter === f ? null : f">
             {{ f }} <span class="muted">{{ n }}</span>
           </button>
         </div>
-        <p v-if="flagFilter && FLAG_INFO[flagFilter]" class="muted small">{{ FLAG_INFO[flagFilter] }}</p>
-        <ZenEmpty v-if="!flagged.length" icon="mdi mdi-check-circle-outline" title="Nothing to fix">No picture has an image issue.</ZenEmpty>
+        <p v-if="flagFilter && FLAG_INFO[flagFilter]" class="muted small hint">{{ FLAG_INFO[flagFilter] }}</p>
+        <ZenEmpty v-if="!flagged.length" icon="mdi mdi-check-circle-outline" title="Nothing to fix">
+          {{ allFlagged.length && hideMuted ? 'Every flagged picture is muted in this set.' : 'No picture has an image issue.' }}
+        </ZenEmpty>
         <div v-else class="grid">
-          <figure v-for="p in flagged.slice(0, 120)" :key="p.path" class="tile">
-            <img :src="thumb(p.path)" loading="lazy" :alt="p.path" />
+          <figure
+            v-for="p in flagged.slice(0, 120)"
+            :key="p.path"
+            class="tile clickable"
+            :class="{ mutedTile: isMuted(p.path) }"
+            tabindex="0"
+            role="button"
+            @click="openLightbox(flagged.map((x) => x.path), p.path)"
+            @keydown.enter.self.prevent="openLightbox(flagged.map((x) => x.path), p.path)"
+            @keydown.space.self.prevent="openLightbox(flagged.map((x) => x.path), p.path)"
+            @contextmenu="onPicMenu(p.path, $event, flagged.map((x) => x.path))"
+          >
+            <div class="thumb-wrap">
+              <img :src="thumb(p.path)" loading="lazy" :alt="p.path" />
+              <span v-if="isMuted(p.path)" class="muted-pill">Muted</span>
+              <div class="tile-actions" @click.stop>
+                <button :title="isMuted(p.path) ? 'Unmute' : `Mute in “${activeSet}”`" :disabled="busy" @click="setMuted([p.path], !isMuted(p.path))">
+                  <i class="mdi" :class="isMuted(p.path) ? 'mdi-eye-outline' : 'mdi-eye-off-outline'" />
+                </button>
+                <button title="Edit mask" @click="router.push({ path: `/datasets/${encodeURIComponent(name)}/mask`, query: { path: p.path } })">
+                  <i class="mdi mdi-draw" />
+                </button>
+                <button class="danger" title="Delete picture" :disabled="busy" @click="removePaths([p.path])">
+                  <i class="mdi mdi-trash-can-outline" />
+                </button>
+              </div>
+            </div>
             <figcaption>
               <span class="ellipsis small mono" :title="p.path">{{ p.path }}</span>
+              <span class="small muted mono">{{ fmtSize(p.size) }}</span>
               <span class="tags"><span v-for="f in p.flags" :key="f" class="tag" :title="FLAG_INFO[f]">{{ f }}</span></span>
             </figcaption>
           </figure>
@@ -173,8 +546,70 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
         <p v-if="flagged.length > 120" class="muted small">and {{ flagged.length - 120 }} more</p>
       </section>
 
-      <!-- buckets -->
-      <section class="card col">
+      <!-- 2. Near-duplicates -->
+      <section v-if="tab === 'duplicates'" class="card col">
+        <div class="head">
+          <h2>Near-duplicates</h2>
+          <ZenButton
+            v-if="dupDropCandidates.length"
+            size="sm"
+            icon="mdi mdi-eye-off-outline"
+            :disabled="busy"
+            title="Mute the smaller or softer copy of every active duplicate pair"
+            @click="setMuted(dupDropCandidates, true)"
+          >
+            Mute {{ dupDropCandidates.length }} smaller/softer {{ dupDropCandidates.length === 1 ? 'copy' : 'copies' }}
+          </ZenButton>
+        </div>
+        <p class="muted small hint">Copies of the same picture (re-saved, resized, lightly edited or mirrored) count twice in training. Mute or delete the weaker copy directly.</p>
+        <ZenEmpty v-if="!activeDuplicates.length" icon="mdi mdi-check-circle-outline" title="No duplicates to resolve">
+          {{ data.duplicates.length && hideMuted ? 'Every duplicate pair already has a muted copy.' : 'No two pictures are close copies.' }}
+        </ZenEmpty>
+        <div v-else class="pairs">
+          <div v-for="d in activeDuplicates.slice(0, 40)" :key="d.a + d.b" class="pair">
+            <div class="pair-head small">
+              <span><b>{{ d.kind }}</b><span v-if="d.mirrored" class="muted"> · mirrored</span></span>
+              <span class="muted mono">{{ Math.round(d.corr * 100) }}% match</span>
+            </div>
+            <div class="pair-sides">
+              <div
+                v-for="side in (['a', 'b'] as const)"
+                :key="side"
+                class="pair-item"
+                :class="{ mutedTile: isMuted(d[side]) }"
+                @contextmenu="onPicMenu(d[side], $event, [d.a, d.b])"
+              >
+                <div
+                  class="thumb-wrap clickable"
+                  tabindex="0"
+                  role="button"
+                  @click="openLightbox([d.a, d.b], d[side])"
+                  @keydown.enter.prevent="openLightbox([d.a, d.b], d[side])"
+                  @keydown.space.prevent="openLightbox([d.a, d.b], d[side])"
+                >
+                  <img :src="thumb(d[side], 256)" loading="lazy" :alt="d[side]" />
+                  <span v-if="isMuted(d[side])" class="muted-pill">Muted</span>
+                  <span v-else-if="worseReason(side, d.a, d.b)" class="worse-pill">{{ worseReason(side, d.a, d.b) }}</span>
+                </div>
+                <span class="ellipsis small mono" :title="d[side]">{{ d[side] }}</span>
+                <span class="small muted mono">
+                  {{ fmtSize(picMap.get(d[side])?.size) }}
+                  <template v-if="picMap.get(d[side])?.sharpness"> · {{ picMap.get(d[side])!.sharpness!.toFixed(2) }}×</template>
+                </span>
+                <div class="pair-btns">
+                  <ZenButton size="sm" :disabled="busy" :icon="isMuted(d[side]) ? 'mdi mdi-eye-outline' : 'mdi mdi-eye-off-outline'" @click="setMuted([d[side]], !isMuted(d[side]))">
+                    {{ isMuted(d[side]) ? 'Unmute' : 'Mute' }}
+                  </ZenButton>
+                  <ZenButton size="sm" icon="mdi mdi-trash-can-outline" :disabled="busy" @click="removePaths([d[side]])">Delete</ZenButton>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Buckets -->
+      <section v-if="tab === 'buckets'" class="card col">
         <div class="head">
           <h2>Buckets</h2>
           <ZenToggleGroup
@@ -185,19 +620,34 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
           />
           <ZenToggleGroup v-model="resolution" :options="RESOLUTIONS.map((r) => ({ value: r, label: r }))" size="sm" />
         </div>
-        <p class="muted small">
-          Each picture trains at the bucket closest to its shape, about {{ data.buckets.resolution }}² pixels, cropped to fit.
-          Half the pictures keep at least {{ pct(data.buckets.kept_median) }} of themselves. Open a bucket to see each crop: the striped parts are cut off, or switch to As trained for exactly what each step sees.
+        <p class="muted small hint">
+          Each picture trains at the bucket closest to its shape (~{{ data.buckets.resolution }}² px), centre-cropped to fit.
+          Half the set keeps at least <b>{{ pct(data.buckets.kept_median) }}</b>. Click any bucket to inspect its crops, or right-click a picture to mute/delete it.
         </p>
         <div class="bars">
           <template v-for="r in data.buckets.rows" :key="bucketKey(r.size)">
-            <button class="bar-row clickable" :class="{ open: openBucket === bucketKey(r.size) }" @click="openBucket = openBucket === bucketKey(r.size) ? null : bucketKey(r.size)">
-              <span class="mono small label"><i :class="openBucket === bucketKey(r.size) ? 'mdi mdi-chevron-down' : 'mdi mdi-chevron-right'" /> {{ r.size[0] }}×{{ r.size[1] }}</span>
+            <button class="bar-row bucket-row clickable" :class="{ open: openBucket === bucketKey(r.size) }" @click="openBucket = openBucket === bucketKey(r.size) ? null : bucketKey(r.size)">
+              <span class="mono small label">
+                <i :class="openBucket === bucketKey(r.size) ? 'mdi mdi-chevron-down' : 'mdi mdi-chevron-right'" />
+                {{ r.size[0] }}×{{ r.size[1] }}
+                <span v-if="r.count === 1" class="lonely-tag">lonely</span>
+              </span>
               <span class="track"><span class="fill" :style="{ width: pct(r.count / maxBucket) }" /></span>
-              <span class="mono small count">{{ r.count }}</span>
+              <span class="mono small count">{{ r.count }} · {{ pct(bucketKept(r.pictures)) }}</span>
             </button>
             <div v-if="openBucket === bucketKey(r.size)" class="bucket-pics">
-              <figure v-for="path in r.pictures.slice(0, 60)" :key="path" class="tile">
+              <figure
+                v-for="path in r.pictures.slice(0, 60)"
+                :key="path"
+                class="tile clickable"
+                :class="{ mutedTile: isMuted(path) }"
+                tabindex="0"
+                role="button"
+                @click="openLightbox(r.pictures, path)"
+                @keydown.enter.prevent="openLightbox(r.pictures, path)"
+                @keydown.space.prevent="openLightbox(r.pictures, path)"
+                @contextmenu="onPicMenu(path, $event, r.pictures)"
+              >
                 <div class="crop" :style="frame(placed(path))">
                   <img :src="thumb(path)" loading="lazy" :alt="path" />
                   <template v-if="!asTrained && placed(path) && !whole(placed(path)!)">
@@ -215,12 +665,23 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
         </div>
         <p v-if="data.buckets.lonely.length" class="warn small">
           <i class="mdi mdi-account-alert-outline" /> {{ data.buckets.lonely.length }} {{ data.buckets.lonely.length === 1 ? 'picture is' : 'pictures are' }} alone in a bucket:
-          with a batch size above 1 it can't share a batch.
+          with batch size &gt; 1 it can't share a batch.
         </p>
         <template v-if="data.buckets.cropped.length">
-          <div class="eyebrow">Cropped the most</div>
+          <div class="eyebrow">Cropped the most (&gt;15% lost)</div>
           <div class="grid">
-            <figure v-for="c in data.buckets.cropped.slice(0, 24)" :key="c.path" class="tile">
+            <figure
+              v-for="c in data.buckets.cropped.slice(0, 24)"
+              :key="c.path"
+              class="tile clickable"
+              :class="{ mutedTile: isMuted(c.path) }"
+              tabindex="0"
+              role="button"
+              @click="openLightbox(data.buckets.cropped.map((x) => x.path), c.path)"
+              @keydown.enter.prevent="openLightbox(data.buckets.cropped.map((x) => x.path), c.path)"
+              @keydown.space.prevent="openLightbox(data.buckets.cropped.map((x) => x.path), c.path)"
+              @contextmenu="onPicMenu(c.path, $event, data.buckets.cropped.map((x) => x.path))"
+            >
               <div class="crop" :style="frame(c)">
                 <img :src="thumb(c.path)" loading="lazy" :alt="c.path" />
                 <template v-if="!asTrained">
@@ -236,11 +697,13 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
         </template>
       </section>
 
-      <!-- captions -->
-      <section class="card col">
+      <!-- 4. Captions -->
+      <section v-if="tab === 'captions'" class="card col">
         <div class="head">
           <h2>Captions</h2>
-          <span v-if="data.captions.style" class="muted small">read as {{ data.captions.style === 'tags' ? 'tags' : 'sentences' }}<template v-if="data.captions.subject">, leaving out “{{ data.captions.subject }}”</template></span>
+          <span v-if="data.captions.style" class="muted small">
+            read as {{ data.captions.style === 'tags' ? 'tags' : 'sentences' }}<template v-if="data.captions.subject">, leaving out “{{ data.captions.subject }}”</template>
+          </span>
         </div>
         <ZenEmpty v-if="!data.captions.captions" icon="mdi mdi-text-box-remove-outline" title="No captions">Caption the set to see what it repeats.</ZenEmpty>
         <template v-else>
@@ -263,8 +726,8 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
         </template>
       </section>
 
-      <!-- distributions -->
-      <section class="card col">
+      <!-- 5. Spread -->
+      <section v-if="tab === 'spread'" class="card col">
         <div class="head"><h2>Spread</h2></div>
         <div class="hists">
           <div v-for="h in hists" :key="h.key" class="hist">
@@ -284,24 +747,32 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
           </div>
         </div>
       </section>
+    </template>
 
-      <!-- near-duplicates -->
-      <section class="card col">
-        <div class="head">
-          <h2>Near-duplicates</h2>
-          <span class="muted small">Copies of the same picture (re-saved, resized, lightly edited or mirrored) count twice in training.</span>
-        </div>
-        <ZenEmpty v-if="!data.duplicates.length" icon="mdi mdi-content-duplicate" title="None">No two pictures are close copies.</ZenEmpty>
-        <div v-else class="pairs">
-          <div v-for="d in data.duplicates.slice(0, 40)" :key="d.a + d.b" class="pair">
-            <img :src="thumb(d.a, 192)" loading="lazy" :alt="d.a" :title="d.a" />
-            <img :src="thumb(d.b, 192)" loading="lazy" :alt="d.b" :title="d.b" />
-            <span class="small"><b>{{ d.kind }}</b><span v-if="d.mirrored" class="muted"> · mirrored</span></span>
+    <div v-if="notice" class="float-notice zen-surface small">{{ notice }}</div>
+    <ZenContextMenu ref="menu" :items="menuItems" />
+    <ZenLightbox v-if="lightbox != null && lbItems.length" v-model:index="lightbox" v-model:thumb-fit="lbFit" :items="lbItems" :searchable="false" @close="lightbox = null">
+      <template #side="{ index }">
+        <div v-if="lbPaths[index]" class="lb-side">
+          <b class="mono small ellipsis" :title="lbPaths[index]">{{ lbPaths[index] }}</b>
+          <div class="small muted mono">{{ fmtSize(picMap.get(lbPaths[index]!)?.size) }}</div>
+          <div v-if="picMap.get(lbPaths[index]!)?.flags.length" class="tags">
+            <span v-for="f in picMap.get(lbPaths[index]!)!.flags" :key="f" class="tag" :title="FLAG_INFO[f]">{{ f }}</span>
+          </div>
+          <div class="lb-actions">
+            <ZenButton size="sm" :disabled="busy" :icon="isMuted(lbPaths[index]!) ? 'mdi mdi-eye-outline' : 'mdi mdi-eye-off-outline'" @click="setMuted([lbPaths[index]!], !isMuted(lbPaths[index]!))">
+              {{ isMuted(lbPaths[index]!) ? 'Unmute' : `Mute in “${activeSet}”` }}
+            </ZenButton>
+            <ZenButton size="sm" icon="mdi mdi-draw" @click="router.push({ path: `/datasets/${encodeURIComponent(name)}/mask`, query: { path: lbPaths[index]! } })">
+              Edit mask
+            </ZenButton>
+            <ZenButton size="sm" icon="mdi mdi-trash-can-outline" :disabled="busy" @click="removePaths([lbPaths[index]!])">
+              Delete…
+            </ZenButton>
           </div>
         </div>
-      </section>
-
-    </template>
+      </template>
+    </ZenLightbox>
   </div>
 </template>
 
@@ -310,6 +781,12 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   display: flex;
   gap: 6px;
   align-items: baseline;
+  flex-wrap: wrap;
+}
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .col {
@@ -321,13 +798,21 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
 .head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 .head h2 {
   margin: 0;
   font-size: 15px;
   flex: 1;
+}
+.bulk {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.hint {
+  margin: 0;
 }
 .err {
   color: var(--zen-danger);
@@ -337,6 +822,86 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   margin: 0;
 }
 
+/* ---- KPI strip & tab bar ------------------------------------------------------------------------ */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--zen-text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color var(--zen-dur-fast) ease, background var(--zen-dur-fast) ease;
+}
+.kpi:hover {
+  border-color: var(--zen-accent);
+}
+.kpi.on {
+  border-color: var(--zen-accent);
+  background: color-mix(in srgb, var(--zen-accent) 8%, var(--zen-surface));
+}
+.kpi-label {
+  font-size: 11px;
+  color: var(--zen-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.kpi-val {
+  font-size: 20px;
+  line-height: 1.2;
+}
+.kpi.warn .kpi-val {
+  color: var(--zen-warn);
+}
+.tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md, 8px);
+  background: var(--zen-surface);
+  color: var(--zen-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--zen-text);
+  border-color: color-mix(in srgb, var(--zen-text) 25%, var(--zen-border));
+}
+.tab.on {
+  color: var(--zen-text);
+  border-color: var(--zen-accent);
+  background: color-mix(in srgb, var(--zen-accent) 12%, var(--zen-surface));
+}
+.badge {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 99px;
+  background: var(--zen-surface-2);
+  color: var(--zen-text);
+}
+
 /* ---- chips and picture tiles -------------------------------------------------------------------- */
 .chips {
   display: flex;
@@ -344,6 +909,9 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   flex-wrap: wrap;
 }
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--zen-border);
   background: none;
   color: var(--zen-text);
@@ -362,7 +930,7 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
   gap: 10px;
 }
 .tile {
@@ -372,7 +940,26 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   gap: 4px;
   min-width: 0;
 }
-.tile img {
+.tile.clickable {
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.tile.clickable:focus-visible,
+.thumb-wrap.clickable:focus-visible {
+  outline: 2px solid var(--zen-accent);
+  outline-offset: 2px;
+}
+.mutedTile {
+  opacity: 0.55;
+}
+.thumb-wrap {
+  position: relative;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--zen-surface-2);
+}
+.tile img,
+.pair-item img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: contain;
@@ -380,10 +967,58 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   border-radius: var(--r-sm);
   display: block;
 }
+.muted-pill,
+.worse-pill {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--zen-bg) 82%, transparent);
+  color: var(--zen-muted);
+}
+.worse-pill {
+  color: var(--zen-warn);
+}
+.tile-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity var(--zen-dur-fast) ease;
+}
+.tile:hover .tile-actions,
+.tile:focus-within .tile-actions {
+  opacity: 1;
+}
+.tile-actions button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--zen-bg) 84%, transparent);
+  color: var(--zen-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.tile-actions button:hover {
+  border-color: var(--zen-accent);
+  color: var(--zen-accent);
+}
+.tile-actions button.danger:hover {
+  border-color: var(--zen-danger);
+  color: var(--zen-danger);
+}
 .tile figcaption {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
 }
 .tags {
@@ -398,14 +1033,11 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   background: color-mix(in srgb, var(--zen-warn) 15%, transparent);
   color: var(--zen-warn);
 }
-/* the tile takes the picture's own shape, so the kept box lines up with it */
 .crop {
   position: relative;
   border-radius: var(--r-sm);
   overflow: hidden;
 }
-/* the tile takes the picture's shape (or its bucket's, as trained); the thumbnail fills it from the
-   centre, as training crops */
 .crop img {
   width: 100%;
   height: 100%;
@@ -413,20 +1045,21 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   object-fit: cover;
   border-radius: 0;
 }
-/* what the crop cuts off: striped in the warning colour, a dashed line where the kept part starts,
-   so even a sliver shows */
 .cut {
   position: absolute;
   pointer-events: none;
-  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--zen-warn) 70%, transparent) 0 3px,
-    color-mix(in srgb, black 45%, transparent) 3px 7px);
+  background: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--zen-warn) 70%, transparent) 0 3px,
+    color-mix(in srgb, black 45%, transparent) 3px 7px
+  );
 }
 .cut.left { border-right: 2px dashed var(--zen-warn); }
 .cut.right { border-left: 2px dashed var(--zen-warn); }
 .cut.top { border-bottom: 2px dashed var(--zen-warn); }
 .cut.bottom { border-top: 2px dashed var(--zen-warn); }
 
-/* ---- bars --------------------------------------------------------------------------------------- */
+/* ---- bars & buckets ----------------------------------------------------------------------------- */
 .bars {
   display: flex;
   flex-direction: column;
@@ -434,9 +1067,34 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
 }
 .bar-row {
   display: grid;
-  grid-template-columns: minmax(90px, 220px) minmax(0, 1fr) 48px;
+  grid-template-columns: minmax(90px, 220px) minmax(0, 1fr) 54px;
   gap: 10px;
   align-items: center;
+}
+.bucket-row {
+  grid-template-columns: minmax(110px, 200px) minmax(0, 1fr) 86px;
+}
+.bar-row.clickable {
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.bar-row.clickable:hover,
+.bar-row.open {
+  background: var(--zen-surface-2);
+}
+.lonely-tag {
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--zen-warn) 15%, transparent);
+  color: var(--zen-warn);
 }
 .label {
   min-width: 0;
@@ -459,6 +1117,20 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
 .count {
   text-align: right;
   color: var(--zen-muted);
+  white-space: nowrap;
+}
+.bucket-pics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  padding: 8px 6px 12px;
+}
+.eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zen-muted);
+  margin-top: 6px;
 }
 .frequent {
   display: flex;
@@ -474,7 +1146,7 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   font-size: 18px;
 }
 
-/* ---- histograms: one shape each, so they line up --------------------------------------------- */
+/* ---- histograms --------------------------------------------------------------------------------- */
 .hists {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -502,88 +1174,112 @@ const at = (h: Hist, x: number) => `${((Math.min(h.hi, Math.max(h.lo, x)) - h.lo
   position: absolute;
   top: 0;
   bottom: 0;
-  background: color-mix(in srgb, var(--zen-warn) 10%, transparent);
-  border-left: 1px dashed color-mix(in srgb, var(--zen-warn) 40%, transparent);
-  border-right: 1px dashed color-mix(in srgb, var(--zen-warn) 40%, transparent);
+  background: color-mix(in srgb, var(--zen-warn) 12%, transparent);
+  pointer-events: none;
 }
 .hbars {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  height: 100%;
   display: flex;
   align-items: flex-end;
-  gap: 2px;
+  gap: 1px;
 }
 .hb {
   flex: 1;
   background: color-mix(in srgb, var(--zen-text) 45%, transparent);
-  border-radius: 2px 2px 0 0;
+  border-radius: 1px 1px 0 0;
 }
 .med {
   position: absolute;
-  top: -2px;
-  bottom: 0;
+  top: 0;
+  bottom: -2px;
   width: 2px;
-  margin-left: -1px;
   background: var(--zen-accent);
+  pointer-events: none;
 }
 .axis {
   display: flex;
   justify-content: space-between;
+  font-size: 11px;
 }
 .note {
   margin: 0;
 }
 
-/* ---- a bucket's pictures, opened ---------------------------------------------------------------- */
-button.bar-row {
-  border: none;
-  background: none;
-  color: inherit;
-  font: inherit;
-  padding: 3px 4px;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  text-align: left;
-}
-button.bar-row:hover,
-button.bar-row.open {
-  background: var(--zen-surface-2);
-}
-.bucket-pics {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 10px;
-  align-items: start;
-  padding: 10px 4px 14px;
-}
-.bucket-pics p {
-  grid-column: 1 / -1;
-}
-
-/* ---- pairs -------------------------------------------------------------------------------------- */
+/* ---- duplicates --------------------------------------------------------------------------------- */
 .pairs {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 12px;
 }
 .pair {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--zen-border);
+  border-radius: var(--r-md);
+  background: var(--zen-surface);
+}
+.pair-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.pair-sides {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.pair-item {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
-.pair img {
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
-  border-radius: var(--r-sm);
-  background: var(--zen-surface-2);
+.pair-btns {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+  flex-wrap: wrap;
 }
-.pair span {
-  grid-column: 1 / -1;
+.clickable {
+  cursor: pointer;
 }
-@media (max-width: 600px) {
-  .bar-row {
-    grid-template-columns: minmax(70px, 120px) minmax(0, 1fr) 40px;
+
+/* ---- lightbox side & toast ---------------------------------------------------------------------- */
+.lb-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.lb-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.float-notice {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  border: 1px solid var(--zen-border);
+  border-radius: 99px;
+  z-index: 60;
+}
+
+@media (max-width: 640px) {
+  .kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .pairs {
+    grid-template-columns: 1fr;
+  }
+  .tile-actions {
+    opacity: 1;
   }
 }
 </style>
