@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Muon optimizer (`optim.optimizer: "Muon"`) and `lr_floor` for cosine/linear schedules.** Adds a
+  built-in pure-PyTorch Newton-Schulz polar orthogonalized momentum optimizer for LoKr, LoRA and OFT
+  adapters (suggested LR `3e-4` with cosine schedule), and extends `optim.lr_floor` to floor
+  `cosine` and `linear` LR decay so late high-resolution stages don't stall near zero.
 - **Samples reuse the training model when `samples.model_name` matches it.** Setting the preview
   model to the same file and weight dtype as the training model (at LoRA strength 1.0) now reuses
   the already-loaded model instead of loading a duplicate copy from disk.

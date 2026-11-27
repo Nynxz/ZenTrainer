@@ -48,6 +48,7 @@ const OPT_DEFAULTS: Record<string, { lr: number; scheduler?: TrainSpec['optim'][
   // LoRA LR and let it adjust from there
   Automagic3: { lr: 1e-4, scheduler: 'constant' },
   Automagic4: { lr: 1e-4, scheduler: 'constant' }, // v3's controller underneath: the same start
+  Muon: { lr: 3e-4, scheduler: 'cosine' },
   Prodigy: { lr: 1 },
   Lion: { lr: 3e-5 },
   Lion8bit: { lr: 3e-5 },
