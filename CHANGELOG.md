@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Krea 2: native `(B, L, H, D)` attention layout and GQA.** Passes compact KV heads directly to
+  grouped-query attention and keeps `q/k/v` in FlashAttention's native `(B, L, H, D)` layout
+  through QK-norm and RoPE instead of transposing to contiguous `(B, H, L, D)` and back on every
+  block.
 - **MOSS Image: faster training and lower VRAM.** `modulated_rms_norm` and `gated_residual` now
   cast back to the training dtype (`bf16`) during training, matching inference instead of leaking
   fp32 into `qkv`/`ffn_up_gate` and the residual stream (restoring fused int8 bypass on all layers
