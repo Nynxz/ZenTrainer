@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **MOSS Image: faster training and lower VRAM.** `modulated_rms_norm` and `gated_residual` now
+  cast back to the training dtype (`bf16`) during training, matching inference instead of leaking
+  fp32 into `qkv`/`ffn_up_gate` and the residual stream (restoring fused int8 bypass on all layers
+  and avoiding a duplicate compiled graph after block 0).
 - **Fused int8/packed bypass for direct 2D LoKr.** Direct LoKr adapters (alone or inside `_Assisted`)
   now use a transpose-free batched `matmul` with optimal contraction order (5.3x smaller saved
   intermediates on expansion layers like MOSS's `ffn_up_gate`) and fuse forward/backward residuals
