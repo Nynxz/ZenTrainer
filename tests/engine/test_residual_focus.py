@@ -76,6 +76,12 @@ def test_residual_focus_5d_video_and_shape_mismatch():
     assert torch.allclose(w.mean(dim=(1, 2)), torch.ones(1), atol=1e-5)
     assert float(w[:, :3, :3].mean()) > float(w[:, 5:, 5:].mean())
 
+    # Uniform disagreement produces uniform unit weights (padded border zeros excluded from avg_pool2d)
+    uni_fake, _ = _fake_trainer(torch.ones(1, 4, 8, 8))
+    wu = Trainer._residual_focus_weight(uni_fake, torch.zeros(1, 4, 8, 8), torch.zeros(1, 4, 8, 8),
+                                        torch.ones(1), [], None, alpha=1.5)
+    assert torch.allclose(wu, torch.ones(1, 8, 8), atol=1e-6)
+
     # Mismatched base output shape falls back to the incoming weight untouched
     bad_fake, _ = _fake_trainer(torch.zeros(1, 4, 4, 4))
     orig = torch.ones(1, 8, 8)

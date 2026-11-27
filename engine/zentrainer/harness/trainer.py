@@ -1718,7 +1718,7 @@ class Trainer:
         diff = (x0_base.float() - x0.float()).pow(2).mean(dim=1, keepdim=True).sqrt()
         if diff.ndim == 5:
             diff = diff.mean(dim=2)
-        diff = torch.nn.functional.avg_pool2d(diff, kernel_size=3, stride=1, padding=1)
+        diff = torch.nn.functional.avg_pool2d(diff, kernel_size=3, stride=1, padding=1, count_include_pad=False)
         d_mean = diff.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)
         w_map = (1.0 + alpha * (diff / d_mean - 1.0).clamp_min(0.0)).clamp(1.0, max_boost)
         w_map = (w_map / w_map.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)).squeeze(1)

@@ -37,10 +37,12 @@ function editWords(v: string) {
   spec.objective.preserve = v
 }
 // a slider has no trigger to swap and the switches hide with it: turning one on turns these off
-watch(() => spec.slider?.kind, (kind) => {
-  if (kind && preserveOn.value) setPreserve(false)
-  if (kind && (spec.objective.residual_focus ?? 0) > 0) spec.objective.residual_focus = 0
-})
+watch(() => spec.slider?.kind, (kind) => { if (kind && preserveOn.value) setPreserve(false) })
+watch(
+  () => [spec.slider?.kind, spec.objective.residual_focus] as const,
+  ([kind, focus]) => { if (kind && (focus ?? 0) > 0) spec.objective.residual_focus = 0 },
+  { immediate: true },
+)
 let classTicket = 0
 watch(() => spec.dataset.folder, async (folder) => {
   const ticket = ++classTicket
