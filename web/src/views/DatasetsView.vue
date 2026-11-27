@@ -2,7 +2,7 @@
 // Every dataset folder in ComfyUI's input directory: as cards (a fixed-shape mosaic, so every
 // card is the same size) or as a table that sorts. The view is remembered per browser. Starred
 // ones (the same stars as New run's dataset picker) come first, whichever the sort.
-import { ZenButton, ZenCombo, ZenEmpty, ZenInput } from '@nynxz/zenkit-ui'
+import { ZenButton, ZenCombo, ZenContextMenu, ZenEmpty, ZenInput, type ContextMenuItem } from '@nynxz/zenkit-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { engine, thumbUrl, type DatasetInfo } from '@/api/engine'
@@ -10,9 +10,9 @@ import CaptionRing from '@/components/CaptionRing.vue'
 import StarButton from '@/components/StarButton.vue'
 import StickyBar from '@/components/StickyBar.vue'
 import TemplateCard from '@/components/TemplateCard.vue'
-import { askText, tellError } from '@/lib/ask'
+import { ask, askText, tellError } from '@/lib/ask'
 import { handoff, useFileDrop } from '@/lib/drop'
-import { isDatasetStarred } from '@/stores/favorites'
+import { isDatasetStarred, toggleDatasetStar } from '@/stores/favorites'
 import { datasetsSeen } from '@/stores/lists'
 
 const router = useRouter()
@@ -172,6 +172,47 @@ const ago = (t?: number) => {
   if (s < 86400 * 30) return `${Math.round(s / 86400)}d ago`
   return new Date(t * 1000).toLocaleDateString()
 }
+
+// right-click menu on cards and table rows: jump straight to actions or remove a dataset
+const menu = ref<InstanceType<typeof ZenContextMenu> | null>(null)
+const menuItems = ref<ContextMenuItem[]>([])
+async function removeDataset(d: DatasetInfo) {
+  const what = `${d.images} ${d.images === 1 ? 'item' : 'items'}`
+  if (
+    !(await ask({
+      title: `Delete “${d.folder}”?`,
+      message: `Everything in this dataset goes (${what}, captions and masks). This can’t be undone.`,
+      ok: 'Delete',
+      danger: true,
+    }))
+  ) {
+    return
+  }
+  try {
+    await engine.deleteDataset(d.folder)
+    if (isDatasetStarred(d.folder)) toggleDatasetStar(d.folder)
+    datasets.value = (datasets.value ?? []).filter((x) => x.folder !== d.folder)
+  } catch (e) {
+    tellError(e, 'Couldn’t delete the dataset')
+  }
+}
+function onDatasetMenu(d: DatasetInfo, e: MouseEvent) {
+  const starred = isDatasetStarred(d.folder)
+  const hasImages = d.images > (d.videos ?? 0)
+  menuItems.value = [
+    { heading: d.folder },
+    { label: 'Open dataset', icon: 'mdi-folder-open-outline', run: () => router.push(link(d)) },
+    { label: 'Train on this dataset', icon: 'mdi-play', run: () => router.push({ path: '/runs/new', query: { dataset: d.folder } }) },
+    { label: 'Analyze dataset', icon: 'mdi-chart-box-outline', run: () => router.push(`${link(d)}/analysis`) },
+    ...(hasImages ? [{ label: 'Edit masks', icon: 'mdi-draw', run: () => router.push(`${link(d)}/mask`) }] : []),
+    '-',
+    { label: starred ? 'Unstar' : 'Star', icon: starred ? 'mdi-star-off-outline' : 'mdi-star-outline', run: () => toggleDatasetStar(d.folder) },
+    { label: 'Copy name', icon: 'mdi-content-copy', run: () => navigator.clipboard?.writeText(d.folder) },
+    '-',
+    { label: 'Delete dataset…', icon: 'mdi-trash-can-outline', danger: true, run: () => removeDataset(d) },
+  ]
+  menu.value?.show(e)
+}
 </script>
 
 <template>
@@ -216,6 +257,7 @@ const ago = (t?: number) => {
           :key="d.folder"
           :to="link(d)"
           :title="d.folder"
+          @contextmenu="onDatasetMenu(d, $event)"
         >
           <template #thumb>
             <div class="mosaic" :class="`n${pics(d).length}`">
@@ -251,7 +293,7 @@ const ago = (t?: number) => {
           <button class="sortable hide-s" @click="sortBy('modified')">Changed <i v-if="sortKey === 'modified'" :class="sortDir > 0 ? 'mdi mdi-arrow-up' : 'mdi mdi-arrow-down'" /></button>
           <span />
         </div>
-        <div v-for="d in shown" :key="d.folder" class="tr" @click="router.push(link(d))">
+        <div v-for="d in shown" :key="d.folder" class="tr" @click="router.push(link(d))" @contextmenu="onDatasetMenu(d, $event)">
           <span class="strip">
             <img v-for="t in pics(d).slice(0, 2)" :key="t.filename" :src="thumb(d, t, 96)" loading="lazy" alt="" />
           </span>
@@ -279,6 +321,7 @@ const ago = (t?: number) => {
       </div>
     </template>
 
+    <ZenContextMenu ref="menu" :items="menuItems" />
     <div v-if="dragging" class="drop-cover"><i class="mdi mdi-tray-arrow-down" /> Drop to make a new dataset</div>
   </div>
 </template>
