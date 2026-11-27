@@ -36,11 +36,16 @@ function editWords(v: string) {
   fallbackShown.value = false
   spec.objective.preserve = v
 }
-// a slider has no trigger to swap and the switch hides with it: turning one on turns this off
+// a slider has no trigger to swap and the switches hide with it: turning one on turns these off
 watch(() => spec.slider?.kind, (kind) => {
   if (kind && preserveOn.value) setPreserve(false)
   if (kind && (spec.objective.face_id ?? 0) > 0) spec.objective.face_id = 0
 })
+watch(
+  () => [spec.slider?.kind, spec.objective.residual_focus] as const,
+  ([kind, focus]) => { if (kind && (focus ?? 0) > 0) spec.objective.residual_focus = 0 },
+  { immediate: true },
+)
 const isEditRun = computed(() => Boolean(spec.dataset.edit || spec.dataset.control_sets?.length))
 watch(isEditRun, (on) => {
   if (on && (spec.objective.preserve_prior ?? 0) > 0) spec.objective.preserve_prior = 0
@@ -388,6 +393,13 @@ const patterns = computed({
           <ZenNumber v-model="spec.objective.shift" :min="0" :max="10" :step="0.5" :precision="1" />
         </ZenField>
         <ZenField label="Loss" stack><ZenCombo v-model="spec.objective.loss" :items="items(['mse', 'l1', 'huber', 'smooth_l1'])" :searchable="false" :sorted="false" /></ZenField>
+        <ZenField v-if="!spec.slider?.kind" label="Base-residual focus" stack tip="Detector-free spatial self-focusing: every 2nd step, measures where the frozen base model disagrees with the target and focuses loss weight (1×–3×) on those regions. Strong boost for full-body likeness, faces, objects and styles without masks or face detectors. 0 = off; 1.5 is a good start">
+          <div class="sw-row">
+            <ZenSwitch :model-value="(spec.objective.residual_focus ?? 0) > 0" @update:model-value="spec.objective.residual_focus = $event ? 1.5 : 0" />
+            <ZenNumber v-if="(spec.objective.residual_focus ?? 0) > 0" :model-value="spec.objective.residual_focus ?? 1.5" :min="0.25" :max="5" :step="0.25" :precision="2" @update:model-value="spec.objective.residual_focus = $event" />
+            <span v-else class="sw-state">Off</span>
+          </div>
+        </ZenField>
         <ZenField v-if="!spec.slider?.kind" label="Preserve classes" stack tip="AI Toolkit's differential output preservation. Each step also trains its caption with a class word (woman, man…) in place of the trigger to give what the base model gives, so the LoRA changes only what the trigger asks for: “a man” stays a man instead of turning into your character. Needs a trigger word. On every 2nd step (the default) a run takes about 1.7x as long">
           <div class="sw-row"><ZenSwitch :model-value="preserveOn" @update:model-value="setPreserve" /><span class="sw-state">{{ preserveOn ? 'On' : 'Off' }}</span></div>
         </ZenField>

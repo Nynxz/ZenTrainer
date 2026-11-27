@@ -265,6 +265,12 @@ class ObjectiveSpec:
                                          "late-stage over-baking and class bleed on easy shots while keeping full "
                                          "gradient on hard angles. 0 = off (standard 1 - cos); 0.82 is a good start.",
                                     ge=0, le=1)
+    residual_focus: float = setting(0.0, "Base-Residual Self-Focusing strength (detector-free spatial weighting): on "
+                                         "every 2nd step, runs a grad-free frozen base pass and upweights spatial "
+                                         "regions where the base model disagrees most with the target (1x-3x), "
+                                         "focusing capacity on distinctive subject details without masks or face "
+                                         "detectors. 0 = off; 1.5 is a good start.",
+                                    ge=0, le=5)
 
 
 @dataclass
@@ -545,6 +551,8 @@ class TrainSpec:
             raise SpecError("network.skip_blocks is blocks and ranges like 22 or 22, 30-31")
         if self.objective.timesteps == "scheduler" and self.objective.shift:
             raise SpecError("objective.shift is the model's own with a scheduler (its shift is in the schedule): set it to 0")
+        if self.objective.residual_focus > 0 and self.slider.kind:
+            raise SpecError("objective.residual_focus is for normal adapters, not sliders")
         sl = self.slider
         if sl.kind == "pairs":
             if not CONTROL_SET_NAME.match(sl.pair_set or ""):

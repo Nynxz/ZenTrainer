@@ -160,6 +160,7 @@ What the loss compares, and which noise levels each step trains at.
 | `objective.face_id_start` | `0.25` | number, >= 0, < 1 | SparseID (objective.face_id): share of the run to wait before turning face identity on (0.25 = after the first quarter, once coarse layout settles). 0 = from step 1. |
 | `objective.face_id_device` | `"cpu"` | `"cpu"` or `"gpu"` | SparseID (objective.face_id): where to decode the cropped face patch and run ArcFace. "cpu" (default) adds zero GPU VRAM; "gpu" runs ~6-12x faster (big speedup on 16x/32-channel VAEs) using ~1-1.5 GB transient VRAM and falls back to CPU if VRAM is tight. |
 | `objective.face_id_margin` | `0.0` | number, >= 0, <= 1 | SparseID (objective.face_id): stop pushing once a face crop's ArcFace cosine reaches this target (hinge loss relu(margin - cos)), preventing late-stage over-baking and class bleed on easy shots while keeping full gradient on hard angles. 0 = off (standard 1 - cos); 0.82 is a good start. |
+| `objective.residual_focus` | `0.0` | number, >= 0, <= 5 | Base-Residual Self-Focusing strength (detector-free spatial weighting): on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions where the base model disagrees most with the target (1x-3x), focusing capacity on distinctive subject details without masks or face detectors. 0 = off; 1.5 is a good start. |
 
 ## memory
 
