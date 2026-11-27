@@ -1,0 +1,1 @@
+const s=a=>[...a??[]].reverse().find(e=>e.ceiling!=null)?.ceiling??null,o=(a,e)=>e?`${Math.round(a/e*100)}%`:"",l="As a share of how alike your dataset's own photos are to each other (100% is as alike as they are)";export{l as S,o as a,s as l};
