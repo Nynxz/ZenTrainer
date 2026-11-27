@@ -96,6 +96,7 @@ export interface SpecFields {
     preserve_weight: number
     preserve_every: number
     preserve_plain: number
+    residual_focus: number
   }
   memory: {
     training_dtype: string

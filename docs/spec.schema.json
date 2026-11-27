@@ -686,6 +686,13 @@
           "default": 0.0,
           "minimum": 0,
           "maximum": 1
+        },
+        "residual_focus": {
+          "type": "number",
+          "description": "Base-Residual Self-Focusing strength (detector-free spatial weighting): on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions where the base model disagrees most with the target (1x-3x), focusing capacity on distinctive subject details without masks or face detectors. 0 = off; 1.5 is a good start.",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 5
         }
       },
       "additionalProperties": false

@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Base-Residual Self-Focusing (`objective.residual_focus`).** Detector-free spatial loss weighting:
+  on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions (`1×–3×`) where
+  the base model disagrees most with the target, focusing adapter capacity on distinctive subject
+  details without masks or face detectors.
 - **Samples reuse the training model when `samples.model_name` matches it.** Setting the preview
   model to the same file and weight dtype as the training model (at LoRA strength 1.0) now reuses
   the already-loaded model instead of loading a duplicate copy from disk.

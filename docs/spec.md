@@ -154,6 +154,7 @@ What the loss compares, and which noise levels each step trains at.
 | `objective.preserve_weight` | `1.0` | number, > 0 | objective.preserve: its loss's weight beside the training loss. |
 | `objective.preserve_every` | `2` | whole number, >= 1 | objective.preserve: on every Nth step. 2 held the class as well as every step (MOSS: "a woman" 0.07 likeness to the trained one either way) at 1.7x the time against 2.3x. |
 | `objective.preserve_plain` | `0.0` | number, >= 0, <= 1 | objective.preserve: the share of its passes on a plain class prompt ("a photo of a woman") at heavy noise instead of the step's own caption: holds the prompts people write, where generating from noise takes on the trained subject. 0 = the captions only. |
+| `objective.residual_focus` | `0.0` | number, >= 0, <= 5 | Base-Residual Self-Focusing strength (detector-free spatial weighting): on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions where the base model disagrees most with the target (1x-3x), focusing capacity on distinctive subject details without masks or face detectors. 0 = off; 1.5 is a good start. |
 
 ## memory
 

@@ -1628,12 +1628,18 @@ class Trainer:
                     lap("backward")
                     continue
 
+                # Base-Residual Self-Focusing: run the grad-free base pass BEFORE adapted forward
+                # so autograd version counters stay untouched and spatial weights target base errors
+                step_weight = weight
+                if s.objective.residual_focus > 0 and self.step % 2 == 0 and x0.ndim >= 4:
+                    step_weight = self._residual_focus_weight(x0, x_t, sigma, conds, weight, s.objective.residual_focus)
+
                 # the input needs grad only for ComfyUI's per-layer offload checkpoint (see memory.py);
                 # otherwise it stays grad-free so the backward ends at the first trained layer
                 with self._autocast():
                     x0_pred = self.denoiser(x_t.requires_grad_(getattr(self, "_input_grad", True)), sigma, conds,
                                             self._tread(idx))
-                loss = self.objective.train_loss(x_t.detach(), x0, x0_pred, sigma, weight, percents).mean()
+                loss = self.objective.train_loss(x_t.detach(), x0, x0_pred, sigma, step_weight, percents).mean()
                 lap("forward")
                 scaled = loss / acc
                 (self.scaler.scale(scaled) if self.scaler else scaled).backward()
@@ -1702,6 +1708,24 @@ class Trainer:
             logging.warning("[ZenTrainer] image slider: %d of %d pictures have no partner in _controls/%s/ and are left out",
                             alone, len(paired), self.spec.slider.pair_set)
         ds.buckets = {k: kept for k, v in ds.buckets.items() if (kept := [i for i in v if paired[i]])}
+
+    def _residual_focus_weight(self, x0, x_t, sigma, conds, weight, alpha: float, max_boost: float = 3.0):
+        """Detector-free spatial loss weight from where the frozen base model disagrees with x0."""
+        with torch.no_grad(), self.network.disabled(), self._autocast():
+            x0_base = self.denoiser(x_t.detach(), sigma, conds, None).detach()
+        if x0_base.shape != x0.shape:
+            return weight
+        diff = (x0_base.float() - x0.float()).pow(2).mean(dim=1, keepdim=True).sqrt()
+        if diff.ndim == 5:
+            diff = diff.mean(dim=2)
+        diff = torch.nn.functional.avg_pool2d(diff, kernel_size=3, stride=1, padding=1)
+        d_mean = diff.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+        w_map = (1.0 + alpha * (diff / d_mean - 1.0).clamp_min(0.0)).clamp(1.0, max_boost)
+        w_map = (w_map / w_map.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)).squeeze(1)
+        if weight is None:
+            return w_map
+        eff = weight.float() * w_map
+        return eff / eff.mean(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
 
     def _pair_loss(self, idx, x0, conds, weight, noise, sigma, x_t, percents, acc: int) -> torch.Tensor:
         """An image slider's micro-batch: the dataset's pictures and their partners from the same

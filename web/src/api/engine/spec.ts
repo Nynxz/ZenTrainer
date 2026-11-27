@@ -127,6 +127,8 @@ export interface TrainSpec {
     preserve_weight?: number
     preserve_every?: number
     preserve_plain?: number
+    /** detector-free spatial self-focusing from frozen base disagreement (0 = off; 1.5 is a good start) */
+    residual_focus?: number
   }
   memory: {
     training_dtype: 'bf16' | 'fp16' | 'fp32'
