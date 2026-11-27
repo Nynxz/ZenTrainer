@@ -47,3 +47,51 @@ def test_sampling_goes_to_comfyui(monkeypatch):
     norm = torch.nn.RMSNorm(4).requires_grad_(False)
     assert moss.attention(*(torch.zeros(1, 2, 8),) * 3, norm, norm, None, 2, None, {}) == "comfy"
     assert calls == [(None, None, None)]
+
+
+def test_modulated_rms_norm_keeps_input_dtype_in_training(monkeypatch):
+    sampling_calls = []
+
+    def sampling_mod(x, norm, scale, shift):
+        sampling_calls.append(1)
+        return "sampling"
+
+    def sampling_gate(x, y, gate):
+        sampling_calls.append(2)
+        return "sampling_gate"
+
+    moss = types.ModuleType("comfy.ldm.moss_image.model")
+    moss.attention = lambda *a, **kw: "comfy"
+    moss.modulated_rms_norm = sampling_mod
+    moss.gated_residual = sampling_gate
+    mm = types.ModuleType("comfy.model_management")
+    mm.in_training = True
+    for name, mod in (("comfy", types.ModuleType("comfy")), ("comfy.ldm", types.ModuleType("comfy.ldm")),
+                      ("comfy.ldm.moss_image", types.ModuleType("comfy.ldm.moss_image")),
+                      ("comfy.ldm.moss_image.model", moss), ("comfy.model_management", mm)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    sys.modules["comfy"].model_management = mm
+    monkeypatch.setattr(compat, "_applied", set())
+    monkeypatch.setattr(compat, "in_run", True)
+    moss_patch.apply()
+
+    norm = torch.nn.RMSNorm(8, dtype=torch.bfloat16)
+    x = torch.randn(1, 4, 8, dtype=torch.bfloat16)
+    y = torch.randn(1, 4, 8, dtype=torch.bfloat16)
+    scale = torch.randn(1, 1, 8, dtype=torch.float32)
+    shift = torch.randn(1, 1, 8, dtype=torch.float32)
+    out = moss.modulated_rms_norm(x, norm, scale, shift)
+    assert out.dtype == torch.bfloat16
+    assert torch.allclose(out, (norm(x) * (1 + scale) + shift).to(torch.bfloat16))
+    res = moss.gated_residual(x, y, scale)
+    assert res.dtype == torch.bfloat16
+    assert torch.allclose(res, torch.addcmul(x, y, scale).to(torch.bfloat16))
+    # Outside a ZenTrainer run (e.g. a subsequent stock ComfyUI TrainLoraNode run): delegates untouched
+    compat.in_run = False
+    assert moss.modulated_rms_norm(x, norm, scale, shift) == "sampling"
+    assert moss.gated_residual(x, y, scale) == "sampling_gate"
+    # Sampling inside a run: also delegates untouched
+    compat.in_run = True
+    mm.in_training = False
+    assert moss.modulated_rms_norm(x, norm, scale, shift) == "sampling"
+    assert moss.gated_residual(x, y, scale) == "sampling_gate" and sampling_calls == [1, 2, 1, 2]

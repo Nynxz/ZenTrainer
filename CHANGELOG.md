@@ -9,6 +9,18 @@ and Manager show.
   grouped-query attention and keeps `q/k/v` in FlashAttention's native `(B, L, H, D)` layout
   through QK-norm and RoPE instead of transposing to contiguous `(B, H, L, D)` and back on every
   block.
+- **MOSS Image: faster training and lower VRAM.** `modulated_rms_norm` and `gated_residual` now
+  cast back to the training dtype (`bf16`) during training, matching inference instead of leaking
+  fp32 into `qkv`/`ffn_up_gate` and the residual stream (restoring fused int8 bypass on all layers
+  and avoiding a duplicate compiled graph after block 0).
+- **Fused int8/packed bypass for direct 2D LoKr.** Direct LoKr adapters (alone or inside `_Assisted`)
+  now use a transpose-free batched `matmul` with optimal contraction order (5.3x smaller saved
+  intermediates on expansion layers like MOSS's `ffn_up_gate`) and fuse forward/backward residuals
+  into the int8 GEMM epilogues (~1.20x faster and less VRAM on MOSS LoKr).
+- **Faster CUDA W8A8 backward kernels (1.09x–1.37x on RTX 5090).** Double-buffered software
+  pipelining, a 4-stage shared-memory pipeline, lock-free two-phase Stream-K to remove tail-wave
+  quantization, hardware `cvt.rn.bf16x2.f32` epilogue conversion, and a 128-thread `2k` row
+  quantizer.
 - **Captioning is about 1.5x faster.** Caption jobs now run with ComfyUI's model compiler on, as
   its own Generate Text node does; it was switched off for an old crash that no longer happens.
 - **Captioning: an Uncensored LoRA for Qwen3.8-27B, one click away.** With `qwen3.8_27b_w4a8`
