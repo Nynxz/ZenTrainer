@@ -328,7 +328,7 @@ const patterns = computed({
         <ZenField label="Skip blocks" stack tip="These blocks get no adapters, e.g. 22 or 22, 30-31 (AI Toolkit's ignore_if_contains). Skip-layer guidance skips a block in the uncond: left untrained, skipping it still means skipping the base's block">
           <ZenInput :model-value="spec.network.skip_blocks ?? ''" placeholder="none" @update:model-value="spec.network.skip_blocks = String($event).trim()" />
         </ZenField>
-        <ZenField label="Train biases & norms" stack><div class="sw-row"><ZenSwitch v-model="spec.network.train_bias_norm" /><span class="sw-state">{{ spec.network.train_bias_norm ? 'On' : 'Off' }}</span></div></ZenField>
+        <ZenField label="Train biases & norms" stack tip="Also trains small additive deltas on layer biases (.diff_b) and 1D normalization scales like LayerNorm/RMSNorm (.diff). Leave off for most runs (especially characters); turning it on can help strong global style, color or contrast shifts, at the risk of over-shifting tone at high LRs. Note: 1D norms span the whole model even when Blocks is restricted"><div class="sw-row"><ZenSwitch v-model="spec.network.train_bias_norm" /><span class="sw-state">{{ spec.network.train_bias_norm ? 'On' : 'Off' }}</span></div></ZenField>
       </div>
     </div>
     <div class="subgroup">
