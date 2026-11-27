@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Faster `torch.compile` and compiled `checkpoint_save="none"`.** Fixes cached models silently
+  skipping block compilation after an earlier uncompiled run, eliminates the duplicate block-0
+  graph (`2 → 1` graphs, ~2x faster compile while keeping frozen prefix blocks grad-free), and
+  compiles a shared wrapper around `checkpoint_save="none"` blocks (~1.46x faster on Krea 2).
 - **Krea 2: native `(B, L, H, D)` attention layout and GQA.** Passes compact KV heads directly to
   grouped-query attention and keeps `q/k/v` in FlashAttention's native `(B, L, H, D)` layout
   through QK-norm and RoPE instead of transposing to contiguous `(B, H, L, D)` and back on every

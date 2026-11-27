@@ -81,38 +81,70 @@ def _qk_peak(m) -> float:
     return peak["q"] * peak["k"]
 
 
-def _patch_saving(m) -> None:
-    """A block checkpointed with _keep_attention. A compiled block (kernels/compile.py) is compiled
-    again around the checkpoint: the policy has to see the ops, which a checkpoint around the
-    compiled forward can't (it fails in the backward). When `m` uses a shared compiled class method,
-    all blocks of that class share one compiled checkpointed wrapper too."""
+def _unpatch(m, comfy_unpatch) -> None:
+    """Undo checkpoint patching without leaving a plain bound class method in `m.__dict__`.
+    ComfyUI's `unpatch` assigns `m.forward = m.org_forward` on the instance, which makes a later
+    run's `compiled_blocks` skip the cached model's blocks."""
+    comfy_unpatch(m)
+    fwd = m.__dict__.get("forward")
+    if getattr(fwd, "__func__", None) is type(m).forward and getattr(fwd, "__self__", None) is m:
+        m.__dict__.pop("forward", None)
+
+
+def _patch_checkpoint(m, save_attention: bool) -> None:
+    """Checkpoint block `m` with or without `_keep_attention`. When `m` uses a shared compiled
+    class method (kernels/compile.py), compile ONE shared wrapper around the checkpoint per class
+    so AOTAutograd sees the checkpoint boundary (avoiding dead saved-activation writes in forward
+    and fusing recompute into backward) and all identical blocks share one compiled graph."""
     import types
 
     import torch
+
+    from ..kernels.compile import _ensure_grad
 
     org = m.forward
     m.org_forward = org  # what unpatch puts back
     org_func = getattr(org, "__func__", None)
     orig_cls_fwd = getattr(org_func, "_zt_orig_cls_fwd", None)
     if orig_cls_fwd is not None:
-        compiled = getattr(org_func, "_zt_ckpt_compiled", None)
-        if compiled is None:
-            def ckpt_cls_run(self, *args, _fn=orig_cls_fwd, **kwargs):
-                return torch.utils.checkpoint.checkpoint(_fn, self, *args, use_reentrant=False,
-                                                         context_fn=_keep_attention, **kwargs)
+        attr = "_zt_ckpt_attn_compiled" if save_attention else "_zt_ckpt_none_compiled"
+        wrapper = getattr(org_func, attr, None)
+        if wrapper is None:
+            if save_attention:
+                def ckpt_cls_run(self, *args, _fn=orig_cls_fwd, **kwargs):
+                    return torch.utils.checkpoint.checkpoint(_fn, self, *args, use_reentrant=False,
+                                                             context_fn=_keep_attention, **kwargs)
+            else:
+                def ckpt_cls_run(self, *args, _fn=orig_cls_fwd, **kwargs):
+                    return torch.utils.checkpoint.checkpoint(_fn, self, *args, use_reentrant=False, **kwargs)
             compiled = torch.compile(ckpt_cls_run, dynamic=True)
-            org_func._zt_ckpt_compiled = compiled
-        m.forward = types.MethodType(compiled, m)
+
+            def wrapper(self, *args, _fn=compiled, **kwargs):
+                args, kwargs = _ensure_grad(self, args, kwargs)
+                return _fn(self, *args, **kwargs)
+
+            setattr(org_func, attr, wrapper)
+        m.forward = types.MethodType(wrapper, m)
         return
 
     inner = getattr(org, "_torchdynamo_orig_callable", None)
 
     def checkpointed(fn):
-        def run(*args, **kwargs):
-            return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False, context_fn=_keep_attention, **kwargs)
+        if save_attention:
+            def run(*args, **kwargs):
+                return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False,
+                                                         context_fn=_keep_attention, **kwargs)
+        else:
+            def run(*args, **kwargs):
+                return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False, **kwargs)
         return run
 
     m.forward = torch.compile(checkpointed(inner), dynamic=True) if inner is not None else checkpointed(org)
+
+
+def _patch_saving(m) -> None:
+    """A block checkpointed with _keep_attention (kept as its own entry point for tests)."""
+    _patch_checkpoint(m, save_attention=True)
 
 
 def _patch_offload_block(m) -> None:
@@ -195,10 +227,14 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
                              "(q x k norm weights %.0f)", name, peak)
             if i not in sharp:
                 _patch_saving(m)
+            elif getattr(getattr(m.forward, "__func__", None), "_zt_orig_cls_fwd", None) is not None:
+                _patch_checkpoint(m, save_attention=False)
             else:
                 comfy_patch(m, offloading=False)
         elif offloading and not isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
             _patch_offload_block(m)
+        elif not offloading and getattr(getattr(m.forward, "__func__", None), "_zt_orig_cls_fwd", None) is not None:
+            _patch_checkpoint(m, save_attention=False)
         else:
             comfy_patch(m, offloading=offloading)
 
@@ -215,7 +251,7 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
             if i not in kept and not hasattr(m, "org_forward"):
                 patch_block(i, m)
             elif i in kept and hasattr(m, "org_forward"):
-                unpatch(m)
+                _unpatch(m, unpatch)
         state.kept, state.blocks = n, len(every) - n
         return n
 
@@ -230,7 +266,7 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
         state.saving_attention = on
         for i, m in enumerate(every):
             if hasattr(m, "org_forward"):
-                unpatch(m)
+                _unpatch(m, unpatch)
                 patch_block(i, m)
         return True
 
@@ -267,7 +303,7 @@ def gradient_checkpointing(diffusion_model, enabled: bool, depth: int, offloadin
         yield state
     finally:
         for m in diffusion_model.modules():
-            unpatch(m)
+            _unpatch(m, unpatch)
 
 
 # Attention backends with a backward pass. The rest ComfyUI registers are forward-only custom ops
