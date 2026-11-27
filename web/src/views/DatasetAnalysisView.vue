@@ -41,6 +41,9 @@ const loading = ref(false)
 const busy = ref(false)
 const error = ref<string | null>(null)
 const notice = ref<string | null>(null)
+const lightbox = ref<number | null>(null)
+const lbPaths = ref<string[]>([])
+const lbFit = ref<'cover' | 'contain'>('contain')
 const tab = ref<Tab>(TABS.some((t) => t.id === route.query.tab) ? (route.query.tab as Tab) : 'issues')
 let pickedInitialTab = TABS.some((t) => t.id === route.query.tab)
 
@@ -97,7 +100,7 @@ async function loadAnalysis() {
 watch(
   [() => props.name, activeSet, resolution],
   async ([nextName], prev) => {
-    if (prev && nextName !== prev[0]) {
+    if (prev?.[0] && nextName !== prev[0]) {
       pickedInitialTab = TABS.some((t) => t.id === route.query.tab)
       lightbox.value = null
     }
@@ -193,9 +196,6 @@ function onPicMenu(path: string, e: MouseEvent, list: string[] = [path]) {
   menu.value?.show(e)
 }
 
-const lightbox = ref<number | null>(null)
-const lbPaths = ref<string[]>([])
-const lbFit = ref<'cover' | 'contain'>('contain')
 function openLightbox(paths: string[], target: string) {
   lbPaths.value = paths
   const idx = paths.indexOf(target)
