@@ -112,9 +112,32 @@ if TRITON_AVAILABLE:
                      mask=(mask_m[:, None] & mask_k[None, :]))
 
 
+    @torch.library.custom_op("zentrainer::w8a16_input_grad", mutates_args=())
+    def _w8a16_input_grad_op(grad2d: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor,
+                             fp32_out: bool) -> torch.Tensor:
+        M, N = grad2d.shape
+        K = qdata.shape[1]
+        out = torch.empty((M, K), device=grad2d.device, dtype=torch.float32 if fp32_out else torch.bfloat16)
+        grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(K, META["BLOCK_K"]),)
+        _w8a16_backward_kernel[grid](
+            grad2d, qdata, scale, out,
+            M, N, K, 1 << max(0, M - 1).bit_length(),      # M_KEY: the power-of-2 bucket of M
+            grad2d.stride(0), grad2d.stride(1),
+            qdata.stride(0), qdata.stride(1),
+            out.stride(0), out.stride(1),
+            GROUP=8, EVEN_N=(N % 64 == 0), EVEN_K=(K % 256 == 0),
+        )
+        return out
+
+    @_w8a16_input_grad_op.register_fake
+    def _(grad2d: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, fp32_out: bool) -> torch.Tensor:
+        return grad2d.new_empty((grad2d.shape[0], qdata.shape[1]),
+                                dtype=torch.float32 if fp32_out else torch.bfloat16)
+
     def fused_w8a16_input_grad(grad_out, qdata, wscale, out_dtype=torch.bfloat16):
         """Return the input gradient for a frozen W8A16 linear layer (out_dtype: bf16, or fp32
-        to round once later; a ZenTrainer addition)."""
+        to round once later; a ZenTrainer addition). Runs through an opaque custom op so
+        torch.compile doesn't trace into @triton.autotune."""
         original_shape = grad_out.shape[:-1]
         grad2d = grad_out.reshape(-1, grad_out.shape[-1]).contiguous()
         qdata = qdata.contiguous()
@@ -132,20 +155,13 @@ if TRITON_AVAILABLE:
             raise RuntimeError(
                 f"W8A16 backward shape mismatch: grad={tuple(grad2d.shape)}, "
                 f"weight={tuple(qdata.shape)}, scale={scale.numel()}")
+        if out_dtype not in (torch.bfloat16, torch.float32):
+            raise RuntimeError(f"W8A16 backward kernel expects bf16 or fp32 out_dtype, got {out_dtype}")
 
-        out = torch.empty((M, K), device=grad2d.device, dtype=out_dtype)
-        grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(K, META["BLOCK_K"]),)
-        _w8a16_backward_kernel[grid](
-            grad2d, qdata, scale, out,
-            M, N, K, 1 << max(0, M - 1).bit_length(),      # M_KEY: the power-of-2 bucket of M
-            grad2d.stride(0), grad2d.stride(1),
-            qdata.stride(0), qdata.stride(1),
-            out.stride(0), out.stride(1),
-            GROUP=8, EVEN_N=(N % 64 == 0), EVEN_K=(K % 256 == 0),
-        )
+        out = _w8a16_input_grad_op(grad2d, qdata, scale, out_dtype == torch.float32)
         return out.reshape(*original_shape, K)
 
 else:
 
-    def fused_w8a16_input_grad(grad_out, qdata, wscale):
+    def fused_w8a16_input_grad(grad_out, qdata, wscale, out_dtype=torch.bfloat16):
         raise RuntimeError("Triton is required for fused W8A16 backward")

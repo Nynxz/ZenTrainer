@@ -192,3 +192,64 @@ def test_lokr_beside_matches_unfused_forward_and_backward(in_dim, out_dim, assis
         assert rel_y < 0.02 and rel_dx < 0.03 and rel_dw1 < 0.01 and rel_dw2 < 0.01
     finally:
         int8_backward.enable(prev_mode)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_fused_w8a16_mode_dispatches_on_lora_bypass():
+    comfy_kitchen = pytest.importorskip("comfy_kitchen.tensor")
+    pytest.importorskip("triton")
+    import comfy.model_management as mm
+    import comfy.ops as ops
+
+    dev = torch.device("cuda")
+    torch.manual_seed(13)
+    in_dim, out_dim = 256, 256
+    layer = ops.mixed_precision_ops({"weight": {"format": "int8_tensorwise"}}).Linear(in_dim, out_dim, bias=False)
+    w_f = torch.randn(out_dim, in_dim, device=dev, dtype=torch.bfloat16) * 0.05
+    row_scale = w_f.abs().amax(dim=1, keepdim=True).float().clamp(min=1e-6) / 127.0
+    q = comfy_kitchen.QuantizedTensor.from_float(w_f, "TensorWiseINT8Layout", scale=row_scale)
+    layer.weight = torch.nn.Parameter(q, requires_grad=False)
+    layer.weight_function = []
+    layer.bias_function = []
+    layer.layout_type = "TensorWiseINT8Layout"
+    layer.quant_format = "int8_tensorwise"
+
+    trained = _fake_lora(in_dim, out_dim, 8, 8.0, dev, torch.float32, True)
+    trained_ref = _fake_lora(in_dim, out_dim, 8, 8.0, dev, torch.float32, True)
+    with torch.no_grad():
+        trained_ref.lora_down.weight.copy_(trained.lora_down.weight)
+        trained_ref.lora_up.weight.copy_(trained.lora_up.weight)
+
+    prev_mode = int8_backward._mode
+    int8_backward.enable("fused")
+    int8_backward.stats.clear()
+    try:
+        wrapped = int8_backward.lora_beside(trained, layer)
+        assert isinstance(wrapped, int8_backward.LoRABeside)
+        for attr, val in (("multiplier", 1.0), ("is_conv", False), ("kw_dict", {})):
+            setattr(wrapped, attr, val)
+            setattr(trained_ref, attr, val)
+
+        x_ref = torch.randn(2, 32, in_dim, device=dev, dtype=torch.bfloat16, requires_grad=True)
+        x_f = x_ref.detach().clone().requires_grad_(True)
+        g_out = torch.randn(2, 32, out_dim, device=dev, dtype=torch.bfloat16)
+
+        base_ref = F.linear(x_ref, q.dequantize().to(torch.bfloat16))
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            y_ref = base_ref + trained_ref.h(x_ref, base_ref).to(torch.bfloat16)
+        y_ref.backward(g_out)
+
+        prev = getattr(mm, "in_training", False)
+        mm.in_training = True
+        try:
+            y_f = wrapped.bypass_forward(lambda t: F.linear(t, q.dequantize().to(torch.bfloat16)), x_f)
+            y_f.backward(g_out)
+        finally:
+            mm.in_training = prev
+
+        assert int8_backward.stats["int8 layer: fused"] == 1
+        assert int8_backward.stats["int8 layer: dequantized"] == 0
+        rel_dx = (x_f.grad.float() - x_ref.grad.float()).norm() / x_ref.grad.float().norm()
+        assert rel_dx < 0.01
+    finally:
+        int8_backward.enable(prev_mode)
