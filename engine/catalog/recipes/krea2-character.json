@@ -5,10 +5,9 @@
   "family": "krea-2",
   "kind": "character",
   "validated": true,
-  "blurb": "A person or character, photoreal. Trains only Krea 2's mid-block MLPs (blocks 8-21): 3x smaller and faster, previews on Krea 2 Turbo in 8 steps.",
+  "blurb": "A person or character, photoreal. Previews on Krea 2 Turbo in 8 steps.",
   "notes": [
-    "Causal layer-masking ablation on Krea 2 showed facial identity concentrates in mid blocks 8-21 (0.761 vs 0.126 early 0-8, 0.279 late 18-27) and MLPs (0.763 vs 0.177 attention).",
-    "Validated on 37 photos (plain flow matching, 1,000 steps): LoKr factor 8 on mid-block MLPs (blocks 8-21, 132 MB vs 375 MB full LoKr) with Automagic3 + adapter geometry at 3e-4 (lr_floor 0.5, EMA 0.98) reached 0.253 likeness at 250 steps, 0.629 at 500, 0.722 at 750 and 0.737 at 1000 (against 0.075 / 0.260 / 0.460 / 0.645 for plain Automagic3 on the same layers, with faster median opt_ms: 9.5 vs 9.9 ms). With SparseID enabled, the same setup reaches 0.829-0.831 at 1000 and 0.856-0.862 at 1250."
+    "Validated as written: Automagic v3 at 1e-4, 768 px for the first 60% then 1024 blended in over 20%, on 37 photos: likeness 0.65 at 250 steps, 0.69 at 500, 0.78 at 1500, 0.73-0.75 at 2000. 1024 throughout had reached 0.53 at 1500."
   ],
   "icon": "mdi mdi-account-star-outline",
   "photos": "character",
@@ -17,7 +16,7 @@
     "text_encoders": ["qwen3vl_4b_int8_convrot.safetensors", "qwen3vl_4b_fp8_scaled.safetensors"],
     "vae": ["qwen_image_vae.safetensors"]
   },
-  "steps": 1000,
+  "steps": 2000,
   "caption": {"prompt": "nl", "subject": true},
   "samples": [
     "[trigger], a close up portrait photo, soft window light",
@@ -25,19 +24,12 @@
   ],
   "spec": {
     "dataset": {
-      "resolution": 768,
-      "stages": [{"resolution": 512, "until": 0.6}],
-      "stage_blend": 0.15
+      "resolution": 1024,
+      "stages": [{"resolution": 768, "until": 0.6}],
+      "stage_blend": 0.2
     },
-    "network": {"algorithm": "LoKr", "rank": 8, "targets": "mlp", "blocks": "8-21"},
-    "optim": {
-      "optimizer": "Automagic3",
-      "adapter_geo": true,
-      "learning_rate": 0.0003,
-      "lr_scheduler": "constant",
-      "ema": 0.98,
-      "lr_floor": 0.5
-    },
+    "network": {"rank": 16},
+    "optim": {"optimizer": "Automagic3", "learning_rate": 0.0001, "lr_scheduler": "constant"},
     "objective": {"timesteps": "uniform", "shift": 0},
     "samples": {
       "steps": 8,
