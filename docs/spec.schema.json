@@ -737,6 +737,13 @@
           "default": 0.0,
           "minimum": 0,
           "maximum": 5
+        },
+        "haar_hf": {
+          "type": "number",
+          "description": "High-frequency detail weight (1-level 2D Haar wavelet on latent error: LH, HL, HH bands). Counteracts MSE's low-frequency bias at zero extra VRAM or model cost, sharpening facial geometry and fine texture. 0 = off; 0.5 is a good start.",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 5
         }
       },
       "additionalProperties": false

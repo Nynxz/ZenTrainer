@@ -107,6 +107,7 @@ const LABELS: Record<string, string> = {
   'objective.preserve': 'Preserve classes (DOP)',
   'objective.preserve_weight': 'DOP weight',
   'objective.preserve_every': 'DOP every',
+  'objective.haar_hf': 'High-freq detail (Haar)',
   'memory.training_dtype': 'Precision',
   'memory.offloading': 'Offloading',
   'memory.gradient_checkpointing': 'Grad checkpointing',
@@ -158,6 +159,7 @@ const PRIORITY = [
   'objective.preserve',
   'objective.preserve_weight',
   'objective.preserve_every',
+  'objective.haar_hf',
   'memory.training_dtype',
   'seed',
 ]
