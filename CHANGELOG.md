@@ -5,6 +5,9 @@ and Manager show.
 
 ## Unreleased
 
+- **High-frequency detail loss (`objective.haar_hf`).** Adds an optional 1-level 2D Haar wavelet
+  high-frequency term (`LH² + HL² + HH²`) on the latent error to sharpen fine facial geometry and
+  texture at zero extra VRAM or model cost (validation loss stays plain for direct comparison).
 - **Base-Residual Self-Focusing (`objective.residual_focus`).** Detector-free spatial loss weighting:
   on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions (`1×–3×`) where
   the base model disagrees most with the target, focusing adapter capacity on distinctive subject

@@ -135,6 +135,8 @@ export interface TrainSpec {
     face_id_margin?: number
     /** detector-free spatial self-focusing from frozen base disagreement (0 = off; 1.5 is a good start) */
     residual_focus?: number
+    /** 1-level 2D Haar wavelet high-frequency detail weight on latent error (0 = off; 0.5 is a good start) */
+    haar_hf?: number
   }
   memory: {
     training_dtype: 'bf16' | 'fp16' | 'fp32'

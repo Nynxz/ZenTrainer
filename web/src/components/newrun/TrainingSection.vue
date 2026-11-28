@@ -393,6 +393,13 @@ const patterns = computed({
           <ZenNumber v-model="spec.objective.shift" :min="0" :max="10" :step="0.5" :precision="1" />
         </ZenField>
         <ZenField label="Loss" stack><ZenCombo v-model="spec.objective.loss" :items="items(['mse', 'l1', 'huber', 'smooth_l1'])" :searchable="false" :sorted="false" /></ZenField>
+        <ZenField label="High-freq detail (Haar)" stack tip="Adds a 1-level 2D Haar wavelet high-frequency term on the latent error so fine detail (eyes, geometry, texture) isn't drowned out by low-frequency lighting and background. Zero extra VRAM or speed cost. 0 = off; 0.5 is a good start">
+          <div class="sw-row">
+            <ZenSwitch :model-value="(spec.objective.haar_hf ?? 0) > 0" @update:model-value="spec.objective.haar_hf = $event ? 0.5 : 0" />
+            <ZenNumber v-if="(spec.objective.haar_hf ?? 0) > 0" :model-value="spec.objective.haar_hf ?? 0.5" :min="0.05" :max="5" :step="0.1" :precision="2" @update:model-value="spec.objective.haar_hf = $event" />
+            <span v-else class="sw-state">Off</span>
+          </div>
+        </ZenField>
         <ZenField v-if="!spec.slider?.kind" label="Base-residual focus" stack tip="Detector-free spatial self-focusing: every 2nd step, measures where the frozen base model disagrees with the target and focuses loss weight (1×–3×) on those regions. Strong boost for full-body likeness, faces, objects and styles without masks or face detectors. 0 = off; 1.5 is a good start">
           <div class="sw-row">
             <ZenSwitch :model-value="(spec.objective.residual_focus ?? 0) > 0" @update:model-value="spec.objective.residual_focus = $event ? 1.5 : 0" />

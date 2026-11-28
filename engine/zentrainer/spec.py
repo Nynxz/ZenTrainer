@@ -271,6 +271,10 @@ class ObjectiveSpec:
                                          "focusing capacity on distinctive subject details without masks or face "
                                          "detectors. 0 = off; 1.5 is a good start.",
                                     ge=0, le=5)
+    haar_hf: float = setting(0.0, "High-frequency detail weight (1-level 2D Haar wavelet on latent error: LH, HL, HH "
+                                  "bands). Counteracts MSE's low-frequency bias at zero extra VRAM or model cost, "
+                                  "sharpening facial geometry and fine texture. 0 = off; 0.5 is a good start.",
+                             ge=0, le=5)
 
 
 @dataclass

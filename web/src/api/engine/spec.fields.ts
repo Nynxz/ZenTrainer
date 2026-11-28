@@ -103,6 +103,7 @@ export interface SpecFields {
     face_id_device: string
     face_id_margin: number
     residual_focus: number
+    haar_hf: number
   }
   memory: {
     training_dtype: string

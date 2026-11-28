@@ -192,40 +192,74 @@ class Objective:
         # noise_scaling reshapes a (B,) sigma itself, as in ComfyUI's samplers
         return model_sampling.noise_scaling(sigma.to(x0.device), noise, x0, False)
 
+    def _err(self, x_t: torch.Tensor, x0: torch.Tensor, x0_pred: torch.Tensor,
+             sigma: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x0, x0_pred = x0.float(), x0_pred.float()
+        if self.spec.target == "native":
+            s = _bcast(sigma, x0).float()
+            return (x_t.float() - x0_pred) / s, (x_t.float() - x0) / s
+        return x0_pred, x0
+
     def loss(self, x_t: torch.Tensor, x0: torch.Tensor, x0_pred: torch.Tensor, sigma: torch.Tensor,
              weight: torch.Tensor | None = None) -> torch.Tensor:
         """Per-sample loss, shape (B,). `weight` (B, h, w) weights latent positions (masked
         training); each sample's loss is normalised by its total weight so masked and
         unmasked samples stay on the same scale."""
-        x0, x0_pred = x0.float(), x0_pred.float()
-        if self.spec.target == "native":
-            s = _bcast(sigma, x0).float()
-            pred, target = (x_t.float() - x0_pred) / s, (x_t.float() - x0) / s
-        else:
-            pred, target = x0_pred, x0
+        pred, target = self._err(x_t, x0, x0_pred, sigma)
         per_elem = self.loss_fn(pred, target)
-        if weight is None:
-            return per_elem.reshape(per_elem.shape[0], -1).mean(dim=1)
-        w = weight.to(per_elem)
-        w = w.reshape(w.shape[0], *([1] * (per_elem.ndim - w.ndim)), *w.shape[1:])  # (B,1,[1,]h,w)
-        w = w.expand_as(per_elem)
-        b = per_elem.shape[0]
-        return (per_elem * w).reshape(b, -1).sum(1) / w.reshape(b, -1).sum(1).clamp_min(1e-8)
+        return _weighted_mean(per_elem, weight)
 
     def train_loss(self, x_t: torch.Tensor, x0: torch.Tensor, x0_pred: torch.Tensor, sigma: torch.Tensor,
                    weight: torch.Tensor | None = None, percents: torch.Tensor | None = None) -> torch.Tensor:
-        """The loss a step trains on: `loss`, weighted per noise level when the spec says so
-        (`percents`: where each sample sits in the schedule, for "balance"). Validation keeps the
-        plain loss, so its curve means the same with or without."""
-        loss = self.loss(x_t, x0, x0_pred, sigma, weight)
+        """The loss a step trains on: `loss`, with optional 1-level 2D Haar high-frequency detail
+        weighting (`haar_hf`) and per-noise-level weighting (`percents`: where each sample sits in
+        the schedule, for "balance"). Validation keeps the plain loss, so its curve means the same
+        with or without."""
+        pred, target = self._err(x_t, x0, x0_pred, sigma)
+        loss = _weighted_mean(self.loss_fn(pred, target), weight)
         if percents is not None:  # what each sample drew and lost, plain: the run page's noise chart
             # (read at the step's end, by settle: reading it here would stall the GPU before the backward)
             self._unread.append((percents.detach().float().cpu(), sigma.detach().float().reshape(-1),
                                  loss.detach().float().reshape(-1)))
+        if self.spec.haar_hf > 0:
+            hf = _haar_hf_loss(pred - target, weight)
+            if hf is not None:
+                loss = loss + self.spec.haar_hf * hf
         if self.balance is not None and percents is not None:
             return loss * self.balance(percents, loss).to(loss)
         w = timestep_weight(self.spec, sigma)
         return loss if w is None else loss * w.to(loss)
+
+
+def _weighted_mean(per_elem: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
+    if weight is None:
+        return per_elem.reshape(per_elem.shape[0], -1).mean(dim=1)
+    w = weight.to(per_elem)
+    w = w.reshape(w.shape[0], *([1] * (per_elem.ndim - w.ndim)), *w.shape[1:])  # (B,1,[1,]h,w)
+    w = w.expand_as(per_elem)
+    b = per_elem.shape[0]
+    return (per_elem * w).reshape(b, -1).sum(1) / w.reshape(b, -1).sum(1).clamp_min(1e-8)
+
+
+def _haar_hf_loss(err: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor | None:
+    """Per-sample 1-level 2D Haar high-frequency energy (LH² + HL² + HH²) on 4D/5D latents."""
+    if err.ndim < 4:
+        return None
+    h, w = err.shape[-2] & ~1, err.shape[-1] & ~1
+    if h < 2 or w < 2:
+        return None
+    e = err[..., :h, :w]
+    e00, e01 = e[..., 0::2, 0::2], e[..., 0::2, 1::2]
+    e10, e11 = e[..., 1::2, 0::2], e[..., 1::2, 1::2]
+    lh = 0.5 * (e00 + e01 - e10 - e11)
+    hl = 0.5 * (e00 - e01 + e10 - e11)
+    hh = 0.5 * (e00 - e01 - e10 + e11)
+    hf = lh.square() + hl.square() + hh.square()
+    if weight is not None:
+        wm = weight[..., :h, :w].to(hf)
+        wm = 0.25 * (wm[..., 0::2, 0::2] + wm[..., 0::2, 1::2] + wm[..., 1::2, 0::2] + wm[..., 1::2, 1::2])
+        return _weighted_mean(hf, wm)
+    return hf.reshape(hf.shape[0], -1).mean(dim=1)
 
 
 def _bcast(sigma: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
