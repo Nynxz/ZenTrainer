@@ -77,6 +77,7 @@ export interface SpecFields {
     ema: number
     lr_floor: number
     lotus_auto_lr: boolean
+    adapter_geo: boolean
   }
   objective: {
     loss: string

@@ -35,7 +35,8 @@ def _get_kernel():
 
     @triton.jit(do_not_specialize=("idx", "new_idx", "H", "seed"))
     def _automagic_tail_kernel(
-        u_ptr,          # (N, numel) fp32 update (contiguous)
+        u_ptr,          # (N, numel) fp32 update used for sign history & vote (contiguous)
+        u_step_ptr,     # (N, numel) fp32 update applied to weights (aliases u_ptr when SEPARATE_STEP_U=False)
         p_ptr,          # (N, numel) fp32/bf16/fp16 params (contiguous, updated in place)
         lr_ptr,         # (N,) fp32 learning rates
         hist_ptr,       # (N, H, width) uint8 sign history (unused when DO_VOTE=False)
@@ -51,6 +52,7 @@ def _get_kernel():
         DO_VOTE: tl.constexpr,
         IS_V4: tl.constexpr,
         HAS_WD: tl.constexpr,
+        SEPARATE_STEP_U: tl.constexpr,
         OUT_DTYPE: tl.constexpr,  # 0=fp32, 1=bf16 (drop 16), 2=fp16 (drop 13)
         BLOCK_B: tl.constexpr,    # bytes per program (BLOCK_B * 8 elements)
     ):
@@ -117,9 +119,10 @@ def _get_kernel():
         # Decoupled weight decay + lr step + optional stochastic rounding in the same pass
         p_val = tl.load(p_ptr + base_e, mask=e_mask, other=0.0).to(tl.float32)
         lr_val = tl.load(lr_ptr + row).to(tl.float32)
+        u_step = tl.load(u_step_ptr + base_e, mask=e_mask, other=0.0).to(tl.float32) if SEPARATE_STEP_U else u
         if HAS_WD:
-            u = u + wd * p_val
-        new_p = p_val - lr_val * u
+            u_step = u_step + wd * p_val
+        new_p = p_val - lr_val * u_step
 
         if OUT_DTYPE == 0:
             tl.store(p_ptr + base_e, new_p, mask=e_mask)
@@ -156,8 +159,12 @@ def tail_step(
     do_vote: bool,
     *,
     is_v4: bool = False,
+    step_update: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     """Run sign-history pack, optional vote, WD, param update, and stochastic rounding in one kernel.
+
+    When `step_update` is provided, sign-history packing and voting still read `update` while the
+    parameter step applies `step_update` (e.g. polar-orthogonalized LoRA updates).
 
     Returns (vote_primary, den) where vote_primary is `num` for v3 and `weighted_flips` for v4,
     or (None, None) when `do_vote` is False. Updates `hists[i][idx]` and `ps[i]` in place.
@@ -169,6 +176,8 @@ def tail_step(
     H, width = hists[0].shape
     dev = update.device
     u2 = update.reshape(n, numel).contiguous()
+    separate = step_update is not None
+    us2 = step_update.reshape(n, numel).contiguous() if separate else u2
     p_stack = torch.stack(ps).reshape(n, numel).contiguous()
     lr1 = lrs.reshape(n).to(torch.float32).contiguous()
     packed = torch.empty((n, width), dtype=torch.uint8, device=dev)
@@ -180,11 +189,12 @@ def tail_step(
     BLOCK_B = 128
     grid = (n, triton.cdiv(width, BLOCK_B))
     _get_kernel()[grid](
-        u2, p_stack, lr1, hist_stack, packed, vote,
+        u2, us2, p_stack, lr1, hist_stack, packed, vote,
         float(wd), numel, width, H, idx, new_idx, seed,
         DO_VOTE=do_vote,
         IS_V4=is_v4,
         HAS_WD=(wd != 0.0),
+        SEPARATE_STEP_U=separate,
         OUT_DTYPE=out_dtype,
         BLOCK_B=BLOCK_B,
         num_warps=4,

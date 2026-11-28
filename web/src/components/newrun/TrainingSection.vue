@@ -218,10 +218,16 @@ const patterns = computed({
     <ZenField label="Learning rate" stack>
       <ZenNumber v-model="spec.optim.learning_rate" :min="0" :step="0.00001" :precision="6" />
     </ZenField>
-    <ZenField v-if="spec.optim.optimizer === 'Lotus'" label="Adaptive LR" stack tip="Off: follows your LR and schedule directly (AdamW-style). On: tunes the group LR within 0.05×–20× from gradient-momentum cosine alignment (Automagic-style), climbing when LR is low, braking on overshoot, and honoring warmup and cosine tails">
+    <ZenField v-if="spec.optim.optimizer === 'Lotus'" label="Adaptive LR" stack tip="Off: follows your LR and schedule directly (AdamW-style). On: group-level adaptive LR within 0.1×–10× from gradient-momentum cosine alignment — climbs when LR is too low, holds steady on noisy small-batch diffusion steps, brakes on overshoot, and honors warmup + cosine schedules">
       <div class="sw-row">
         <ZenSwitch :model-value="!!spec.optim.lotus_auto_lr" @update:model-value="spec.optim.lotus_auto_lr = $event" />
-        <span class="sw-state">{{ spec.optim.lotus_auto_lr ? 'Auto (0.05×–20×)' : 'Scheduled' }}</span>
+        <span class="sw-state">{{ spec.optim.lotus_auto_lr ? 'Auto (0.1×–10×)' : 'Scheduled' }}</span>
+      </div>
+    </ZenField>
+    <ZenField v-if="spec.optim.optimizer === 'Automagic3' || spec.optim.optimizer === 'Lotus'" label="Adapter geometry" stack :tip="resuming ? 'Kept from the run it resumes: its saved optimizer state matches this geometry' : 'Exact r×r Gram polar orthogonalization and built-in 2× LoRA+ scaling on LoRA, exact fp32 moments on tiny factors (lokr_w1), and ΔW-preserving LoKr gauge balancing'">
+      <div class="sw-row" :class="{ locked: resuming }">
+        <ZenSwitch :model-value="!!spec.optim.adapter_geo" :disabled="resuming" @update:model-value="resuming || (spec.optim.adapter_geo = $event)" />
+        <span class="sw-state">{{ spec.optim.adapter_geo ? 'On' : 'Off' }}</span>
       </div>
     </ZenField>
     <!-- what trains and its size together: the rank means a different thing for each -->

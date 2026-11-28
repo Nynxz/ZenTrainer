@@ -20,8 +20,11 @@ their own licences, listed here with the notices those licences ask for.
 
 - **Used in:** `engine/zentrainer/harness/optim/automagic3.py` and `automagic4.py`, the Automagic v3
   and v4 optimizers, vendored unchanged below a ZenTrainer header; `automagic3_batched.py` and
-  `automagic4_batched.py`, the same steps run on stacks of same-shaped tensors; and `FLEX_WEIGHTS` in
-  `engine/zentrainer/harness/objective.py`, averaged down from ai-toolkit's timestep weighting.
+  `automagic4_batched.py`, the same steps run on stacks of same-shaped tensors; `automagic3_geo.py`,
+  `Automagic3Batched` extended with adapter geometry (exact Gram polar orthogonalization, single-group
+  LoRA+ scaling, exact fp32 tiny-factor moments, and Delta-W-preserving LoKr gauge balancing); and
+  `FLEX_WEIGHTS` in `engine/zentrainer/harness/objective.py`, averaged down from ai-toolkit's timestep
+  weighting.
 - **Source:** https://github.com/ostris/ai-toolkit
 - **Licence:** MIT License, below.
 - **Notice:**

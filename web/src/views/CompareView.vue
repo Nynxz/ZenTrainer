@@ -91,6 +91,7 @@ const LABELS: Record<string, string> = {
   'optim.grad_clip': 'Grad clip',
   'optim.ema_decay': 'EMA decay',
   'optim.lotus_auto_lr': 'Lotus adaptive LR',
+  'optim.adapter_geo': 'Adapter geometry',
   'network.algorithm': 'Algorithm',
   'network.rank': 'Rank',
   'network.alpha': 'Alpha',
@@ -141,6 +142,7 @@ const PRIORITY = [
   'dataset.resolution',
   'optim.optimizer',
   'optim.lotus_auto_lr',
+  'optim.adapter_geo',
   'optim.learning_rate',
   'optim.steps',
   'optim.batch_size',
@@ -180,6 +182,7 @@ function effectiveVal(spec: Record<string, unknown>, path: string, raw: unknown)
   const samp = (spec.samples ?? {}) as Record<string, unknown>
   if ((path === 'objective.preserve_weight' || path === 'objective.preserve_every') && !obj.preserve) return null
   if (path === 'optim.lotus_auto_lr' && opt.optimizer !== 'Lotus') return null
+  if (path === 'optim.adapter_geo' && opt.optimizer !== 'Automagic3' && opt.optimizer !== 'Lotus') return null
   if (path === 'network.base_strength' && !net.base_lora) return null
   if (path === 'dataset.stage_blend' && (!Array.isArray(ds.stages) || !ds.stages.length)) return null
   if ((path === 'memory.grad_checkpoint_skip' || path === 'memory.checkpoint_save') && !mem.gradient_checkpointing) return null
@@ -315,7 +318,7 @@ function runStats(d: RunDetail | null) {
     peakLike,
     lastLike,
     model,
-    opt: d.spec.optim.optimizer === 'Lotus' && d.spec.optim.lotus_auto_lr ? 'Lotus (auto LR)' : d.spec.optim.optimizer,
+    opt: `${d.spec.optim.optimizer === 'Lotus' && d.spec.optim.lotus_auto_lr ? 'Lotus (auto LR)' : d.spec.optim.optimizer}${d.spec.optim.adapter_geo && (d.spec.optim.optimizer === 'Automagic3' || d.spec.optim.optimizer === 'Lotus') ? ' + geo' : ''}`,
   }
 }
 const statsA = computed(() => runStats(a.value))

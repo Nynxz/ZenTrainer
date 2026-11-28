@@ -553,7 +553,12 @@
         },
         "lotus_auto_lr": {
           "type": "boolean",
-          "description": "Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead of following the schedule directly. Off = predictable AdamW-style scheduled LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails.",
+          "description": "Lotus: group-level hypergradient adaptive learning rate (0.1x-10x) that composes with warmup and schedule decay. Off = predictable AdamW-style scheduled LR; On = climbs when LR is too low, holds steady on noisy small-batch diffusion steps, and brakes on overshoot.",
+          "default": false
+        },
+        "adapter_geo": {
+          "type": "boolean",
+          "description": "Automagic v3 and Lotus: adapter-native geometry \u2014 exact r x r Gram polar orthogonalization and built-in 2x LoRA+ up-matrix scaling on LoRA, exact fp32 second moments on tiny factors (<= 1024 elems, e.g. lokr_w1), and Delta-W-preserving LoKr gauge balancing.",
           "default": false
         }
       },

@@ -711,7 +711,10 @@ class Trainer:
                                base=base, base_strength=s.network.base_strength, wide_inputs=self.concat_inputs,
                                scalable=bool(s.slider.kind or same_sample_model))
         self.optimizer, self.scheduler = optim.build(
-            self.network.param_groups(s.optim.learning_rate, s.optim.lora_plus), s.optim)
+            self.network.param_groups(s.optim.learning_rate, s.optim.lora_plus),
+            s.optim,
+            adapter_pairs=self.network.adapter_pairs(),
+        )
         from .ema import EMA
 
         self.ema = EMA(self.network.params, s.optim.ema) if s.optim.ema > 0 else None

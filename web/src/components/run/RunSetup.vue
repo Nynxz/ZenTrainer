@@ -51,7 +51,11 @@ const setup = computed((): { k: string; v: string; title?: string; lead?: string
     },
     {
       k: 'Optimizer',
-      v: [opt.optimizer === 'Lotus' && opt.lotus_auto_lr ? 'Lotus (auto LR)' : (OPT_NAMES[opt.optimizer] ?? opt.optimizer), `from ${fmtLr(opt.learning_rate)}`, ADAPTIVE.has(opt.optimizer) ? '' : opt.lr_scheduler].filter(Boolean).join(' · '),
+      v: [
+        `${opt.optimizer === 'Lotus' && opt.lotus_auto_lr ? 'Lotus (auto LR)' : (OPT_NAMES[opt.optimizer] ?? opt.optimizer)}${opt.adapter_geo && (opt.optimizer === 'Automagic3' || opt.optimizer === 'Lotus') ? ' + geo' : ''}`,
+        `from ${fmtLr(opt.learning_rate)}`,
+        ADAPTIVE.has(opt.optimizer) ? '' : opt.lr_scheduler,
+      ].filter(Boolean).join(' · '),
     },
     { k: 'Network', v: `${sp.network.algorithm} r${sp.network.rank} · ${Array.isArray(sp.network.targets) ? `${sp.network.targets.length} layer types` : sp.network.targets.replace('_', ' + ')}${sp.dataset.masked_loss ? ' · masked' : ''}` },
     ...(sp.network.base_lora
