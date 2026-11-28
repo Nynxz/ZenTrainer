@@ -5,7 +5,7 @@
 import { maxOf, minOf } from '@/lib/extent'
 import { computed, ref } from 'vue'
 
-export type CompareMetric = 'loss' | 'val' | 'like' | 'lr' | 'preserve'
+export type CompareMetric = 'loss' | 'val' | 'like' | 'lr' | 'preserve' | 'face_id'
 
 export interface ComparePoint {
   step: number
@@ -94,6 +94,8 @@ const emptyText = computed(() => {
       return 'No learning-rate history'
     case 'preserve':
       return 'Neither run logged class preservation loss'
+    case 'face_id':
+      return 'Neither run logged face identity loss'
     default:
       return 'No loss yet'
   }

@@ -107,6 +107,13 @@ const LABELS: Record<string, string> = {
   'objective.preserve': 'Preserve classes (DOP)',
   'objective.preserve_weight': 'DOP weight',
   'objective.preserve_every': 'DOP every',
+  'objective.preserve_prior': 'DOP prior latents',
+  'objective.face_id': 'Face identity (SparseID)',
+  'objective.face_id_every': 'SparseID every',
+  'objective.face_id_start': 'SparseID start',
+  'objective.face_id_device': 'SparseID device',
+  'objective.face_id_margin': 'SparseID margin',
+  'objective.residual_focus': 'Base-residual focus',
   'memory.training_dtype': 'Precision',
   'memory.offloading': 'Offloading',
   'memory.gradient_checkpointing': 'Grad checkpointing',
@@ -146,6 +153,7 @@ const PRIORITY = [
   'optim.batch_size',
   'optim.grad_accumulation_steps',
   'optim.lr_scheduler',
+  'optim.lr_floor',
   'optim.warmup_steps',
   'network.algorithm',
   'network.rank',
@@ -158,6 +166,13 @@ const PRIORITY = [
   'objective.preserve',
   'objective.preserve_weight',
   'objective.preserve_every',
+  'objective.preserve_prior',
+  'objective.face_id',
+  'objective.face_id_every',
+  'objective.face_id_start',
+  'objective.face_id_device',
+  'objective.face_id_margin',
+  'objective.residual_focus',
   'memory.training_dtype',
   'seed',
 ]
@@ -178,7 +193,16 @@ function effectiveVal(spec: Record<string, unknown>, path: string, raw: unknown)
   const ds = (spec.dataset ?? {}) as Record<string, unknown>
   const mem = (spec.memory ?? {}) as Record<string, unknown>
   const samp = (spec.samples ?? {}) as Record<string, unknown>
-  if ((path === 'objective.preserve_weight' || path === 'objective.preserve_every') && !obj.preserve) return null
+  if ((path === 'objective.preserve_weight' || path === 'objective.preserve_every' || path === 'objective.preserve_prior') && !obj.preserve)
+    return null
+  if (
+    (path === 'objective.face_id_every' ||
+      path === 'objective.face_id_start' ||
+      path === 'objective.face_id_device' ||
+      path === 'objective.face_id_margin') &&
+    !Number(obj.face_id)
+  )
+    return null
   if (path === 'optim.lotus_auto_lr' && opt.optimizer !== 'Lotus') return null
   if (path === 'network.base_strength' && !net.base_lora) return null
   if (path === 'dataset.stage_blend' && (!Array.isArray(ds.stages) || !ds.stages.length)) return null
@@ -323,12 +347,16 @@ const statsB = computed(() => runStats(b.value))
 
 // ---- curves ---------------------------------------------------------------------------------
 const metric = ref<CompareMetric>('loss')
-const pickAux = (r: MetricRow, key: 'preserve_loss') => (r as unknown as Record<string, number | null | undefined>)[key]
+const pickAux = (r: MetricRow, key: 'preserve_loss' | 'face_id_loss') =>
+  (r as unknown as Record<string, number | null | undefined>)[key]
 
 const hasVal = computed(() => !!(a.value?.validation.length || b.value?.validation.length))
 const hasLike = computed(() => !!(likeSteps(a.value).length || likeSteps(b.value).length))
 const hasPreserve = computed(
   () => !!(a.value?.metrics.some((r) => pickAux(r, 'preserve_loss') != null) || b.value?.metrics.some((r) => pickAux(r, 'preserve_loss') != null)),
+)
+const hasFaceId = computed(
+  () => !!(a.value?.metrics.some((r) => pickAux(r, 'face_id_loss') != null) || b.value?.metrics.some((r) => pickAux(r, 'face_id_loss') != null)),
 )
 
 const metricTabs = computed<{ id: CompareMetric; label: string; disabled?: boolean }[]>(() => [
@@ -337,6 +365,7 @@ const metricTabs = computed<{ id: CompareMetric; label: string; disabled?: boole
   { id: 'like', label: 'Likeness', disabled: !hasLike.value },
   { id: 'lr', label: 'LR' },
   ...(hasPreserve.value ? [{ id: 'preserve' as const, label: 'DOP' }] : []),
+  ...(hasFaceId.value ? [{ id: 'face_id' as const, label: 'Face ID' }] : []),
 ])
 
 watch(metricTabs, (tabs) => {
@@ -355,6 +384,8 @@ function pointsFor(d: RunDetail, m: CompareMetric): ComparePoint[] {
       return rawSeries(d.metrics, (r) => r.lr)
     case 'preserve':
       return emaSeries(d.metrics, (r) => pickAux(r, 'preserve_loss'), 0.15)
+    case 'face_id':
+      return emaSeries(d.metrics, (r) => pickAux(r, 'face_id_loss'), 0.15)
   }
 }
 
