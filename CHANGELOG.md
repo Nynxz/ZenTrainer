@@ -8,7 +8,9 @@ and Manager show.
 - **Base-Residual Self-Focusing (`objective.residual_focus`).** Detector-free spatial loss weighting:
   on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions (`1×–3×`) where
   the base model disagrees most with the target, focusing adapter capacity on distinctive subject
-  details without masks or face detectors.
+  details without masks or face detectors. Masked training (`dataset.masked_loss`) is respected
+  before pooling and normalization so masked-out regions (such as watermarks) never bleed into
+  border cells or get boosted when `dataset.unmasked_weight > 0`.
 - **Muon optimizer (`optim.optimizer: "Muon"`) and `lr_floor` for cosine/linear schedules.** Adds a
   built-in pure-PyTorch Newton-Schulz polar orthogonalized momentum optimizer for LoKr, LoRA and OFT
   adapters (suggested LR `3e-4` with cosine schedule), and extends `optim.lr_floor` to floor
