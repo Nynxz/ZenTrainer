@@ -5,6 +5,9 @@ and Manager show.
 
 ## Unreleased
 
+- **Compare: SparseID curve tab and labels for new objective/optimizer settings.** Adds a Face ID
+  (`face_id_loss`) curve tab to the Compare chart and clean spec-diff labels/gating for SparseID,
+  Prior-Latent DOP, Base-Residual Self-Focusing, and `lr_floor`.
 - **Base-Residual Self-Focusing (`objective.residual_focus`).** Detector-free spatial loss weighting:
   on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions (`1×–3×`) where
   the base model disagrees most with the target, focusing adapter capacity on distinctive subject
