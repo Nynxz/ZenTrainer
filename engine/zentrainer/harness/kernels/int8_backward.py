@@ -88,8 +88,10 @@ def _hadamard(size: int, device, dtype) -> torch.Tensor:
     return _build_hadamard(size, device=device, dtype=dtype)
 
 
-def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int) -> torch.Tensor:
-    """grad_out @ dequantized ConvRot weight, without dequantizing it. grad_2d (M, out) bf16."""
+def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, group: int,
+               residual: torch.Tensor | None = None) -> torch.Tensor:
+    """grad_out @ dequantized ConvRot weight, without dequantizing it, plus `residual` when given.
+    grad_2d (M, out) bf16."""
     from .w8a16_backward import fused_w8a16_input_grad
 
     # fp32 out of the kernel and through the rotation, rounded once at the end like the eager path
@@ -98,6 +100,8 @@ def input_grad(grad_2d: torch.Tensor, q: torch.Tensor, scale: torch.Tensor, grou
         m, k = g.shape
         h = _hadamard(group, g.device, torch.float32)
         g = torch.matmul(g.view(m, k // group, group), h.T).view(m, k)
+    if residual is not None:
+        g = g + residual.to(torch.float32)
     return g.to(torch.bfloat16)
 
 
@@ -227,7 +231,8 @@ def _patch() -> None:
 # every trained layer). Only grad-free layers hit the int8 kernel. While training, these layers
 # get their own autograd Function instead: the int8 kernel forward, and the input gradient from
 # the W8A8 kernels (mode "w8a8": an int8_tensorwise qdata as it is, a packed layer's codes decoded to
-# that grid first) or a dequantized matmul (every other mode, and a packed layer the decode can't take).
+# that grid first), the fused Triton W8A16 kernel (mode "fused", int8_tensorwise), or a dequantized
+# matmul (mode "bf16", and a packed layer the decode can't take).
 
 INT8_FORMATS = ("int8_tensorwise",)  # the W8A8 kernels' layout: one scale per output row, int8 qdata
 PACKED_FORMATS = ("asym_w4a8_int8", "w6a8_int8")  # 4/6-bit codes: decoded to int8 for the W8A8 kernels
@@ -456,15 +461,21 @@ def _weight_input_grad(w, fmt: str | None, g: torch.Tensor, residual: torch.Tens
                                      params.correction, int(params.group_size), int(params.convrot_groupsize),
                                      bool(params.mma_packed), n, k, fmt, residual)
         group = int(getattr(params, "convrot_groupsize", 0) or 0) if getattr(params, "convrot", False) else 0
-        if _mode == "w8a8" and g.is_cuda and fmt in INT8_FORMATS:
+        path = None
+        if _mode in ("w8a8", "fused") and g.is_cuda and fmt in INT8_FORMATS:
             try:
-                gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
+                if _mode == "w8a8":
+                    gi = w8a8_input_grad(g, w._qdata, params.scale, group, residual)
+                else:
+                    gi = input_grad(g, w._qdata, params.scale, group, residual)
+                if gi is not None:
+                    path = _mode
             except (*_BUGS, torch.OutOfMemoryError):  # a code mistake or full card: don't hide behind dequantization
                 raise
             except Exception as e:  # a kernel that fails to compile or launch here: dequantize
                 _kernel_failed(e)
                 gi = None
-        _count(("int8 layer: w8a8" if gi is not None else "int8 layer: dequantized") if fmt in INT8_FORMATS
+        _count((f"int8 layer: {path}" if path else "int8 layer: dequantized") if fmt in INT8_FORMATS
                else f"{fmt}: dequantized")
         if gi is not None:
             return gi

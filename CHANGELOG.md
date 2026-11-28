@@ -5,6 +5,10 @@ and Manager show.
 
 ## Unreleased
 
+- **Fused W8A16 int8 backward (`memory.int8_backward: "fused"`) on LoRA/LoKr bypass and `compile_blocks`.**
+  Routes `_LoRAInt8` / `_LoKrInt8` fused bypass layers through Triton's `w8a16_backward` kernel
+  instead of falling back to bf16 weight dequantization, and wraps the kernel as an opaque custom
+  op so `compile_blocks` compiles in ~32 s instead of stalling in Inductor autotune (~200 s).
 - **Base-Residual Self-Focusing (`objective.residual_focus`).** Detector-free spatial loss weighting:
   on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions (`1×–3×`) where
   the base model disagrees most with the target, focusing adapter capacity on distinctive subject
