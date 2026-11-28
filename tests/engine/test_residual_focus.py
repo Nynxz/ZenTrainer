@@ -86,3 +86,36 @@ def test_residual_focus_5d_video_and_shape_mismatch():
     bad_fake, _ = _fake_trainer(torch.zeros(1, 4, 4, 4))
     orig = torch.ones(1, 8, 8)
     assert Trainer._residual_focus_weight(bad_fake, x0[:, :, 0], x0[:, :, 0], torch.ones(1), [], orig, alpha=1.5) is orig
+
+
+def test_residual_focus_masked_out_watermark_does_not_bleed_or_boost():
+    # Huge base-model disagreement in the masked-out corner (e.g. a watermark) and uniform
+    # disagreement everywhere else: border cells around the mask must stay flat (no 3x3 pool bleed),
+    # and d_mean must not be inflated by the masked-out region.
+    x0 = torch.zeros(1, 4, 8, 8)
+    x0_base = torch.ones(1, 4, 8, 8)
+    x0_base[:, :, 6:, 6:] = 50.0  # masked-out watermark spike
+    fake, _ = _fake_trainer(x0_base)
+
+    # Strict mask (unmasked_weight = 0.0) with a fractional area-downsampled border cell
+    mask = torch.ones(1, 8, 8)
+    mask[:, 6:, 6:] = 0.0
+    mask[:, 5, 6:] = 0.5
+    wm = Trainer._residual_focus_weight(fake, x0, x0, torch.ones(1), [], mask, alpha=2.0)
+    assert float(wm[:, 6:, 6:].abs().max()) == 0.0
+    # Border cell must NOT receive boosted weight relative to interior foreground cells
+    assert float(wm[0, 5, 6]) <= float(wm[0, 0, 0]) * 0.5 + 1e-5
+    # Interior foreground cells stay uniform (1.0 relative to each other)
+    assert torch.allclose(wm[0, :5, :5], torch.full((5, 5), float(wm[0, 0, 0])), atol=1e-5)
+
+    # With unmasked_weight > 0 (e.g. 0.1), the masked-out watermark must NOT be boosted to 3x
+    fake.spec = types.SimpleNamespace(dataset=types.SimpleNamespace(unmasked_weight=0.1))
+    soft_mask = 0.1 + 0.9 * (mask > 0).float()
+    wm_soft = Trainer._residual_focus_weight(fake, x0, x0, torch.ones(1), [], soft_mask, alpha=2.0)
+    # Ratio of watermark weight to foreground weight stays <= 0.1 (never boosted above the floor)
+    assert float(wm_soft[0, 7, 7]) / float(wm_soft[0, 0, 0]) <= 0.1 + 1e-5
+
+    # All-zero mask stays zero without NaN/Inf
+    zero_mask = torch.zeros(1, 8, 8)
+    wz = Trainer._residual_focus_weight(fake, x0, x0, torch.ones(1), [], zero_mask, alpha=2.0)
+    assert torch.isfinite(wz).all() and float(wz.abs().max()) == 0.0

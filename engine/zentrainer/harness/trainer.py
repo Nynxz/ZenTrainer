@@ -1752,13 +1752,44 @@ class Trainer:
         diff = (x0_base.float() - x0.float()).pow(2).mean(dim=1, keepdim=True).sqrt()
         if diff.ndim == 5:
             diff = diff.mean(dim=2)
-        diff = torch.nn.functional.avg_pool2d(diff, kernel_size=3, stride=1, padding=1, count_include_pad=False)
-        d_mean = diff.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)
-        w_map = (1.0 + alpha * (diff / d_mean - 1.0).clamp_min(0.0)).clamp(1.0, max_boost)
-        w_map = (w_map / w_map.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)).squeeze(1)
         if weight is None:
-            return w_map
-        eff = weight.float() * w_map
+            diff = torch.nn.functional.avg_pool2d(diff, kernel_size=3, stride=1, padding=1, count_include_pad=False)
+            d_mean = diff.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+            w_map = (1.0 + alpha * (diff / d_mean - 1.0).clamp_min(0.0)).clamp(1.0, max_boost)
+            return (w_map / w_map.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)).squeeze(1)
+
+        w_in = weight.float()
+        spatial_3d = w_in.ndim == 3 and w_in.shape == (diff.shape[0], diff.shape[2], diff.shape[3])
+        spatial_4d = w_in.ndim == 4 and w_in.shape == diff.shape
+        if not (spatial_3d or spatial_4d):
+            diff = torch.nn.functional.avg_pool2d(diff, kernel_size=3, stride=1, padding=1, count_include_pad=False)
+            d_mean = diff.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+            w_map = (1.0 + alpha * (diff / d_mean - 1.0).clamp_min(0.0)).clamp(1.0, max_boost)
+            w_map = (w_map / w_map.mean(dim=(2, 3), keepdim=True).clamp_min(1e-6)).squeeze(1)
+            eff = w_in * w_map
+            return eff / eff.mean(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
+
+        # Recover the [0, 1] foreground mask above unmasked_weight so masked-out regions (such as
+        # watermarks) never bleed residual into border cells via the 3x3 pool, never skew d_mean,
+        # and never get boosted when unmasked_weight > 0.
+        m = w_in.unsqueeze(1) if spatial_3d else w_in
+        spec = getattr(self, "spec", None)
+        floor = float(spec.dataset.unmasked_weight) if spec is not None else 0.0
+        if 0.0 < floor < 1.0:
+            fg = ((m - floor) / (1.0 - floor)).clamp(0.0, 1.0)
+        else:
+            fg = m.clamp(0.0, 1.0)
+        fg_sum = fg.sum(dim=(2, 3), keepdim=True)
+        has_fg = fg_sum > 1e-6
+        pooled_fg = torch.nn.functional.avg_pool2d(fg, kernel_size=3, stride=1, padding=1, count_include_pad=False)
+        diff = torch.nn.functional.avg_pool2d(diff * fg, kernel_size=3, stride=1, padding=1, count_include_pad=False)
+        diff = diff / pooled_fg.clamp_min(1e-6)
+        d_mean = ((diff * fg).sum(dim=(2, 3), keepdim=True) / fg_sum.clamp_min(1e-6)).clamp_min(1e-6)
+        boost = (1.0 + alpha * (diff / d_mean - 1.0).clamp_min(0.0)).clamp(1.0, max_boost)
+        w_map = torch.where(has_fg, 1.0 + fg * (boost - 1.0), torch.ones_like(boost))
+        if spatial_3d:
+            w_map = w_map.squeeze(1)
+        eff = w_in * w_map
         return eff / eff.mean(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
 
     def _pair_loss(self, idx, x0, conds, weight, noise, sigma, x_t, percents, acc: int) -> torch.Tensor:
