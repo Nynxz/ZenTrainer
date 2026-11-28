@@ -538,6 +538,26 @@ class Network:
             groups.append({"params": control, "lr": lr * CONTROL_LR_SCALE, "lr_mult": CONTROL_LR_SCALE})
         return groups
 
+    def adapter_pairs(self) -> dict[str, list[tuple[torch.nn.Parameter, torch.nn.Parameter]]]:
+        """Paired (lora_down, lora_up) and (lokr_w1, lokr_w2) trainable tensors, keyed by layer prefix."""
+        by_layer: dict[str, dict[str, torch.nn.Parameter]] = {}
+        for k, p in self.params.items():
+            if not p.requires_grad:
+                continue
+            for suffix, role in (
+                (".lora_down.weight", "lora_a"),
+                (".lora_up.weight", "lora_b"),
+                (".lokr_w1", "lokr_w1"),
+                (".lokr_w2", "lokr_w2"),
+            ):
+                if k.endswith(suffix):
+                    by_layer.setdefault(k[: -len(suffix)], {})[role] = p
+                    break
+        return {
+            "lora_pairs": [(d["lora_a"], d["lora_b"]) for d in by_layer.values() if "lora_a" in d and "lora_b" in d],
+            "lokr_pairs": [(d["lokr_w1"], d["lokr_w2"]) for d in by_layer.values() if "lokr_w1" in d and "lokr_w2" in d],
+        }
+
     def _wide_base(self) -> tuple[torch.Tensor, torch.Tensor | None]:
         """The widened layer's own (base) weight and bias, full precision on the CPU."""
         def plain(t):

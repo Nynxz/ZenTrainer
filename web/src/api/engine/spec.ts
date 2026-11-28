@@ -98,8 +98,10 @@ export interface TrainSpec {
     ema?: number
     /** Minimum LR fraction of the start rate: applies to cosine/linear decay and Automagic v3/v4 / Lotus adaptive LR; 0 = decay to 0 (or adaptive default) */
     lr_floor?: number
-    /** Lotus: group-level hypergradient adaptive LR (0.05x-20x); false = scheduled LR */
+    /** Lotus: group-level hypergradient adaptive LR (0.1x-10x) that composes with warmup/schedule; false = scheduled LR */
     lotus_auto_lr?: boolean
+    /** Automagic v3 and Lotus: adapter-native geometry (Gram polar orth, 2x LoRA+, exact lokr_w1 moments, LoKr gauge) */
+    adapter_geo?: boolean
   }
   objective: {
     loss: 'mse' | 'l1' | 'huber' | 'smooth_l1'

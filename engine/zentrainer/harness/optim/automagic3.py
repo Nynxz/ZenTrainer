@@ -661,17 +661,24 @@ class Automagic3(torch.optim.Optimizer):
         return sum(lrs) / len(lrs) if lrs else float(self.defaults["lr"])
 
     def load_state_dict(self, state_dict):
+        # Preserve each group's live configured hyperparameters (including builder-set
+        # per-group min_lr/max_lr/lr_mult bounds) before super() replaces param_groups.
+        configured = [{k: v for k, v in g.items() if k != "params"} for g in self.param_groups]
         # Parent casts every fp state tensor to param.dtype; force lr back to fp32
         # so subsequent lr bumps aren't rounded away on bf16 weights.
         super().load_state_dict(state_dict)
-        # Hyperparameters are NOT loaded from the checkpoint: constructor args
+        # Hyperparameters are NOT loaded from the checkpoint: constructor/builder args
         # always win, so any setting can be changed mid-run just by passing a
         # different value when resuming. Only the adaptive state is restored
         # -- the group lr and the sign history (when its geometry still
         # matches the current config).
-        for group in self.param_groups:
+        for gi, group in enumerate(self.param_groups):
+            src = configured[gi] if gi < len(configured) else self.defaults
             for k, v in self.defaults.items():
-                group[k] = v
+                group[k] = src.get(k, v)
+            for k, v in src.items():
+                if k not in group:
+                    group[k] = v
             # One lr per group: unify the restored lrs to their geometric
             # median (they are already identical for checkpoints from this
             # version; older per-tensor checkpoints land on a sane middle).

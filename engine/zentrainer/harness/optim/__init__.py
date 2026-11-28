@@ -16,6 +16,7 @@ import torch
 from ...spec import OptimSpec
 
 AUTOMAGIC3_CEILING = 4.0  # Automagic v3's and v4's LR stays under this many times where it started
+AUTOMAGIC3_GEO_CEILING = 6.0  # Automagic3Geo's H=4 vote peaks higher (~5-6x) then self-anneals cleanly
 
 
 class Lion(torch.optim.Optimizer):
@@ -166,6 +167,11 @@ def _lion8bit(p, s):
 
 
 def _automagic3(p, s):
+    if s.adapter_geo:
+        from .automagic3_geo import Automagic3Geo
+
+        return Automagic3Geo(p, lr=s.learning_rate, weight_decay=s.weight_decay, fused=False,
+                             **({"min_lr": s.learning_rate * s.lr_floor} if s.lr_floor > 0 else {}))
     from .automagic3_batched import Automagic3Batched
 
     return Automagic3Batched(p, lr=s.learning_rate, weight_decay=s.weight_decay, fused=False,
@@ -183,6 +189,9 @@ def _lotus(p, s):
     from .lotus import Lotus
 
     return Lotus(p, lr=s.learning_rate, weight_decay=s.weight_decay, auto_lr=s.lotus_auto_lr,
+                 lora_orth=s.adapter_geo,
+                 lora_b_mult=2.0 if s.adapter_geo else 1.0,
+                 lokr_gauge_alpha=0.25 if s.adapter_geo else 0.0,
                  **({"lr_min_mult": s.lr_floor} if s.lr_floor > 0 else {}))
 
 
@@ -261,10 +270,10 @@ OPTIMIZERS: dict[str, OptimizerDef] = {d.id: d for d in [
     OptimizerDef("Lotus", "Lotus (adapter-native)",
                  _lotus,
                  lr_hint="1e-4",
-                 note="Built for diffusion LoRAs & LoKrs: bf16 momentum + factored second moments (~3x less "
-                      "memory than AdamW, exact fp32 moments on tiny matrices like lokr_w1, stochastic "
-                      "rounding for bf16/fp16), spike-safe RMS clipping + cautious gating, and an optional "
-                      "group-level adaptive LR toggle (0.05x–20x)."),
+                 note="Built for diffusion LoRAs & LoKrs: int8 quadratic-companded momentum + factored second "
+                      "moments (~4x less memory than AdamW, exact fp32 moments on tiny matrices like lokr_w1, "
+                      "unbiased stochastic rounding for bf16/fp16), spike-safe RMS clipping, and an optional "
+                      "group-level adaptive LR toggle (0.1x–10x) that composes with warmup and cosine schedules."),
     OptimizerDef("Muon", "Muon (orthogonal momentum)",
                  _muon,
                  lr_hint="3e-4",
@@ -311,14 +320,15 @@ def _schedule(spec: OptimSpec) -> Callable[[int], float]:
     return lambda i: (i + 1) / warm if i < warm else decay(i)
 
 
-def build(params: Iterable[torch.nn.Parameter], spec: OptimSpec):
+def build(params: Iterable[torch.nn.Parameter], spec: OptimSpec, *, adapter_pairs: dict | None = None):
     d = OPTIMIZERS.get(spec.optimizer)
     if d is None:
         raise ValueError(f"unknown optimizer {spec.optimizer!r}; have {', '.join(OPTIMIZERS)}")
     if not available(d):
         raise RuntimeError(f"{d.label} needs `{d.pip}`: run `scripts/zt extras optimizers` (or pip install {d.pip})")
     opt = d.build(list(params), spec)
-    auto_adaptive = d.adaptive or (d.id == "Lotus" and spec.lotus_auto_lr)
+    if adapter_pairs is not None and hasattr(opt, "set_adapter_pairs"):
+        opt.set_adapter_pairs(adapter_pairs)
     if d.adaptive and spec.lr_floor > 0:  # a group at a multiple of the LR floors at that multiple too
         for g in opt.param_groups:
             if "min_lr" in g:
@@ -326,9 +336,10 @@ def build(params: Iterable[torch.nn.Parameter], spec: OptimSpec):
     if d.id in ("Automagic3", "Automagic4"):
         # its own ceiling (1e3) never binds: a steady trend (an edit's new input columns, an input
         # dropped half the time) kept it climbing to hundreds and the run blew up
+        ceil = AUTOMAGIC3_GEO_CEILING if (d.id == "Automagic3" and spec.adapter_geo) else AUTOMAGIC3_CEILING
         for g in opt.param_groups:
-            g["max_lr"] = spec.learning_rate * AUTOMAGIC3_CEILING * g.get("lr_mult", 1.0)
-    if d.schedule_free or auto_adaptive:  # its own warmup / LR control; the schedule must stay flat
+            g["max_lr"] = spec.learning_rate * ceil * g.get("lr_mult", 1.0)
+    if d.schedule_free or d.adaptive:  # its own warmup / LR control; the schedule must stay flat
         sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda i: 1.0)
     else:
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _schedule(spec))
@@ -403,8 +414,7 @@ def resume_cold(opt: torch.optim.Optimizer, sched, spec: OptimSpec, step: int) -
     seeds each weight's LR from the group's on its first step and then scales it by the schedule
     again, would count a ramp twice."""
     d = OPTIMIZERS.get(spec.optimizer)
-    auto_adaptive = d is not None and (d.adaptive or (d.id == "Lotus" and spec.lotus_auto_lr))
-    ramp = d is not None and not (auto_adaptive or d.schedule_free) and d.id != "Automagic"
+    ramp = d is not None and not (d.adaptive or d.schedule_free) and d.id != "Automagic"
     if ramp:
         rewarm(sched, step)
     seek(opt, sched, step)

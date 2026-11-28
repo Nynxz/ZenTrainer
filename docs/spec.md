@@ -129,7 +129,8 @@ The optimizer, learning rate and schedule, and the run's length.
 | `optim.lora_plus` | `0.0` | number, >= 0 | LoRA+: the up matrices learn this many times faster than the down ones, which trains a LoRA faster for the same stability (paper: 16; 4 is a safe start). 0 or 1 = off. |
 | `optim.ema` | `0.0` | number, >= 0, < 1 | Weight averaging: checkpoints, samples and the saved LoRA use a running average of the adapter (0.98 = roughly the last 50 steps). 0 = off. |
 | `optim.lr_floor` | `0.0` | number, >= 0, <= 1 | Minimum LR fraction of the start rate: applies to cosine/linear decay (keeps late high-resolution stages from stalling near zero) and to Automagic v3/v4 / Lotus adaptive LR. 0 = decay to 0 (or adaptive optimizer's default floor). |
-| `optim.lotus_auto_lr` | `false` | true/false | Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead of following the schedule directly. Off = predictable AdamW-style scheduled LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails. |
+| `optim.lotus_auto_lr` | `false` | true/false | Lotus: group-level hypergradient adaptive learning rate (0.1x-10x) that composes with warmup and schedule decay. Off = predictable AdamW-style scheduled LR; On = climbs when LR is too low, holds steady on noisy small-batch diffusion steps, and brakes on overshoot. |
+| `optim.adapter_geo` | `false` | true/false | Automagic v3 and Lotus: adapter-native geometry — exact r x r Gram polar orthogonalization and built-in 2x LoRA+ up-matrix scaling on LoRA, exact fp32 second moments on tiny factors (<= 1024 elems, e.g. lokr_w1), and Delta-W-preserving LoKr gauge balancing. |
 
 ## objective
 

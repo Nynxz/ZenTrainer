@@ -5,6 +5,16 @@ and Manager show.
 
 ## Unreleased
 
+- **Lotus upgrades, `optim.adapter_geo` for Lotus & Automagic v3, and faster Krea 2 Character recipe.**
+  - **Lotus:** upgrades momentum to int8 quadratic-companded storage (~4× less optimizer VRAM than
+    AdamW) and makes `optim.lotus_auto_lr` (`0.1×–10×`) compose cleanly with warmup and cosine/linear
+    schedules.
+  - **Adapter geometry (`optim.adapter_geo`):** optional toggle for Automagic v3 (`Automagic3Geo`,
+    derived from Ostris's Automagic v3) and Lotus adding exact `r×r` Gram polar orthogonalization,
+    built-in 2× LoRA+ up-matrix scaling in one group, exact fp32 second moments on tiny factors
+    (`lokr_w1`), and ΔW-preserving LoKr gauge balancing.
+  - **Krea 2 Character recipe:** updated to mid-block MLPs (`blocks: "8-21"`, LoKr rank 8,
+    Automagic v3 + `adapter_geo`), ~3× smaller and faster.
 - **Base-Residual Self-Focusing (`objective.residual_focus`).** Detector-free spatial loss weighting:
   on every 2nd step, runs a grad-free frozen base pass and upweights spatial regions (`1×–3×`) where
   the base model disagrees most with the target, focusing adapter capacity on distinctive subject

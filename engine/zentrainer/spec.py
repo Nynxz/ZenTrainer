@@ -185,9 +185,14 @@ class OptimSpec:
                                    "late high-resolution stages from stalling near zero) and to Automagic v3/v4 / "
                                    "Lotus adaptive LR. 0 = decay to 0 (or adaptive optimizer's default floor).",
                               ge=0, le=1)
-    lotus_auto_lr: bool = setting(False, "Lotus: group-level hypergradient adaptive learning rate (0.05x-20x) instead "
-                                         "of following the schedule directly. Off = predictable AdamW-style scheduled "
-                                         "LR; On = Automagic-style self-tuning LR that honors warmup and cosine tails.")
+    lotus_auto_lr: bool = setting(False, "Lotus: group-level hypergradient adaptive learning rate (0.1x-10x) that "
+                                         "composes with warmup and schedule decay. Off = predictable AdamW-style "
+                                         "scheduled LR; On = climbs when LR is too low, holds steady on noisy "
+                                         "small-batch diffusion steps, and brakes on overshoot.")
+    adapter_geo: bool = setting(False, "Automagic v3 and Lotus: adapter-native geometry — exact r x r Gram polar "
+                                       "orthogonalization and built-in 2x LoRA+ up-matrix scaling on LoRA, exact "
+                                       "fp32 second moments on tiny factors (<= 1024 elems, e.g. lokr_w1), and "
+                                       "Delta-W-preserving LoKr gauge balancing.")
 
 
 @dataclass
@@ -1030,7 +1035,7 @@ def sample_prompts(s: SampleSpec) -> list[SamplePrompt]:
 
 # what a trained run's saved LoRA, optimizer state and dataset cache depend on: everything else
 # (memory, samples, validation, LR and schedule, length, timesteps) may change at a resume
-LOCKED_AT_RESUME = ("model", "dataset", "network", "optim.optimizer", "optim.lora_plus", "seed")
+LOCKED_AT_RESUME = ("model", "dataset", "network", "optim.optimizer", "optim.lora_plus", "optim.adapter_geo", "seed")
 
 
 def _without_batch(d: dict) -> dict:
