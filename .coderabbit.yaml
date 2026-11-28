@@ -29,8 +29,5 @@ reviews:
         Performance kernels (CUDA via NVRTC, Triton) with plain-PyTorch fallbacks. Check that
         shape, dtype, stride and alignment guards match what each kernel assumes, and that the
         launch arguments match the kernel's parameter types.
-    - path: "CHANGELOG.md"
-      instructions: >-
-        Entries are written for users. They must not name a user, their files, folders or setup.
 chat:
   auto_reply: true
